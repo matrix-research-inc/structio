@@ -1749,11 +1749,16 @@ mod tests {
         for key in &chain {
             map.insert(key.clone(), format!("{key}!"));
         }
-        let mut filler = Vec::new();
-        while map.len() < load_limit(MIN_BUCKETS) {
-            let key = nth_key(6_000_000 + filler.len());
+        // The filler is chosen as deliberately as the chain is. Arbitrary keys
+        // would be a bet that none of them asks for a bucket just before the
+        // chain's, and a key that does displaces the run this test is about:
+        // probing runs forward, so an ideal one short of the chain's robs it
+        // the moment the gap ahead fills. Picking a bucket far enough along
+        // that the two runs cannot meet makes the arrangement a fact of the
+        // test rather than a property of whatever the hash happens to do.
+        let filler = keys_for_bucket(10, MIN_BUCKETS, load_limit(MIN_BUCKETS) - chain.len());
+        for key in &filler {
             map.insert(key.clone(), String::new());
-            filler.push(key);
         }
         assert_index_consistent(&map);
         for (step, key) in chain.iter().enumerate() {
