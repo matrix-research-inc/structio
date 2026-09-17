@@ -47,6 +47,33 @@
 //! is rebuilt only when the entries outgrow three quarters of it, which doubles
 //! the buckets and so costs `O(1)` per insert amortised.
 //!
+//! # The table is one word, behind a pointer
+//!
+//! The map holds the table as `Option<Box<HashTable>>`, which is a single
+//! pointer wide because `None` is the null one. Held inline, the table's `Vec`
+//! would be three words, and those two extra words are not really paid by maps.
+//! They are paid by [`Value`](crate::Value), whose object variant is an
+//! `OrderedMap` and which is therefore at least as wide as one: with the table
+//! inline a `Value` is 48 bytes, and with it boxed the map is four words, the
+//! tag fits in the niche in the entries' pointer, and a `Value` is 32. Every
+//! element of every `Vec<Value>` and every entry of every object pays that
+//! difference, in documents that contain no object at all. A megabytes-wide
+//! array of numbers was measured carrying megabytes of extra heap for a table
+//! nothing in it would ever build. Behind the pointer, only a map past
+//! `LINEAR_MAX` keys allocates a table, and only such a map ever follows the
+//! pointer to reach one. A `Box<[Bucket]>` would not do: a pointer to a slice
+//! carries the length beside it and is two words again, so the length has to
+//! stay inside the box.
+//!
+//! `None` is the only spelling of "no table". A table that exists has buckets,
+//! is a power of two long and describes every entry; a map that drops below
+//! `LINEAR_MAX` or grows past what a bucket can address releases the box
+//! rather than emptying it. One representation means a lookup has one thing to
+//! test and the invariant has one thing to state. What it costs is the buckets'
+//! capacity: a map crossing the threshold back and forth reallocates where it
+//! used to reuse, which is an allocation on an uncommon edit against two words
+//! on every `Value` everywhere.
+//!
 //! # Robin hood, and why a miss costs what a hit does
 //!
 //! A bucket's *distance* is how far it sits from the bucket its hash asked for.
@@ -228,38 +255,40 @@ impl Bucket {
 
 /// The open-addressed bucket table.
 ///
-/// Either it is empty, meaning the map scans, or it describes *every* entry;
-/// there is no state in between. That is the whole of the bookkeeping: whoever
-/// changes the entries either keeps the table in step bucket by bucket or drops
-/// it, and a lookup's only question is which of the two it is looking at.
+/// A table that exists describes *every* entry; there is no state in between.
+/// That is the whole of the bookkeeping: whoever changes the entries either
+/// keeps the table in step bucket by bucket or drops it, and a lookup's only
+/// question is whether the map has one. The map spells "no table" as `None`
+/// rather than as a table with no buckets, so this type never holds an empty
+/// `buckets`: one built by [`HashTable::build`] has at least [`MIN_BUCKETS`] of
+/// them and only ever doubles.
 ///
 /// The table is a separate type rather than a bare `Vec` in the map so that the
 /// probe and its invariant sit together, away from the ordering work that is
-/// the map's own business.
-#[derive(Clone, Default)]
+/// the map's own business, and so that the map can hold it behind one pointer.
+#[derive(Clone)]
 struct HashTable {
-    /// A power-of-two number of buckets, or none at all. Indexed by the low
-    /// bits of a hash, so the power of two is what makes the mask work.
+    /// A power-of-two number of buckets, indexed by the low bits of a hash, so
+    /// the power of two is what makes the mask work.
     buckets: Vec<Bucket>,
 }
 
 impl HashTable {
-    /// Whether there is no table, and so whether lookups have to scan.
-    #[inline]
-    fn is_empty(&self) -> bool {
-        self.buckets.is_empty()
+    /// A table sized for `entries` and filled from them.
+    ///
+    /// The only way one is made. `entries` is never empty here, since a table
+    /// is built no earlier than the entry after [`LINEAR_MAX`], and
+    /// [`buckets_for`] never returns fewer than [`MIN_BUCKETS`], so the table
+    /// this hands back always has buckets.
+    fn build<V>(entries: &[(String, V)]) -> HashTable {
+        let mut table = HashTable {
+            buckets: Vec::new(),
+        };
+        table.rebuild(entries);
+        table
     }
 
-    /// Give up the table. The buckets' capacity is kept for the next rebuild,
-    /// which is usually the next insert when a map is hovering around
-    /// [`LINEAR_MAX`].
-    #[inline]
-    fn clear(&mut self) {
-        self.buckets.clear();
-    }
-
-    /// The mask that turns a hash into a bucket. Only valid for a table that
-    /// has buckets, which every probe has already established.
+    /// The mask that turns a hash into a bucket.
     #[inline]
     fn mask(&self) -> u32 {
         debug_assert!(!self.buckets.is_empty());
@@ -411,10 +440,11 @@ impl HashTable {
     /// Size the table for `entries` and fill it from scratch, hashing every
     /// key.
     ///
-    /// This is for the first table a map builds and for anything that has moved
-    /// entries around wholesale, where there is no table left worth reading.
-    /// Growing a table that is merely full is [`HashTable::grow`], which does
-    /// not hash anything.
+    /// This is what [`HashTable::build`] fills a new table with, and it is what
+    /// a map calls on the table it already has when it has moved entries around
+    /// wholesale and there is nothing left in the buckets worth reading. Going
+    /// through the existing table keeps its allocation. Growing a table that is
+    /// merely full is [`HashTable::grow`], which does not hash anything.
     fn rebuild<V>(&mut self, entries: &[(String, V)]) {
         debug_assert!(entries.len() <= MAX_INDEXED);
         self.buckets.clear();
@@ -480,10 +510,13 @@ enum Lookup {
 pub struct OrderedMap<V> {
     /// The map itself, in insertion order.
     entries: Vec<(String, V)>,
-    /// Lookup acceleration over all of `entries`, or empty for a map small
+    /// Lookup acceleration over all of `entries`, or `None` for a map small
     /// enough to scan. Never consulted for an answer without a key comparison
     /// to confirm it.
-    table: HashTable,
+    ///
+    /// Boxed so that the map is four words rather than six: see the [module
+    /// docs](self). `None` is the only way a map has no table.
+    table: Option<Box<HashTable>>,
 }
 
 impl<V> OrderedMap<V> {
@@ -492,7 +525,7 @@ impl<V> OrderedMap<V> {
     pub fn new() -> Self {
         OrderedMap {
             entries: Vec::new(),
-            table: HashTable::default(),
+            table: None,
         }
     }
 
@@ -507,7 +540,7 @@ impl<V> OrderedMap<V> {
     pub fn with_capacity(capacity: usize) -> Self {
         OrderedMap {
             entries: Vec::with_capacity(capacity),
-            table: HashTable::default(),
+            table: None,
         }
     }
 
@@ -535,11 +568,14 @@ impl<V> OrderedMap<V> {
         self.entries.is_empty()
     }
 
-    /// Drop every entry, keeping the allocated capacity.
+    /// Drop every entry, keeping the entries' allocated capacity.
+    ///
+    /// The table goes, since an empty map scans; a map refilled to past
+    /// `LINEAR_MAX` builds a new one.
     #[inline]
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.table.clear();
+        self.table = None;
     }
 
     /// Position of `key`, by whichever route this map's size calls for, and the
@@ -549,14 +585,14 @@ impl<V> OrderedMap<V> {
     /// below [`LINEAR_MAX`], a single probe of the table for anything larger.
     #[inline]
     fn locate(&self, key: &str) -> Lookup {
-        if self.table.is_empty() {
+        let Some(table) = self.table.as_deref() else {
             return match self.entries.iter().position(|(k, _)| k.as_str() == key) {
                 Some(pos) => Lookup::Occupied(pos),
                 None => Lookup::Vacant(None),
             };
-        }
+        };
         let hash = hash_key(key);
-        match self.table.find(&self.entries, key, hash) {
+        match table.find(&self.entries, key, hash) {
             Some(pos) => Lookup::Occupied(pos),
             None => Lookup::Vacant(Some(hash)),
         }
@@ -641,27 +677,27 @@ impl<V> OrderedMap<V> {
         if len <= LINEAR_MAX {
             // Still small enough to scan, and by the table's invariant there is
             // nothing allocated to keep in step.
-            debug_assert!(self.table.is_empty());
+            debug_assert!(self.table.is_none());
         } else if len > MAX_INDEXED {
             // One position too many to address. The table goes, and lookups
             // scan until removals bring the map back under the bound.
-            self.table.clear();
-        } else if self.table.is_empty() {
-            // The first table this map has needed, over the eight entries that
-            // never had one and the ninth that has just asked for one.
-            self.reindex();
-        } else {
-            if len > load_limit(self.table.buckets.len()) {
+            self.table = None;
+        } else if let Some(table) = self.table.as_deref_mut() {
+            if len > load_limit(table.buckets.len()) {
                 // Out of room. Doubling is the only `O(n)` work an insert ever
                 // does, and a map does it once per doubling it lives through,
                 // which is what makes filling one linear rather than quadratic.
-                self.table.grow();
+                table.grow();
             }
             let hash = hash.unwrap_or_else(|| hash_key(&self.entries[pos].0));
-            self.table.place(Bucket {
+            table.place(Bucket {
                 index: pos as u32,
                 hash,
             });
+        } else {
+            // The first table this map has needed, over the eight entries that
+            // never had one and the ninth that has just asked for one.
+            self.reindex();
         }
         pos
     }
@@ -695,21 +731,23 @@ impl<V> OrderedMap<V> {
     /// instead. Below that size the map scans, so keeping a table would be
     /// keeping a thing no lookup reads and every insert would have to maintain.
     fn remove_at(&mut self, pos: usize) -> (String, V) {
-        if self.table.is_empty() || self.entries.len() - 1 <= LINEAR_MAX {
-            // Nothing to repair, because there is no table or there is about to
-            // be none. The one case where reindexing does more than drop it
-            // here is a map coming back under MAX_INDEXED, which is how a map
-            // too wide to address gets its table back.
+        if self.entries.len() - 1 > LINEAR_MAX
+            && let Some(table) = self.table.as_deref_mut()
+        {
+            // The bucket has to be found while the entry is still there: it is
+            // found by hashing the key it holds.
+            let bucket = table.bucket_of(&self.entries, pos as u32);
+            table.erase(bucket);
             let removed = self.entries.remove(pos);
-            self.reindex();
+            table.shift_down_above(pos as u32);
             return removed;
         }
-        // The bucket has to be found while the entry is still there: it is
-        // found by hashing the key it holds.
-        let bucket = self.table.bucket_of(&self.entries, pos as u32);
-        self.table.erase(bucket);
+        // Nothing to repair, because there is no table or there is about to be
+        // none. The one case where reindexing does more than drop it here is a
+        // map coming back under MAX_INDEXED, which is how a map too wide to
+        // address gets its table back.
         let removed = self.entries.remove(pos);
-        self.table.shift_down_above(pos as u32);
+        self.reindex();
         removed
     }
 
@@ -720,11 +758,17 @@ impl<V> OrderedMap<V> {
     /// follow, and where the table has outgrown its load factor. A map at or
     /// below [`LINEAR_MAX`] simply drops its table and goes back to scanning,
     /// as does one so wide that [`MAX_INDEXED`] cannot address it.
+    ///
+    /// A map that already has a table refills the one it has, so the buckets
+    /// are reallocated only when they have to grow.
     fn reindex(&mut self) {
-        if self.entries.len() > LINEAR_MAX && self.entries.len() <= MAX_INDEXED {
-            self.table.rebuild(&self.entries);
+        let len = self.entries.len();
+        if len <= LINEAR_MAX || len > MAX_INDEXED {
+            self.table = None;
+        } else if let Some(table) = self.table.as_deref_mut() {
+            table.rebuild(&self.entries);
         } else {
-            self.table.clear();
+            self.table = Some(Box::new(HashTable::build(&self.entries)));
         }
     }
 
@@ -862,7 +906,9 @@ impl<V: Clone> Clone for OrderedMap<V> {
             entries: self.entries.clone(),
             // The clone holds the same entries at the same positions, so the
             // table describes it exactly as well as it describes the original,
-            // and copying the buckets beats probing them all back in.
+            // and copying the buckets beats probing them all back in. A map
+            // with no table clones to one with no table, and allocates nothing
+            // for it.
             table: self.table.clone(),
         }
     }
@@ -1377,27 +1423,48 @@ mod tests {
         map
     }
 
+    /// The map's table, for a caller that has established it has one.
+    fn table_of<V>(map: &OrderedMap<V>) -> &HashTable {
+        map.table
+            .as_deref()
+            .expect("the map is large enough to have a table")
+    }
+
+    /// How many buckets the map's table has, or none at all when it has no
+    /// table. Zero is not a size any table can have, so the two answers stay
+    /// distinguishable.
+    fn bucket_count<V>(map: &OrderedMap<V>) -> usize {
+        map.table.as_deref().map_or(0, |table| table.buckets.len())
+    }
+
     /// Every invariant the lookup depends on, checked against the entries.
     ///
     /// A table either describes the whole map or is not there at all, so the
-    /// first question is which of the two this is. For a table that is there:
-    /// every occupied bucket points at a live entry whose key still hashes to
-    /// the hash the bucket stored, every entry has exactly one bucket, every
-    /// entry is reachable by probing forward from the bucket its hash asked
-    /// for, the robin hood distance ordering holds along the way, and the load
-    /// factor is not exceeded.
+    /// first question is which of the two this is. A map that scans holds
+    /// `None`, never a table with no buckets, which is the one spelling the
+    /// rest of this relies on. For a table that is there: every occupied
+    /// bucket points at a live entry whose key still hashes to the hash the
+    /// bucket stored, every entry has exactly one bucket, every entry is
+    /// reachable by probing forward from the bucket its hash asked for, the
+    /// robin hood distance ordering holds along the way, and the load factor
+    /// is not exceeded.
     fn assert_index_consistent<V>(map: &OrderedMap<V>) {
         let len = map.len();
-        if map.table.is_empty() {
+        let Some(table) = map.table.as_deref() else {
             assert!(
                 len <= LINEAR_MAX || len > MAX_INDEXED,
                 "a map of {len} entries is missing its table"
             );
             return;
-        }
+        };
         assert!(len > LINEAR_MAX, "a map of {len} entries built a table");
+        assert!(
+            !table.buckets.is_empty(),
+            "a map of {len} entries holds a table with no buckets, which is \
+             the representation `None` is for"
+        );
 
-        let buckets = map.table.buckets.len();
+        let buckets = table.buckets.len();
         assert!(
             buckets.is_power_of_two(),
             "{buckets} buckets is not a power of two"
@@ -1412,7 +1479,7 @@ mod tests {
         );
 
         let mut bucketed = vec![false; len];
-        for (at, bucket) in map.table.buckets.iter().enumerate() {
+        for (at, bucket) in table.buckets.iter().enumerate() {
             if bucket.is_empty() {
                 continue;
             }
@@ -1434,16 +1501,16 @@ mod tests {
             // least as far from home as the probe is when it goes by, so a
             // probe for this key neither stops at an empty bucket nor takes the
             // displacement exit before it arrives.
-            let ideal = map.table.ideal(bucket.hash);
-            for step in 0..map.table.distance(at, bucket.hash) {
-                let passed_at = (ideal + step) & map.table.mask();
-                let passed = map.table.buckets[passed_at as usize];
+            let ideal = table.ideal(bucket.hash);
+            for step in 0..table.distance(at, bucket.hash) {
+                let passed_at = (ideal + step) & table.mask();
+                let passed = table.buckets[passed_at as usize];
                 assert!(
                     !passed.is_empty(),
                     "entry {pos} is unreachable: bucket {passed_at} is empty"
                 );
                 assert!(
-                    map.table.distance(passed_at, passed.hash) >= step,
+                    table.distance(passed_at, passed.hash) >= step,
                     "robin hood ordering is broken at bucket {passed_at}"
                 );
             }
@@ -1456,7 +1523,7 @@ mod tests {
         // And the probe does find them all, which is what the rest is for.
         for (pos, (key, _)) in map.entries.iter().enumerate() {
             assert_eq!(
-                map.table.find(&map.entries, key, hash_key(key)),
+                table.find(&map.entries, key, hash_key(key)),
                 Some(pos),
                 "entry {pos} is not where a probe looks for it"
             );
@@ -1515,8 +1582,8 @@ mod tests {
             }
             assert_index_consistent(&map);
             assert_eq!(
-                map.table.buckets.len(),
-                map_of(n).table.buckets.len(),
+                bucket_count(&map),
+                bucket_count(&map_of(n)),
                 "a duplicate insert grew the table at n = {n}"
             );
         }
@@ -1548,12 +1615,12 @@ mod tests {
     /// Which bucket a present key sits in.
     fn bucket_of<V>(map: &OrderedMap<V>, key: &str) -> u32 {
         let pos = map.find(key).expect("key is present") as u32;
-        map.table.bucket_of(&map.entries, pos)
+        table_of(map).bucket_of(&map.entries, pos)
     }
 
     /// How far a present key sits from the bucket it asked for.
     fn distance_of<V>(map: &OrderedMap<V>, key: &str) -> u32 {
-        map.table.distance(bucket_of(map, key), hash_key(key))
+        table_of(map).distance(bucket_of(map, key), hash_key(key))
     }
 
     #[test]
@@ -1563,10 +1630,10 @@ mod tests {
             map.insert(nth_key(n - 1), n - 1);
             assert_eq!(map.len(), n);
             if n <= LINEAR_MAX {
-                assert!(map.table.is_empty(), "a map of {n} entries built a table");
+                assert!(map.table.is_none(), "a map of {n} entries built a table");
             } else {
                 assert_eq!(
-                    map.table.buckets.len(),
+                    bucket_count(&map),
                     buckets_for(n),
                     "wrong table size at n = {n}"
                 );
@@ -1602,7 +1669,7 @@ mod tests {
             map.insert(key.clone(), String::new());
             filler.push(key);
         }
-        assert_eq!(map.table.buckets.len(), MIN_BUCKETS);
+        assert_eq!(bucket_count(&map), MIN_BUCKETS);
         assert_index_consistent(&map);
 
         let wrapped = chain.iter().filter(|k| bucket_of(&map, k) < last).count();
@@ -1650,7 +1717,7 @@ mod tests {
         map.insert(one[0].clone(), 101);
         map.insert(zero[1].clone(), 102);
 
-        assert_eq!(map.table.buckets.len(), MIN_BUCKETS);
+        assert_eq!(bucket_count(&map), MIN_BUCKETS);
         assert_eq!(bucket_of(&map, &zero[0]), 0);
         assert_eq!(
             bucket_of(&map, &zero[1]),
@@ -1729,8 +1796,8 @@ mod tests {
         let mut rebuilt_entries = 0usize;
         for i in 0..N {
             map.insert(nth_key(i), i);
-            if map.table.buckets.len() != buckets {
-                buckets = map.table.buckets.len();
+            if bucket_count(&map) != buckets {
+                buckets = bucket_count(&map);
                 rebuilds += 1;
                 rebuilt_entries += map.len();
             }
@@ -1807,7 +1874,7 @@ mod tests {
         for i in 0..200 {
             big.insert(nth_key(1_000_000 + i), i.to_string());
         }
-        assert!(!big.table.is_empty(), "the hashed path was never exercised");
+        assert!(big.table.is_some(), "the hashed path was never exercised");
         assert_index_consistent(&big);
 
         for (a, b) in &pairs {
@@ -1914,7 +1981,7 @@ mod tests {
     #[test]
     fn crossing_the_linear_threshold_in_both_directions() {
         let mut map = map_of(12);
-        assert!(!map.table.is_empty());
+        assert!(map.table.is_some());
 
         // Down past the threshold, from the front, so that every remaining
         // entry moves and every bucket has to be corrected.
@@ -1927,7 +1994,7 @@ mod tests {
             }
         }
         assert!(
-            map.table.is_empty(),
+            map.table.is_none(),
             "the table outlived the map's need for it"
         );
         assert_eq!(
@@ -1941,7 +2008,7 @@ mod tests {
             assert_index_consistent(&map);
         }
         assert_eq!(map.len(), 19);
-        assert!(!map.table.is_empty());
+        assert!(map.table.is_some());
         for i in 0..24 {
             let found = map.get(&nth_key(i));
             assert_eq!(found, if i < 5 { None } else { Some(&i) });
@@ -2156,7 +2223,7 @@ mod tests {
     #[test]
     fn entry_stays_indexed_above_the_threshold() {
         let mut map = map_of(100);
-        assert!(!map.table.is_empty());
+        assert!(map.table.is_some());
         for i in 0..100 {
             assert_eq!(*map.entry(nth_key(i)).or_insert(usize::MAX), i);
         }
@@ -2282,7 +2349,7 @@ mod tests {
         // Down to under the threshold, where the table goes away entirely.
         map.retain(|key, _| key == nth_key(0));
         assert_eq!(map.len(), 1);
-        assert!(map.table.is_empty());
+        assert!(map.table.is_none());
         assert_eq!(map.get(&nth_key(0)), Some(&0));
     }
 
@@ -2374,5 +2441,25 @@ mod tests {
         let mut map: OrderedMap<NotCloneable> = OrderedMap::default();
         map.insert("x".into(), NotCloneable(1));
         assert_eq!(map.get("x").map(|v| v.0), Some(1));
+    }
+
+    // --- the map's own width ------------------------------------------------
+
+    /// The map is four words, and it has to stay four words.
+    ///
+    /// `Object` is an `OrderedMap<Value>`, so this width is the width of
+    /// `Value`'s widest variant and therefore of *every* `Value` the crate
+    /// builds, in documents with no object anywhere in them: a `Vec<Value>` of
+    /// numbers pays it per element and every entry of every object pays it
+    /// again. Thirty-two bytes is the three-word `Vec` of entries plus the one
+    /// word of `Option<Box<HashTable>>`, and it is what keeps `Value` at 32
+    /// bytes rather than 48. Holding the table inline, or boxing it as a
+    /// `Box<[Bucket]>` whose pointer carries a length, or adding a fourth
+    /// field, each costs eight bytes here and megabytes across a large
+    /// document, and nothing else in these tests would notice.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn the_map_is_four_words_wide() {
+        assert_eq!(size_of::<OrderedMap<u64>>(), 32);
     }
 }
