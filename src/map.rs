@@ -204,15 +204,16 @@ const MAX_INDEXED: usize = u32::MAX as usize;
 /// the birthday expectation for a uniform 32-bit hash, and neither is
 /// consistently ahead.
 ///
-/// What does cost collisions is [`full_hash`] itself, on one family of keys.
-/// [`key_digest`](crate::keymap) folds whole 8-byte chunks and then re-reads
-/// the final 8 bytes as its tail, and it mixes in no length, so two keys
-/// sharing a 16-byte prefix and an 8-byte suffix digest identically however
-/// they differ in between: `field_name_10500_value` and
-/// `field_name_105000_value` are one such pair. Those collide in all 64 bits,
-/// so no choice of half separates them. It costs a few extra key comparisons
-/// here and nothing else, because every candidate is confirmed against the
-/// stored key before it is accepted.
+/// [`key_digest`](crate::keymap) once left one family of keys colliding in all
+/// 64 bits, which no choice of half could have separated: it folds whole
+/// 8-byte chunks and then re-reads the final 8 bytes as its tail, and it mixed
+/// in no length, so two keys sharing a 16-byte prefix and an 8-byte suffix
+/// digested identically however they differed in between. It folds the length
+/// in now, and the hole is closed where it was rather than worked around here.
+///
+/// A narrowed hash collides regardless, which is why nothing here trusts one:
+/// every candidate is confirmed against the stored key before it is accepted,
+/// so a collision costs one comparison and never an answer.
 #[inline]
 fn hash_key(key: &str) -> u32 {
     let bytes = key.as_bytes();
