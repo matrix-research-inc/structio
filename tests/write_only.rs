@@ -19,6 +19,8 @@
 //! really is read and written, with one field that means nothing in one of
 //! those directions.
 
+use std::collections::BTreeMap;
+
 use structio::{
     Options, Pretty, SkipNull, beve, json, to_beve, to_beve_with, to_string, to_string_with,
 };
@@ -166,6 +168,10 @@ fn a_declaration_may_still_end_in_rest() {
         dropped: Register(9),
     };
     assert_eq!(to_string(&p), r#"{"kept":1}"#);
+    assert_eq!(
+        structio::transcode::beve_to_json(&to_beve(&p)).unwrap(),
+        r#"{"kept":1}"#
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -426,4 +432,226 @@ fn the_derive_expands_to_the_narrowed_declaration() {
         }),
         r#"{"value":11}"#
     );
+}
+
+// ---------------------------------------------------------------------------
+// The two axes, in every combination
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct PairBoth {
+    a: u32,
+    b: u32,
+}
+structio::json_array!(PairBoth [ a, b ]);
+
+struct PairJson {
+    a: u32,
+    b: u32,
+}
+structio::json_array!(write_only PairJson [ a, b ]);
+
+#[derive(Default)]
+struct PairBeveBoth {
+    a: u32,
+    b: u32,
+}
+structio::beve_array!(PairBeveBoth [ u32; a, b ]);
+
+struct PairBeve {
+    a: u32,
+    b: u32,
+}
+structio::beve_array!(write_only PairBeve [ u32; a, b ]);
+
+#[derive(Default)]
+enum JsonMsgBoth {
+    #[default]
+    Idle,
+    Config(Payload),
+}
+structio::json_tagged_enum!(JsonMsgBoth as tag "kind" { Idle, Config(_) });
+
+enum JsonMsgHalf {
+    Idle,
+    Config(Payload),
+}
+structio::json_tagged_enum!(write_only JsonMsgHalf as tag "kind" { Idle, Config(_) });
+
+#[derive(Default)]
+enum BeveMsgBoth {
+    #[default]
+    Idle,
+    Config(Payload),
+}
+structio::beve_tagged_enum!(BeveMsgBoth as "kebab-case" { Idle, Config(_) });
+
+enum BeveMsgHalf {
+    Idle,
+    Config(Payload),
+}
+structio::beve_tagged_enum!(write_only BeveMsgHalf as "kebab-case" { Idle, Config(_) });
+
+#[test]
+fn every_one_format_macro_narrows_to_one_direction() {
+    assert_eq!(
+        to_string(&PairJson { a: 1, b: 2 }),
+        to_string(&PairBoth { a: 1, b: 2 })
+    );
+    assert_eq!(
+        to_beve(&PairBeve { a: 1, b: 2 }),
+        to_beve(&PairBeveBoth { a: 1, b: 2 })
+    );
+    assert_eq!(
+        to_string(&JsonMsgHalf::Config(Payload { mode: 1 })),
+        to_string(&JsonMsgBoth::Config(Payload { mode: 1 }))
+    );
+    assert_eq!(to_string(&JsonMsgHalf::Idle), to_string(&JsonMsgBoth::Idle));
+    // A case rule over variant names, on the narrowed side of a tagged enum.
+    assert_eq!(
+        to_beve(&BeveMsgHalf::Config(Payload { mode: 1 })),
+        to_beve(&BeveMsgBoth::Config(Payload { mode: 1 }))
+    );
+    assert_eq!(to_beve(&BeveMsgHalf::Idle), to_beve(&BeveMsgBoth::Idle));
+}
+
+// ---------------------------------------------------------------------------
+// Narrowed types inside other types
+// ---------------------------------------------------------------------------
+
+struct Inner {
+    id: Register,
+}
+structio::object!(write_only Inner { id });
+
+struct Outer {
+    inner: Inner,
+    many: Vec<Inner>,
+    maybe: Option<Inner>,
+    named: BTreeMap<String, Inner>,
+}
+structio::object!(write_only Outer { inner, many, maybe, named });
+
+#[test]
+fn a_narrowed_type_nests_in_containers_and_in_itself() {
+    let o = Outer {
+        inner: Inner { id: Register(1) },
+        many: vec![Inner { id: Register(2) }, Inner { id: Register(3) }],
+        maybe: None,
+        named: BTreeMap::from([("k".to_string(), Inner { id: Register(4) })]),
+    };
+    assert_eq!(
+        to_string(&o),
+        r#"{"inner":{"id":1},"many":[{"id":2},{"id":3}],"maybe":null,"named":{"k":{"id":4}}}"#
+    );
+    // A container writes its elements through the same `Write` the narrowed
+    // declaration generated, and BEVE has to count them the same way, so a
+    // transcode of the whole tree is what checks the nesting.
+    assert_eq!(
+        structio::transcode::beve_to_json(&to_beve(&o)).unwrap(),
+        to_string(&o)
+    );
+    assert_eq!(
+        structio::transcode::beve_to_json(&to_beve_with::<SkipNull, _>(&o)).unwrap(),
+        to_string_with::<SkipNull, _>(&o)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Generics beyond one type parameter
+// ---------------------------------------------------------------------------
+
+struct Slot<'a, T, const N: usize>
+where
+    T: Clone,
+{
+    label: &'a str,
+    value: T,
+}
+structio::object!(write_only ['a, T: Clone + structio::Write, const N: usize] Slot<'a, T, N> {
+    label, value
+});
+
+#[test]
+fn a_lifetime_a_const_parameter_and_a_folded_bound() {
+    let s: Slot<'_, u8, 4> = Slot {
+        label: "x",
+        value: 2,
+    };
+    assert_eq!(to_string(&s), r#"{"label":"x","value":2}"#);
+    assert!(!to_beve(&s).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// The derive, through every shape it claims
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "derive")]
+#[derive(structio::Structio)]
+#[structio(write_only, array, element = "f64")]
+struct DerivedPoint {
+    x: f64,
+    y: f64,
+}
+
+#[cfg(feature = "derive")]
+#[derive(structio::Structio)]
+#[structio(write_only, rename_all = "snake_case")]
+enum DerivedLevel {
+    Info,
+    #[structio(rename = "WARN")]
+    Warning,
+}
+
+#[cfg(feature = "derive")]
+#[derive(structio::Structio)]
+#[structio(write_only, tag = "kind")]
+enum DerivedMsg {
+    Idle,
+    Config(Payload),
+}
+
+#[cfg(feature = "derive")]
+#[derive(structio::Structio)]
+#[structio(write_only, json)]
+struct DerivedJson<'a, T, const N: usize>
+where
+    T: Clone,
+{
+    label: &'a str,
+    value: T,
+}
+
+#[cfg(feature = "derive")]
+#[test]
+fn the_derive_narrows_every_shape_it_claims() {
+    // Positional, with the element type that makes BEVE store it as one
+    // typed array: the same bytes as the macro twin declared the same way.
+    assert_eq!(
+        to_beve(&DerivedPoint { x: 1.5, y: -2.0 }),
+        to_beve(&PointHalf { x: 1.5, y: -2.0 })
+    );
+    assert_eq!(to_string(&DerivedPoint { x: 1.5, y: -2.0 }), "[1.5,-2]");
+
+    // A unit enum, including the BEVE string-array packing of a run.
+    assert_eq!(to_string(&DerivedLevel::Warning), r#""WARN""#);
+    assert_eq!(
+        to_beve(&vec![DerivedLevel::Info, DerivedLevel::Warning]),
+        to_beve(&vec![LevelHalf::Info, LevelHalf::Warning])
+    );
+
+    // An internally tagged enum.
+    assert_eq!(
+        to_string(&DerivedMsg::Config(Payload { mode: 2 })),
+        r#"{"kind":"Config","mode":2}"#
+    );
+    assert_eq!(to_string(&DerivedMsg::Idle), to_string(&TaggedHalf::Idle));
+
+    // One format, one direction, a lifetime, a const parameter and a `where`
+    // clause folded onto the parameter it bounds.
+    let d: DerivedJson<'_, u8, 4> = DerivedJson {
+        label: "x",
+        value: 2,
+    };
+    assert_eq!(to_string(&d), r#"{"label":"x","value":2}"#);
 }
