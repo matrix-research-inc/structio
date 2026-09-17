@@ -6,11 +6,21 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 ## [Unreleased]
 
+### Changed
+
+- **`write_only` and `transparent` are stage 2 of the derive, not stage 3.** Both describe the whole type rather than one field: stage 2 is for a shape the macros cannot declare, stage 3 for per-field policy. Neither is implemented and the derive still refuses both, now naming stage 2.
+
 ### Added
 
+- **A failed `Read` or `Write` bound now explains the direction axis.** `Read`, `Write`, `ReadAs` and `WriteAs`, in both formats, carry `#[diagnostic::on_unimplemented]` notes. A declaration generates both directions at once, so a field's type has to satisfy the half the struct never uses, and the note says what discharges it: a `skip_value()` stub on the read side, and on the write side `write_null()` with `is_null` returning `true`, since a member that writes nothing truncates the object.
 - **`json::Raw`, one JSON value carried through as its text.** A field that captures the exact bytes of a value on read and emits them unchanged on write, so a forwarded body keeps its key order, its number spellings and its escapes: what `Value` is not, being a tree that sorts, respells and decodes. Reading borrows the span out of the document, and under `ALLOW_COMMENTS` strips the comments out of a span that carries any, owning that one; writing is one copy of those bytes, laid out again at the right depth under `PRETTY`. JSON only, so a struct with one is declared with `json_object!`. [docs/schemas.md](docs/schemas.md#json-that-goes-through-untouched) has the rest.
 - **`json::prettify_value_into`.** Lays one JSON value out into a `Writer` that is already part-way through a document, at that writer's current depth and under its policy. `json::Raw` writes through it under `PRETTY`, and it is what a passthrough type of your own needs so that a forwarded value is indented against its neighbours rather than emitted as a blob.
 - **`json::Parser::rest_str`.** The `&str` counterpart of `rest`, for a hand-written `Read` impl capturing a span: the input's UTF-8 validity is already known, so nothing has to establish it a second time.
+
+### Fixed
+
+- **A declared type does not need `Default`.** [docs/derive.md](docs/derive.md) said it did, flatly, contradicting [docs/schemas.md](docs/schemas.md). `Default` is required where a read constructs a value: the entry points that return one, an `Option`'s payload, a growing `Vec`'s tail, a map's values, an enum variant's payload. A type that is only ever written needs none, and the derive's examples no longer imply otherwise.
+- **Where an error out of a declaration lands.** The same file promised that a field whose type has no `Read` impl is reported at that field. One macro call covers every field, so it is reported at the declaration: the struct's name under the derive, the whole invocation under a hand-written one. What does land where it was written is the derive's own refusals and an adapter named by `with = ".."`.
 
 ## [0.4.0] - 2026-09-04
 
@@ -24,7 +34,7 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **`#[derive(Structio)]`, behind the `derive` feature.** A front end to `object!`, `array!`, `unit_enum!` and `tagged_enum!`: it reads the type and emits the declaration, so a derived type and a declared type are the same impls. `rename_all`, `tag`, `array`, `element`, `json`, `beve` and `crate` on the type; `rename`, `skip`, `required` and `with` on a field; `rename` on a variant. Generics and their bounds are read off the type. The feature is off by default and the derive crate has no dependencies. [docs/derive.md](docs/derive.md) has the rest, including what later stages add.
 - **BEVE containers reserve on the wire count.** `Reader::read_seq_counted` and `read_map_counted` hand the element count to the caller before the first element, clipped to what the input could hold, and `beve::cautious::<T>` clips it again to a megabyte of `T`. `Vec`, `VecDeque`, `HashMap` and `HashSet`, adapted or not, reserve once instead of doubling up; a hostile count can waste at most that megabyte.
-- **`Value`, a tree for a value with no declared type.** Null, bool, number, string, array, object, with `get`, `pointer`/`pointer_mut`, the `as_*`/`is_*` accessors, `Index`/`IndexMut` by key or position, and the `value!` macro to build one. It reads and writes through both formats like any other type, so it can be a field of an `object!` declaration or a whole document; a BEVE typed array, complex run or matrix reads into the same shape `beve_to_json` writes. `Number` keeps whether it was an unsigned integer, a negative integer or a float, and writes a whole-valued float as `1.0` so the kind survives a trip through text. `to_value` and `from_value` move a declared type in and out, through JSON text. This is for the value nothing decodes, a register tree walked by path or a body forwarded unread, not a substitute for a declared type, and the crate's stance on that is unchanged.
+- **`Value`, a tree for a value with no declared type.** Null, bool, number, string, array, object, with `get`, `pointer`/`pointer_mut`, the `as_*`/`is_*` accessors, `Index`/`IndexMut` by key or position, and the `value!` macro to build one. It reads and writes through both formats like any other type, so it can be a field of an `object!` declaration or a whole document; a BEVE typed array, complex run or matrix reads into the same shape `beve_to_json` writes. `Number` keeps whether it was an unsigned integer, a negative integer or a float, and writes a whole-valued float as `1.0` so the kind survives a trip through text. `to_value` and `from_value` move a declared type in and out, through JSON text. This is for the value nothing decodes, a register tree walked by path, not a substitute for a declared type, and the crate's stance on that is unchanged.
 
 ## [0.3.2] - 2026-09-03
 
