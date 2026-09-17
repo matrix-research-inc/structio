@@ -912,7 +912,11 @@ fn read_object<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Va
     let width = key_width(h)?;
     let members = r.count()?;
     r.enter()?;
-    let mut map = Object::new();
+    // The count is known here, and an object's entries live in one vector, so
+    // reserving up front spares the doubling copies that filling it otherwise
+    // pays. `cautious` clips a dishonest count so a claimed member count
+    // cannot turn into an allocation the document never backs.
+    let mut map = Object::with_capacity(cautious::<(String, Value)>(members));
     for _ in 0..members {
         let key = match cat {
             header::CAT_FLOAT => r.str_body()?.to_owned(),

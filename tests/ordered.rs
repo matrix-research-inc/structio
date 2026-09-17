@@ -345,3 +345,33 @@ fn the_adapter_form_adapts_the_values_and_keeps_the_order() {
     assert_eq!(keys(&from_wire.by_stage), ["zeta", "alpha"]);
     assert_eq!(from_wire, b);
 }
+
+/// A BEVE object's member count now drives an allocation, so it has to be
+/// treated as a claim rather than as a fact.
+///
+/// Reading one reserves the entry vector up front, which is what spares an
+/// object the doubling copies that filling it otherwise pays. The count comes
+/// out of the document, so a dishonest one would be a way to ask for an
+/// arbitrary allocation from a handful of bytes. `cautious` clips it, and the
+/// read then fails where the bytes actually run out.
+#[test]
+fn a_dishonest_member_count_does_not_become_an_allocation() {
+    // A string-keyed object claiming 2^40 members, carrying exactly one.
+    // Byte 0 is the object header; bytes 1..9 are the compressed size in its
+    // widest form; the rest is the single member `"a": 1` that a truthful
+    // document of one member holds.
+    let mut doc = vec![3u8];
+    doc.extend_from_slice(&[3, 0, 0, 0, 0, 4, 0, 0]);
+    doc.extend_from_slice(&[4, 97, 113, 1, 0, 0, 0, 0, 0, 0, 0]);
+
+    // The point is that this returns rather than exhausting memory.
+    assert!(from_beve::<Value>(&doc).is_err());
+    assert!(from_beve::<Object>(&doc).is_err());
+
+    // The same document with an honest count reads, so the bytes after the
+    // size really are a well formed member and the failure above is the count.
+    let mut honest = vec![3u8, 4];
+    honest.extend_from_slice(&[4, 97, 113, 1, 0, 0, 0, 0, 0, 0, 0]);
+    let one = from_beve::<Value>(&honest).unwrap();
+    assert_eq!(one.as_object().unwrap().len(), 1);
+}
