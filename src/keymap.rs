@@ -163,14 +163,58 @@ const DIGEST_BASIS: u64 = 0x9E37_79B9_7F4A_7C15;
 /// Every other scheme in the ladder already had this shape: its hash is
 /// `bitmix(something(key), seed)`, with the seed touching only the last step.
 /// This gives the whole-key scheme the same shape.
+///
+/// # Why the length is folded in
+///
+/// The bytes alone do not determine the digest, so the length has to. Both
+/// paths read a fixed number of 8-byte windows, and neither covers every byte
+/// of every key:
+///
+/// * The long path consumes whole chunks and then re-reads the *final* eight
+///   bytes as its tail, so any byte between the last whole chunk and that tail
+///   is never read. `field_name_10500_value` and `field_name_105000_value`
+///   fold the same two chunks and take the same tail, and without a length
+///   they digest identically in all 64 bits.
+/// * The short path zero-fills, so a key and the same key with trailing NUL
+///   bytes, which JSON permits, produce the same value.
+///
+/// Equal digests are not a miscompare: every candidate is confirmed by a full
+/// key comparison. They are worse than that for the seed search. Since
+/// [`full_hash`] is `bitmix(digest, seed)`, two keys with equal digests collide
+/// under *every* seed, so the whole-key scheme can never separate them, the
+/// search exhausts its budget, and the object drops to [`HashKind::Linear`] and
+/// compares keys one at a time. A silent performance cliff.
+///
+/// The length enters at the two points where it costs nothing and cannot be
+/// undone:
+///
+/// * On the long path, the initial accumulator. The accumulator is the
+///   multiplier in every chunk's [`bitmix`], so a length placed there is
+///   multiplied into every chunk that follows and propagates through the whole
+///   fold. Folding it in at the end instead would separate these keys too, but
+///   only as one final mix over an accumulator the length never reached. The
+///   shift by one keeps bit 0 set, which is what [`DIGEST_BASIS`] is odd for.
+/// * On the short path, the top byte, which is provably free: `n < 8` fills at
+///   most seven bytes. Placing the length there leaves the short path
+///   injective, so no two distinct short keys can ever share a digest. Glaze's
+///   `sweet64` XORs `len + 1` into the low bits instead, which is cheaper to
+///   write but lets a key with trailing NULs alias a shorter key differing in
+///   exactly those bits.
+///
+/// Both are a shift and a bitwise op outside the loop. No branch is added, and
+/// the overlapping tail stays exactly as it was.
 const fn key_digest(data: &[u8], n: usize) -> u64 {
     if n < 8 {
-        return to_u64_below_8(data, n);
+        // At most seven bytes are filled, so the top byte is free for the
+        // length and the result stays injective in (bytes, length).
+        return to_u64_below_8(data, n) | ((n as u64) << 56);
     }
-    let mut h = DIGEST_BASIS;
+    let mut h = DIGEST_BASIS ^ ((n as u64) << 1);
     let mut i = 0;
     // Consume whole 8-byte chunks, then re-read the final 8 bytes as the tail.
-    // Overlapping the tail costs nothing and avoids a partial-load branch.
+    // Overlapping the tail costs nothing and avoids a partial-load branch. It
+    // is also why the length above is not optional: the bytes between the last
+    // whole chunk and the tail are never read.
     while i + 8 <= n {
         h = bitmix(to_u64_at(data, i), h);
         i += 8;
@@ -1044,5 +1088,64 @@ impl KeyMap {
             return None;
         }
         Some(end)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two keys that differ only where the fold does not read.
+    ///
+    /// The whole-key fold consumes `field_na` and `me_10500` from both, then
+    /// overlaps the tail back to `00_value` for both, so the digits where they
+    /// differ fall in the gap between the last whole chunk and that tail.
+    /// Without the length, these digest identically in all 64 bits.
+    ///
+    /// That is not a miscompare, since every candidate is confirmed by a full
+    /// comparison. It is worse: [`full_hash`] is `bitmix(digest, seed)`, so
+    /// equal digests collide under *every* seed, and an object holding both
+    /// keys loses the whole-key scheme and reads under [`HashKind::Linear`]
+    /// instead. Hence the second assertion, which is the consequence the first
+    /// one exists to prevent.
+    #[test]
+    fn keys_differing_only_in_the_folds_blind_spot_digest_differently() {
+        let a = b"field_name_10500_value";
+        let b = b"field_name_105000_value";
+        assert_ne!(key_digest(a, a.len()), key_digest(b, b.len()));
+
+        let mut attempt = 0u64;
+        while attempt < 64 {
+            let seed = seed_at(attempt);
+            assert_ne!(
+                full_hash(a, a.len(), seed),
+                full_hash(b, b.len(), seed),
+                "no seed can separate keys whose digests are equal"
+            );
+            attempt += 1;
+        }
+    }
+
+    /// The same hole on the short path. `to_u64_below_8` zero fills, so a key
+    /// and that key with trailing NUL bytes used to load the same word, and a
+    /// JSON key may legally contain a NUL.
+    #[test]
+    fn short_keys_differing_only_in_trailing_nuls_digest_differently() {
+        let cases: &[&[u8]] = &[b"", b"\0", b"\0\0", b"ab", b"ab\0", b"ab\0\0", b"abcdef\0"];
+        let mut i = 0;
+        while i < cases.len() {
+            let mut j = i + 1;
+            while j < cases.len() {
+                assert_ne!(
+                    key_digest(cases[i], cases[i].len()),
+                    key_digest(cases[j], cases[j].len()),
+                    "{:?} and {:?} share a digest",
+                    cases[i],
+                    cases[j]
+                );
+                j += 1;
+            }
+            i += 1;
+        }
     }
 }
