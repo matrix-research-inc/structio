@@ -126,10 +126,14 @@
 //!
 //! This is for statically known types. Reading a document you have no type
 //! for is a different matter, and [`Value`] is the tree for that case: a
-//! register map walked by path, a body forwarded unread. It is a destination
-//! like any other, not a stage every read passes through, and a value you
-//! could have declared a type for is better read into that type. See
-//! [`value`](mod@value) for what it holds and what it costs.
+//! shape nothing declares and something walks by path, the register map a
+//! device publishes, a setting stored under a key some plugin chose. It is a
+//! destination like any other, not a stage every read passes through, and a
+//! value you could have declared a type for is better read into that type. A
+//! body you forward rather than look at is a different problem again, and a
+//! tree is the wrong answer to it: [`json::Raw`] carries one
+//! through as the text that spelled it. See [`value`](mod@value) for what it
+//! holds and what it costs.
 //!
 //! A BEVE document can still be looked into without being decoded whole.
 //! [`from_beve_at`] reads the one value a JSON Pointer names and steps over

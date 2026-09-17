@@ -83,6 +83,8 @@ BEVE ignores both. A binary document has no whitespace to put anywhere, so `to_b
 
 Transcoding honours it, which is the case worth knowing about. `beve_to_json_with::<Pretty>` is the answer to "what is actually in this file": there is no schema to consult, so the shape has to come off the page.
 
+A [`json::Raw`](schemas.md#json-that-goes-through-untouched) is laid out too, at the depth it actually sits at, through the same walk [`prettify`](#text-that-is-already-json) uses. A forwarded value is usually the one part of a document that did not come from a writer here, and emitting its span verbatim would wedge an unindented blob between indented neighbours. Its tokens are still copied through as the input spelled them, so only the whitespace between them is this crate's.
+
 ## `NEW_LINES_IN_ARRAYS`
 
 On by default, which is what indenting a document usually means: every element gets a line. That is the wrong shape for numeric data, where a hundred samples become a hundred lines holding one number each. `PrettyInlineArrays` turns it off, and the setting composes with `INDENT` like any other.
@@ -236,6 +238,8 @@ It costs one `or` per member the schema claimed and one comparison per object, a
 `//` to the end of the line and `/* */` anywhere whitespace is allowed, which is JSONC. **Off** by default, a comment being no part of JSON; `AllowComments` asks for it. Glaze reads JSONC too.
 
 **Reading only.** Nothing writes a comment, because nothing holds one: a comment carries no data, so a document read under this and written back out comes back without it. **JSON only**, too. BEVE has no whitespace and so has nowhere to put one, and reading BEVE under this policy is reading it under `Standard`.
+
+A [`json::Raw`](schemas.md#json-that-goes-through-untouched) is the one thing that holds text rather than data, and it does not hold a comment either: one inside the span is stripped as the span is captured. Nothing here can write a comment back out, and a forwarded body carrying one would be refused by the next plain JSON reader that saw it. What the stripping costs depends on the span. Without a `/` in it there is no comment to find, so the span is borrowed out of the document byte for byte, exactly as it is under every other policy. With one, it goes through the minifier, and comes back owned and without the whitespace that was holding its tokens apart. The tokens themselves are the document's either way, which is the guarantee the type is for.
 
 A comment goes wherever whitespace goes: before the document, after an opening brace, either side of a colon or a comma, before a closing one, after the last value. It does not go inside a string, where `//` is two ordinary characters and always was. Block comments do not nest, so `/* /* */` is one comment and the rest is document, which is what JSONC, JSON5 and C all say.
 

@@ -338,6 +338,7 @@ Note that the second and third rows differ, and deliberately. A key you did not 
 | Tuples | Up to twelve elements |
 | Numeric | `Complex<T>`, `Matrix<T>`, `MatrixRef<'a, T>` (write only) |
 | BEVE only | `&'de [u8]` |
+| JSON only | [`json::Raw<'de>`](#json-that-goes-through-untouched), one value kept as the text that spelled it |
 | Enums | Declared with `unit_enum!` or `tagged_enum!`. Each variant carries nothing or one value, and the enum and every payload type need `Default` |
 
 `Complex` and `Matrix` are BEVE's two data-carrying extensions, and are stored as those; in JSON they take the encodings they would have had anyway, `[re,im]` and `{"layout":…,"extents":[…],"value":[…]}`, which both also read back from BEVE. A `Complex`'s components are the fixed-width numbers BEVE's class field can name: `f32`, `f64`, and the signed and unsigned integers from 8 through 128 bits. See [BEVE](beve.md#complex-numbers-and-matrices).
@@ -390,6 +391,62 @@ Every numeric read lands in an `f64`, an `i64`, a `u64`, an `i128` or a `u128`. 
 Reading the value as an `f64` and converting is not an implementation of this. The rounding is what the type exists to avoid.
 
 This is a JSON-only pair. BEVE has no untyped number -- a value carries its width and class in the header -- so a type described this way has to pick a binary form of its own, and is declared with `json_object!` unless it does.
+
+### JSON that goes through untouched
+
+A gateway that forwards a body it does not reshape has no type for that body and does not want one. `json::Raw` is the field for it: one JSON value kept as the text that spelled it, written back out the same way. A JSON-RPC envelope is the case that names itself, `params` meaning nothing to the router and everything to the handler behind it.
+
+```rust
+use structio::json::Raw;
+
+#[derive(Default)]
+struct Request<'a> {
+    method: String,
+    params: Raw<'a>,
+}
+
+structio::json_object!(['a] Request<'a> { method, params });
+
+let text = r#"{"method":"trade","params":{"qty":1.50,"px":99}}"#;
+let request: Request = structio::from_str(text)?;
+
+assert_eq!(request.method, "trade");
+assert_eq!(request.params.as_str(), r#"{"qty":1.50,"px":99}"#);
+assert_eq!(structio::to_string(&request), text);
+```
+
+`1.50` keeps its trailing zero and `qty` stays in front of `px`, because neither was ever read. The value is stepped over rather than decoded, so the field is a subslice of the document and a forwarded body costs no allocation; writing it is one copy of that run of bytes.
+
+#### `Value` is not this
+
+Both are destinations for a value with no declared type, and they are for opposite jobs. `Value` is a tree, so it sorts an object's keys, respells every number through this crate's formatters, and decodes a string's escapes, and it has nowhere to put an integer literal wider than the types it stores:
+
+```
+in : {"z":1,"a":1.0,"big":12345678901234567890123,"s":"\u0041"}
+out: {"a":1.0,"big":1.2345678901234568E22,"s":"A","z":1}
+```
+
+Every one of those is the right behaviour for a document you are going to *look at* and the wrong one for a document you are going to hand on. The body that leaves is not the body that arrived, so anything downstream that hashes it or verifies a signature over it now fails on a document nobody meant to change. Reach for `Value` to walk a document and for `Raw` to carry one.
+
+#### Declaring one
+
+`Raw` is JSON only, which is why it lives in the `json` module rather than at the crate root among the format-agnostic names. What it holds is JSON text, and BEVE has no encoding for that: written as BEVE it would have to become either a string carrying a document or a re-encoding of the value it stands for, and neither is what a caller reaching for a passthrough asked for. So a struct with a `Raw` field is declared with [`json_object!`](#one-format-only), as a struct holding a number [the conversions do not cover](#numbers-the-conversions-do-not-cover) is.
+
+#### Building one by hand
+
+`Raw::new` checks that the text really is one complete value and nothing else, which is the check `from_str` makes, and trims whitespace on either side so a caller's indentation does not land inside a document laid out by someone else. Trailing content is an error rather than something stored alongside the value: a `Raw` carrying a tail would write that tail back out into the middle of whatever document it lands in, and break it.
+
+`Raw::new_unchecked` skips that walk, for a span some earlier step already proved out: a value copied from another `Raw`, or a body a schema-aware layer has already parsed. It is a safe fn and there is nothing unsound to cause, the type holding a `&str` either way; what is unchecked is the output document, in the same way it is when you reach for `Writer::raw`. There is deliberately no `From<&str>` and no `FromStr`, so a span nobody validated is visible at the call site rather than hidden behind an `into()`.
+
+`into_owned` cuts the borrow, for a value that has to outlive the document it came from: a body parked on a queue, or a `params` held until the worker that will forward it is free. A span that is already owned moves without copying.
+
+#### The default is `null`
+
+Not the empty string, which is what a newtype over `Cow<str>` defaults to on its own. A `Raw` writes its span verbatim, so an empty span writes nothing at all and a member that was merely never filled comes out as `{"params":}`: not a document any reader will accept, and not one this crate can otherwise produce. `null` closes that and costs nothing to close, being one complete value like any other and the JSON for the member that has no value. It is also what [`SKIP_NULL`](options.md#skip_null) leaves out, so the member a schema calls optional is safe to fill and safe to leave alone.
+
+#### The two policies that meet one
+
+[`PRETTY`](options.md#pretty) lays the span out again at the depth it actually sits at, through the same walk `prettify` uses, so an indented document has no unindented blob in the middle of it. That walk is `json::prettify_value_into`, a public call, so a passthrough type of your own lays out the same way this one does. [`ALLOW_COMMENTS`](options.md#allow_comments) strips comments out of the span as it is captured, which it has to do only for a span that holds a `/`: without one there is no comment to find, and the span is borrowed byte for byte as under any other policy. A span that does hold one is minified into an owned string, losing the whitespace between its tokens and none of the tokens. Both tests are compile-time constants, so the default policy pays for neither.
 
 ## Types you do not own
 

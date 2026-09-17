@@ -168,6 +168,13 @@ impl<O: Options> Feed<O> {
     }
 
     /// The next complete value, read into one you already have.
+    ///
+    /// The owning half of the pair, on the same terms as
+    /// [`Documents::next_value_into`](crate::Documents::next_value_into):
+    /// `value` outlives the call and survives the window compacting under it,
+    /// so the `for<'de>` bound is what keeps a type that borrows from the
+    /// window out of here. Such a type uses [`Feed::next_value`] and does not
+    /// get the allocation reuse.
     pub fn next_value_into<T: for<'de> Read<'de>>(
         &mut self,
         value: &mut T,

@@ -46,6 +46,10 @@ Three ways to take values out:
 - `next_value::<T>()` is the borrowing form. The value may point into the stream buffer, so the borrow pins the reader until it is dropped, which is what lets `&'de str` fields work.
 - `next_value_into(&mut value)` reads into a value you already have. A loop over a million records of the same shape settles into doing no allocation at all.
 
+The last two are not interchangeable, and which one a type can use is decided by whether it borrows. `next_value` hands back a value tied to the borrow of the reader, which is what pins the window while a field points into it. `next_value_into` takes a `&mut T` that was alive before the window was filled and is still alive after the window has compacted the bytes the value came out of, so its `T` has to be readable under *any* input lifetime: `T: for<'de> Read<'de>`, which a type with a `'de` field does not satisfy and cannot be made to. A `T` that borrowed from the window would be left pointing at bytes that have moved.
+
+**A borrowing type therefore has `next_value` and nothing else**, `iter` carrying the same `for<'de>` bound, and it does not get the allocation reuse. That costs nothing for the fields that borrow, which are subslices of the window either way, and it costs a rebuild per value for any owned field standing beside them. It is a real limitation of the streaming path rather than a bound waiting to be loosened: the alternative is not slower, it is unsound. [`json::Raw`](schemas.md#json-that-goes-through-untouched) is one such type, being a span of the document by construction.
+
 `with_options::<O>()` sets the [read policy](options.md) for every value the stream produces, alongside `max_value` and `read_size` in the same builder chain. Reading a subset of each record wants `SkipUnknown`, since the default refuses the first key the destination does not claim:
 
 ```rust

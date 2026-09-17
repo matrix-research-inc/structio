@@ -780,17 +780,34 @@ fn nesting_balances_the_depth_counter() {
 
 #[test]
 fn a_document_nested_past_the_limit_is_still_refused() {
-    // The counter has to keep working, not merely stay balanced.
-    let deep = format!(
-        "{}{}{}",
-        r#"{"t":"Branch","inner":"#.repeat(300),
-        r#"{"t":"Leaf"}"#,
-        "}".repeat(300)
-    );
-    assert_eq!(
-        from_str::<Node>(&deep).unwrap_err().code,
-        ErrorCode::ExceededMaxDepth
-    );
+    // On a stack this test owns, rather than the one a test harness thread
+    // happens to hand it. What is under test is the parser's depth counter,
+    // and reaching that counter means standing `MAX_DEPTH` reader frames on
+    // top of each other: an internally tagged read is the longest such cycle
+    // in the crate, and an unoptimized frame is large. Against a default
+    // harness stack the two are close enough that a change adding a few bytes
+    // to any reader frame would end this test as a bare `stack overflow`,
+    // naming neither the change that caused it nor the limit it was supposed
+    // to be checking. Room the test controls keeps the failure it reports the
+    // failure it is looking for.
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            // The counter has to keep working, not merely stay balanced.
+            let deep = format!(
+                "{}{}{}",
+                r#"{"t":"Branch","inner":"#.repeat(300),
+                r#"{"t":"Leaf"}"#,
+                "}".repeat(300)
+            );
+            assert_eq!(
+                from_str::<Node>(&deep).unwrap_err().code,
+                ErrorCode::ExceededMaxDepth
+            );
+        })
+        .expect("spawning the deep-nesting thread")
+        .join()
+        .expect("the deep-nesting assertions panicked");
 }
 
 // -----------------------------------------------------------------------

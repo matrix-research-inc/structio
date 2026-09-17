@@ -4,6 +4,14 @@ Notable changes to structio. The format follows [Keep a Changelog](https://keepa
 
 Before 1.0 the API is not frozen: a minor bump may break it, and what broke is listed here.
 
+## [Unreleased]
+
+### Added
+
+- **`json::Raw`, one JSON value carried through as its text.** A field that captures the exact bytes of a value on read and emits them unchanged on write, so a forwarded body keeps its key order, its number spellings and its escapes: what `Value` is not, being a tree that sorts, respells and decodes. Reading borrows the span out of the document, and under `ALLOW_COMMENTS` strips the comments out of a span that carries any, owning that one; writing is one copy of those bytes, laid out again at the right depth under `PRETTY`. JSON only, so a struct with one is declared with `json_object!`. [docs/schemas.md](docs/schemas.md#json-that-goes-through-untouched) has the rest.
+- **`json::prettify_value_into`.** Lays one JSON value out into a `Writer` that is already part-way through a document, at that writer's current depth and under its policy. `json::Raw` writes through it under `PRETTY`, and it is what a passthrough type of your own needs so that a forwarded value is indented against its neighbours rather than emitted as a blob.
+- **`json::Parser::rest_str`.** The `&str` counterpart of `rest`, for a hand-written `Read` impl capturing a span: the input's UTF-8 validity is already known, so nothing has to establish it a second time.
+
 ## [0.4.0] - 2026-09-04
 
 ### Changed

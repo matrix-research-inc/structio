@@ -16,6 +16,21 @@ The offset is a byte offset into the input you passed. It is attached once, at t
 
 **The offset indexes a buffer you must still be holding.** It is a position, not a copy of anything, so an `Error` that outlives its document knows an offset into a string nobody has any more. That is the normal shape when a parse happens behind an API that returns a domain error: the buffer goes out of scope at the end of the function and the offset goes with it. Render at the parse site with `display_with` and carry the `String`, or keep the input alive as long as the error. The `key` below is the part that stays meaningful either way.
 
+## Two error currencies, and why
+
+A failure is reported in one of two currencies, and which one a call uses says what that call knows.
+
+- `Error`, a code with an offset, is what a public entry point returns: `from_str`, `prettify_with`, `minify_with` and the rest. The offset is a position in the input *that call was handed*.
+- `ErrorCode`, the bare code, is what the traits return: `json::Read::read`, `beve::Read::read`, and every step behind them. No position, because the position is the parser's to attach and it is attached once, at the entry point.
+
+The seam between them is where an implementer meets it. A `Read` impl that composes a text-to-text call is working in both currencies at once: `json::Raw` runs a span through `minify_with` to strip comments out of it, gets back an `Error` whose offset is into *the span*, and has to return an `ErrorCode` up a parse of *the document the span came out of*. Those are different coordinate systems. The offset does not survive the crossing, so the code travels and the offset is dropped, the impl winding its parser back to the value first so that the offset the entry point eventually attaches names the value that failed.
+
+That is a deliberate seam, and the two ways of closing it were considered and rejected.
+
+A **converting entry point**, some minify that returned the code alone, would be a small convenience that makes the wrong thing easy. It would hand back a positionless code at exactly the moment a caller is tempted to put a position back on it out of whatever offset is nearby, and an offset into a span names the wrong byte of the document with complete confidence. Better that the discard happen in the open, on the line where the impl knows both coordinate systems and can see that it is giving one up.
+
+**Rebasable offsets**, an `Error` that could be shifted by where its input sat inside a larger one, would be right where the span is a subslice of the document and wrong wherever it is not. A `Raw` read under `ALLOW_COMMENTS` holds a minified copy of its span, and byte 7 of that copy is no byte of the document in particular. Getting there means touching every error path in the crate, for a case that is close to unreachable anyway: the minifier refuses three things, and a span the parser has already stepped over holds none of them.
+
 ## The key
 
 The offset answers *where*. Read next to `display_with` that is usually the whole answer, because the caret lands on the byte that was wrong. There is one code where it cannot be: a member that is not in the document has no position of its own, so the cursor is wound back to the enclosing object and the offset names the object. `key` names the member.
