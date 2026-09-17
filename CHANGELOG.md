@@ -24,6 +24,8 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 ### Fixed
 
+- **The whole-key hash now folds in the key length.** It read whole 8-byte chunks and then an overlapping tail, so two keys differing only in the bytes between them, such as `field_name_10500_value` and `field_name_105000_value`, hashed the same under every seed and cost the object its hash: it read under a linear scan instead. Keys shorter than 8 bytes were zero filled, so trailing NULs vanished the same way. Never a wrong field, since a candidate is always confirmed by a full comparison, only a slower read.
+
 - **A declared type does not need `Default`.** [docs/derive.md](docs/derive.md) said it did, flatly, contradicting [docs/schemas.md](docs/schemas.md). `Default` is required where a read constructs a value: the entry points that return one, an `Option`'s payload, a growing `Vec`'s tail, a map's values, an enum variant's payload. A type that is only ever written needs none, and the derive's examples no longer imply otherwise.
 - **Where an error out of a declaration lands.** The same file promised that a field whose type has no `Read` impl is reported at that field. One macro call covers every field, so it is reported at the declaration: the struct's name under the derive, the whole invocation under a hand-written one. What does land where it was written is the derive's own refusals and an adapter named by `with = ".."`.
 
