@@ -36,7 +36,32 @@ structio::object!(Camera as "camelCase" {
 });
 ```
 
-The struct's own `Default` is still required, for the reason it is required of a declared type: structio reads into an existing value, and the entry points build that value before reading. The derive does not generate it.
+The derive does not generate `Default`, and whether the type needs one is the same question it is for a declared type: `from_str` and `from_slice`, and their BEVE counterparts, build the value before reading into it, as does anything constructed during a read. `Camera` has one because something reads it. A type nothing reads carries none:
+
+```rust
+#[derive(structio::Structio)]
+struct Reading {
+    channel: u32,
+    celsius: f64,
+}
+
+fn main() {
+    let r = Reading {
+        channel: 3,
+        celsius: 21.5,
+    };
+
+    let text = structio::to_string(&r);
+    assert_eq!(text, r#"{"channel":3,"celsius":21.5}"#);
+
+    // The same two fields as a BEVE object. Nothing reads a `Reading` back in
+    // either format, so the type never needs a `Default`.
+    let bytes = structio::beve::to_vec(&r);
+    assert!(!bytes.is_empty());
+}
+```
+
+That declares and writes in both formats without a `Default`. See [`Default` is required where values are constructed](schemas.md#default-is-required-where-values-are-constructed).
 
 ## Attributes
 
@@ -75,7 +100,7 @@ On a positional struct only `skip` applies. A key, a required marker or an adapt
 The one thing a `macro_rules!` declaration structurally cannot do is see the type's generics, so a declared generic type restates them, bounds included. The derive reads them off the type:
 
 ```rust
-#[derive(Default, structio::Structio)]
+#[derive(structio::Structio)]
 struct Page<'a, T: Clone, const N: usize>
 where
     T: PartialEq,
@@ -124,9 +149,11 @@ A variant carries at most one value, and the value is a type of its own. That is
 
 ## Where errors land
 
-An attribute the derive refuses is reported at the attribute: an unknown name, a value where none is taken, a rule that is not a case rule, `rename` on a skipped field, `tag` on a struct, `json` and `beve` together, a name given twice. These are the derive's own messages, and they say what to do instead.
+An attribute the derive refuses is reported at the attribute: an unknown name, a value where none is taken, a rule that is not a case rule, `rename` on a skipped field, `tag` on a struct, `json` and `beve` together, a name given twice. A `where` predicate the derive cannot place is reported at the predicate. These are the derive's own messages, and they say what to do instead.
 
-Everything the derive emits carries the span of the token it came from, so an error the macro or the type checker raises about a field, a type with no `Read` impl say, points at that field in the struct rather than at the derive line.
+A type the derive repeats back keeps the span you wrote it at, so the adapter of a `with = ".."` is reported at the string that named it.
+
+An error out of the expansion lands on the declaration as a whole: a field whose type has no `Read` impl is reported at the struct's name, and at the whole invocation for a type declared by hand. One macro call covers every field, so there is one call site to point at. The message names the type that is missing the impl and points at its definition, which is where the fix goes.
 
 ## What it refuses
 
@@ -140,17 +167,19 @@ Everything the derive emits carries the span of the token it came from, so an er
 
 The derive ships in three stages. This is stage 1, which covers everything the macros can express. Each later stage is a minor release, and an attribute from it on an earlier build is a compile error naming the stage.
 
-**Stage 2** adds the shapes the macros cannot declare, which the derive generates directly through the `ReadObject`, `WriteObject` and `Keys` traits:
+**Stage 2** adds the shapes the macros have no syntax for. Most are generated directly through the `ReadObject`, `WriteObject` and `Keys` traits; `transparent` has no object around it and delegates instead:
 
 - **Named-field variants**, `Window { size: u32, guard: u32 }`, written as `{"kind":"window","size":8,"guard":2}`. Reading goes through a hidden payload struct per variant; writing borrows the fields in place.
 - **`tag = "kind", content = "data"`**, adjacent tagging: `{"kind":"NotTracking","data":{"mode":2}}`, with the two members accepted in either order.
 - **`alias = "key"`** on a field or variant: one more key accepted on read, pointing at the same field.
+- **`transparent`**, a one-field struct written as that field: `Read` and `Write` delegate, with no object and no keys around it.
+- **`write_only`**, the `Keys` and `WriteObject` half and no read impl, for a type that is only ever written: a declaration generates both directions, so today every field type has to satisfy a read the program never performs.
 
 **Stage 3** adds per-field policy:
 
 - **`skip_if = "path"`** leaves the member out of the output whenever `path(&field)` is true, under every writer policy. It is the type author's statement about that field and does not interact with `SkipNull`, which stays about `Option`. The alternative, writing `null` under the default policy, would put `null` where a reader expects an array.
 - **`default`** on the type generates its `Default` impl, with each field taking `default = "path"` when given and `Default::default()` otherwise. The read model is untouched: absence is still "keeps what the destination held", and the destination now holds the right thing.
-- **`transparent`**, a one-field struct written as that field. **`write_only`**, `Write` and no `Read`, for a type that borrows what it writes. **`skip_read`** and **`skip_write`**.
+- **`skip_read`** and **`skip_write`** put a field on the wire in one direction only.
 
 Not planned: `flatten`, which changes the shape of the object the reader sees and would need a member's keys merged into the parent's map, and `deny_unknown_fields`, which is a [read policy](options.md) and stays one.
 
@@ -168,13 +197,13 @@ Not planned: `flatten`, which changes the shape of the object the reader sees an
 | `#[serde(tag = "..", content = "..")]` | stage 2 | |
 | `#[serde(skip_serializing_if = "..")]` | `skip_if`, stage 3 | Omits under every policy. |
 | `#[serde(default = "..")]` | `default`, stage 3 | Generates `Default`; the reader is unchanged. |
-| `#[serde(transparent)]` | stage 3 | |
+| `#[serde(transparent)]` | stage 2 | |
 | `#[serde(skip_serializing)]` / `skip_deserializing` | `skip_write` / `skip_read`, stage 3 | |
 | `#[serde(deny_unknown_fields)]` | none | The default policy already refuses unknown keys; `SkipUnknown` steps over them. A per-type override is not planned. |
 | `#[serde(flatten)]` | none | Not planned. |
 | `#[serde(untagged)]` | none | A value with no tag has no name to look up. |
 | `#[serde(borrow)]` | not needed | A lifetime on the type is the input lifetime. |
-| `#[serde(default)]` with no path | `#[derive(Default)]` | Required anyway. |
+| `#[serde(default)]` with no path | `#[derive(Default)]` | A missing key keeps what the destination held, and the entry points that return a value start from `Default`. |
 
 ## Cost
 

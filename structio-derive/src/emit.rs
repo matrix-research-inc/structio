@@ -1,9 +1,14 @@
 //! From the shape of the type to the declaration macro that describes it.
 //!
-//! Every token that came from the user goes out under its own span, so an
-//! error the macro raises about a field points at that field. Tokens the
-//! derive adds, the macro's name and the bounds it appends, are spanned at
-//! the type's name.
+//! Every token that came from the user goes out under its own span, so a type
+//! the derive repeats back, the adapter of a `with = ".."` among them, is
+//! reported where it was written. Tokens the derive adds, the macro's name and
+//! the bounds it appends, carry the type's name instead.
+//!
+//! That is also where an error out of the expansion lands. When a field's type
+//! has no `Read` impl, one macro call covers every field, so the call site the
+//! type checker has to point at is the declaration as a whole rather than the
+//! field that caused it.
 
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 

@@ -50,3 +50,7 @@ harness = false
 [[test]]
 name = "derive"
 required-features = ["derive"]
+
+[[example]]
+name = "derive"
+required-features = ["derive"]

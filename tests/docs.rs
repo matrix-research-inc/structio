@@ -85,4 +85,12 @@ fn docs_quote_the_example_verbatim() {
     // An adapter is four impls whose signatures nobody remembers, so the
     // documented ones have to be the ones that compile.
     assert_quotes("docs/schemas.md", "### Adapters", "examples/adapters.rs");
+    // Whether a derived type needs a `Default` is the question the derive gets
+    // asked most, and the answer is a type the compiler either accepts or does
+    // not, so the documented one is the one that builds.
+    assert_quotes(
+        "docs/derive.md",
+        "A type nothing reads carries none:",
+        "examples/derive.rs",
+    );
 }

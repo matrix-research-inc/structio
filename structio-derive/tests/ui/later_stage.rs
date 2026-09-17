@@ -11,4 +11,16 @@ enum Fix {
     Valid,
 }
 
+#[derive(structio::Structio)]
+#[structio(transparent)]
+struct Meter {
+    reading: f64,
+}
+
+#[derive(structio::Structio)]
+#[structio(write_only)]
+struct Gauge {
+    label: String,
+}
+
 fn main() {}

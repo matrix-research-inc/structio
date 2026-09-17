@@ -57,10 +57,8 @@ const CASES: &[&str] = &[
 /// hunting for a typo.
 fn stage_of(name: &str) -> Option<u8> {
     match name {
-        "content" | "alias" => Some(2),
-        "default" | "transparent" | "write_only" | "skip_if" | "skip_read" | "skip_write" => {
-            Some(3)
-        }
+        "content" | "alias" | "transparent" | "write_only" => Some(2),
+        "default" | "skip_if" | "skip_read" | "skip_write" => Some(3),
         _ => None,
     }
 }
