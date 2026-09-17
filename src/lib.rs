@@ -317,7 +317,7 @@ pub use options::{
     AllowComments, Options, Pretty, PrettyInlineArrays, RequireKeys, SkipNull, SkipUnknown,
     Standard,
 };
-pub use traits::{Elements, Keys, ReadWrite, Same, Variants, assert_tag_not_a_field};
+pub use traits::{Elements, Keys, ReadWrite, Same, Variants, Write, assert_tag_not_a_field};
 pub use value::{Number, Object, Value, from_value, from_value_with, to_value};
 
 /// Declare a type's schema from its definition: `#[derive(Structio)]`.
