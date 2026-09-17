@@ -1,4 +1,4 @@
-error: `required` is a rule about reading: a document that leaves this member out is `MissingKey`. A `write_only` type is never read, so there is nothing to require
+error: `required` is a rule about reading: a document that leaves this member out is `MissingKey`. A type declared `write_only` is never read, so there is nothing to require
  --> tests/ui/write_only_misuse.rs:4:16
   |
 4 |     #[structio(required)]

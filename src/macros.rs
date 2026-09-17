@@ -13,6 +13,39 @@
 //! A variant's name goes on the wire and comes back through the same perfect
 //! hash the keys use, so an enum costs a struct's lookup and nothing more.
 
+/// The diagnostic for `read_only`, which the documentation's "there is no
+/// `read_only`" is precisely the sentence that invites someone to try.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __no_read_only {
+    () => {
+        ::core::compile_error!(
+            "structio: a declaration narrows to the write half or to neither, \
+             so there is no `read_only`. A type that is only ever read still \
+             generates its write impls, and its fields still need them: a \
+             field with nothing to say on the way out writes `null`, with \
+             `is_null` returning `true` so that `SkipNull` drops the member"
+        );
+    };
+}
+
+/// The diagnostic for a type path whose first segment is a `write_only`
+/// module, which the marker eats: such a path reaches a declaration as a
+/// stray `::`, and without this the failure names a crate nobody wrote.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __write_only_is_the_marker {
+    () => {
+        ::core::compile_error!(
+            "structio: `write_only` in front of a declaration is the marker \
+             that narrows it to the write half, so `write_only::..` was read \
+             as that marker followed by a stray `::`. Name the type without \
+             the leading `::`, or bring it into scope with a `use` and name \
+             it there"
+        );
+    };
+}
+
 /// Declare a struct's schema, for every format.
 ///
 /// Keys default to the field names. Give an explicit key with `"name" =>
@@ -250,6 +283,8 @@
 /// impl, and the one worth being able to drop.
 #[macro_export]
 macro_rules! object {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__declare!([write] __both_write_impls $($t)*); };
     ($($t:tt)*) => { $crate::__declare!([both] __both_impls $($t)*); };
 }
@@ -262,6 +297,8 @@ macro_rules! object {
 /// generated for.
 #[macro_export]
 macro_rules! json_object {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__declare!([write] __json_write_impls $($t)*); };
     ($($t:tt)*) => { $crate::__declare!([both] __json_impls $($t)*); };
 }
@@ -282,6 +319,8 @@ macro_rules! json_object {
 /// ```
 #[macro_export]
 macro_rules! beve_object {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__declare!([write] __beve_write_impls $($t)*); };
     ($($t:tt)*) => { $crate::__declare!([both] __beve_impls $($t)*); };
 }
@@ -544,15 +583,17 @@ macro_rules! __keys_impl {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __required_direction {
-    ([$dir:tt]) => {};
-    ([both] $req:ident) => {};
-    ([write] $req:ident) => {
+    ([write] required) => {
         ::core::compile_error!(
             "`#[required]` is a rule about reading: a document that leaves \
-             this member out is `MissingKey`. A `write_only` declaration is \
+             this member out is `MissingKey`. A type declared `write_only` is \
              never read, so there is nothing to require"
         )
     };
+    // Any other marker, in either direction: a misspelling is
+    // [`__is_required!`](crate::__is_required)'s to report, and this must not
+    // speak over it with a rule the declaration never named.
+    ([$dir:tt] $($marker:ident)?) => {};
 }
 
 /// Both directions, for a declaration that narrowed neither. The two halves
@@ -1158,6 +1199,8 @@ macro_rules! __beve_is_null_as {
 /// [`object!`](crate::object#one-direction).
 #[macro_export]
 macro_rules! array {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__declare_array!(__both_write_array_impls $($t)*); };
     ($($t:tt)*) => { $crate::__declare_array!(__both_array_impls $($t)*); };
 }
@@ -1168,6 +1211,8 @@ macro_rules! array {
 /// to want it are [`json_object!`]'s.
 #[macro_export]
 macro_rules! json_array {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__declare_array!(__json_write_array_impls $($t)*); };
     ($($t:tt)*) => { $crate::__declare_array!(__json_array_impls $($t)*); };
 }
@@ -1178,6 +1223,8 @@ macro_rules! json_array {
 /// `&[u8]` element needs.
 #[macro_export]
 macro_rules! beve_array {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__declare_array!(__beve_write_array_impls $($t)*); };
     ($($t:tt)*) => { $crate::__declare_array!(__beve_array_impls $($t)*); };
 }
@@ -1409,75 +1456,29 @@ macro_rules! __json_write_array_impls {
     };
 }
 
+/// Both directions, for [`beve_array!`](crate::beve_array). The two halves
+/// are separate macros so that `write_only` can ask for one of them.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __beve_array_impls {
-    ($($t:tt)*) => { $crate::__beve_array_select!(__beve_array_body $($t)*); };
-}
-
-/// The write half, which `array!(write_only ..)` emits by itself.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __beve_write_array_impls {
-    ($($t:tt)*) => { $crate::__beve_array_select!(__beve_write_array_body $($t)*); };
-}
-
-/// Which of the two ways a positional struct is stored the declaration asked
-/// for, settled once for both directions: `$typed` holds the two items that
-/// make it a typed array, or nothing.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __beve_array_select {
-    // With an element type, the struct is stored the way a run of that type is
-    // stored: one header for the lot, then the elements' payloads back to
-    // back. Reading is unchanged, since the array driver takes either form.
-    ($b:ident [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:ident),* $(,)? ]) => {
-        $crate::$b!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ] {
-            const ARRAY: ::core::option::Option<&'static [u8]> =
-                <$elem as $crate::beve::Write>::ARRAY;
-
-            // The fields are gathered into a block first, because a payload is
-            // one contiguous run and a struct's fields are not required to be
-            // laid out as one. It costs a copy of the values, which for the
-            // types that have a typed array is a few registers, and it is what
-            // lets the element type decide the encoding: a run of booleans
-            // packs to bits here exactly as it does in a `Vec<bool>`.
-            #[inline]
-            fn write_payload<O: $crate::Options>(
-                &self,
-                w: &mut $crate::beve::Writer<'_, O>,
-            ) {
-                <$elem as $crate::beve::Write>::write_payload(&[$( self.$field ),*], w);
-            }
-        });
-    };
-    ($b:ident [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* $(,)? ]) => {
-        $crate::$b!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ] {});
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($body:tt)* ]) => {
+        $crate::__beve_read_array_impls!([$($rgen)*] [$($wgen)*] $ty [ $($body)* ]);
+        $crate::__beve_write_array_impls!([$($rgen)*] [$($wgen)*] $ty [ $($body)* ]);
     };
 }
 
-/// The BEVE impls themselves, with `$typed` holding the two items that make a
-/// struct a typed array, or nothing.
+/// The read half of a positional declaration.
+///
+/// An element type says how the elements are *stored*, which is the write
+/// half's business: the array driver takes either form on the way in, so this
+/// drops it exactly as the JSON side does.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __beve_array_body {
-    (
-        [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* ] { $($typed:tt)* }
-    ) => {
-        $crate::__beve_read_array_body!([$de $($rgen)*] [$($wgen)*] $ty [ $($field),* ] {});
-        $crate::__beve_write_array_body!(
-            [$de $($rgen)*] [$($wgen)*] $ty [ $($field),* ] { $($typed)* });
+macro_rules! __beve_read_array_impls {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:ident),* $(,)? ]) => {
+        $crate::__beve_read_array_impls!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ]);
     };
-}
-
-/// The read half. A typed array's two extra items are the write half's, the
-/// array driver taking either form on the way in, so `$typed` arrives empty.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __beve_read_array_body {
-    (
-        [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* ] { }
-    ) => {
+    ([$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* $(,)? ]) => {
         impl<$de $($rgen)*> $crate::beve::ReadArray<$de> for $ty {
             #[inline]
             #[allow(unused_assignments, unused_variables, unused_mut)]
@@ -1506,6 +1507,40 @@ macro_rules! __beve_read_array_body {
                 r.read_array(self)
             }
         }
+    };
+}
+
+/// The write half, which `array!(write_only ..)` emits by itself.
+///
+/// With an element type, the struct is stored the way a run of that type is
+/// stored: one header for the lot, then the elements' payloads back to back.
+/// The two arms differ only in those two items, so the impls themselves are
+/// [`__beve_write_array_body!`](crate::__beve_write_array_body).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __beve_write_array_impls {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:ident),* $(,)? ]) => {
+        $crate::__beve_write_array_body!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ] {
+            const ARRAY: ::core::option::Option<&'static [u8]> =
+                <$elem as $crate::beve::Write>::ARRAY;
+
+            // The fields are gathered into a block first, because a payload is
+            // one contiguous run and a struct's fields are not required to be
+            // laid out as one. It costs a copy of the values, which for the
+            // types that have a typed array is a few registers, and it is what
+            // lets the element type decide the encoding: a run of booleans
+            // packs to bits here exactly as it does in a `Vec<bool>`.
+            #[inline]
+            fn write_payload<O: $crate::Options>(
+                &self,
+                w: &mut $crate::beve::Writer<'_, O>,
+            ) {
+                <$elem as $crate::beve::Write>::write_payload(&[$( self.$field ),*], w);
+            }
+        });
+    };
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* $(,)? ]) => {
+        $crate::__beve_write_array_body!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ] {});
     };
 }
 
@@ -1722,6 +1757,8 @@ macro_rules! __beve_write_array_body {
 /// [`object!`](crate::object#one-direction).
 #[macro_export]
 macro_rules! unit_enum {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__unit_enum!(__both_write_unit_enum_impls $($t)*); };
     ($($t:tt)*) => { $crate::__unit_enum!(__both_unit_enum_impls $($t)*); };
 }
@@ -1927,6 +1964,8 @@ macro_rules! __unit_enum {
 /// [`object!`](crate::object#one-direction).
 #[macro_export]
 macro_rules! tagged_enum {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__declare_enum!(__both_write_enum_impls $($t)*); };
     ($($t:tt)*) => { $crate::__declare_enum!(__both_enum_impls $($t)*); };
 }
@@ -1937,6 +1976,8 @@ macro_rules! tagged_enum {
 /// reasons to want it are [`json_object!`]'s.
 #[macro_export]
 macro_rules! json_tagged_enum {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__declare_enum!(__json_write_enum_impls $($t)*); };
     ($($t:tt)*) => { $crate::__declare_enum!(__json_enum_impls $($t)*); };
 }
@@ -1947,6 +1988,8 @@ macro_rules! json_tagged_enum {
 /// `&[u8]` payload needs.
 #[macro_export]
 macro_rules! beve_tagged_enum {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__declare_enum!(__beve_write_enum_impls $($t)*); };
     ($($t:tt)*) => { $crate::__declare_enum!(__beve_enum_impls $($t)*); };
 }
@@ -2206,35 +2249,23 @@ macro_rules! __variants_impl {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __json_enum_impls {
-    // A tag key: the name goes inside the payload's object, and the impls are
-    // a different set rather than a variation on these.
-    (
-        [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty { $($body:tt)* }
-    ) => {
-        $crate::__json_internal_enum_impls!(
-            [$($rgen)*] [$($wgen)*] [$case] [$tag] $ty { $($body)* });
-    };
-    (
-        [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
-        }
-    ) => {
-        $crate::__json_read_enum_impls!([$de $($rgen)*] [$($wgen)*] [$case] [] $ty {
-            $($($name =>)? $variant $(($($payload)*))?),*
-        });
-        $crate::__json_write_enum_impls!([$de $($rgen)*] [$($wgen)*] [$case] [] $ty {
-            $($($name =>)? $variant $(($($payload)*))?),*
-        });
+    ($($t:tt)*) => {
+        $crate::__json_read_enum_impls!($($t)*);
+        $crate::__json_write_enum_impls!($($t)*);
     };
 }
 
-/// The read half of an externally tagged enum. The internally tagged form
-/// reaches its own pair through
-/// [`__json_internal_enum_impls!`](crate::__json_internal_enum_impls), so
-/// there is no tag arm here.
+/// The read half of an enum, dispatching on the tagging convention the
+/// declaration asked for as the write half does.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __json_read_enum_impls {
+    (
+        [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty { $($body:tt)* }
+    ) => {
+        $crate::__json_read_internal_enum_impls!(
+            [$($rgen)*] [$($wgen)*] [$case] [$tag] $ty { $($body)* });
+    };
     (
         [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
             $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
@@ -2424,21 +2455,6 @@ macro_rules! __json_read_payload {
     };
 }
 
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __json_internal_enum_impls {
-    (
-        [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
-        }
-    ) => {
-        $crate::__json_read_internal_enum_impls!(
-            [$de $($rgen)*] [$($wgen)*] [$case] [$tag] $ty { $($($name =>)? $variant $(($($payload)*))?),* });
-        $crate::__json_write_internal_enum_impls!(
-            [$de $($rgen)*] [$($wgen)*] [$case] [$tag] $ty { $($($name =>)? $variant $(($($payload)*))?),* });
-    };
-}
-
 /// The read half of an internally tagged enum.
 #[doc(hidden)]
 #[macro_export]
@@ -2579,21 +2595,6 @@ macro_rules! __json_read_internal {
         } else {
             ::core::result::Result::Ok(false)
         }
-    };
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __beve_internal_enum_impls {
-    (
-        [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
-        }
-    ) => {
-        $crate::__beve_read_internal_enum_impls!(
-            [$de $($rgen)*] [$($wgen)*] [$case] [$tag] $ty { $($($name =>)? $variant $(($($payload)*))?),* });
-        $crate::__beve_write_internal_enum_impls!(
-            [$de $($rgen)*] [$($wgen)*] [$case] [$tag] $ty { $($($name =>)? $variant $(($($payload)*))?),* });
     };
 }
 
@@ -2767,139 +2768,30 @@ macro_rules! __write_variant {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __beve_enum_impls {
-    // A tag key, for [`__json_enum_impls!`](crate::__json_enum_impls)'s reason.
+    ($($t:tt)*) => {
+        $crate::__beve_read_enum_impls!($($t)*);
+        $crate::__beve_write_enum_impls!($($t)*);
+    };
+}
+
+/// The read half of an enum, dispatching on the tagging convention the
+/// declaration asked for as the write half does.
+///
+/// A unit enum reaches the second arm too: its string-array packing is the
+/// write half's, the enum driver taking either form on the way in.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __beve_read_enum_impls {
     (
         [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty { $($body:tt)* }
     ) => {
-        $crate::__beve_internal_enum_impls!(
+        $crate::__beve_read_internal_enum_impls!(
             [$($rgen)*] [$($wgen)*] [$case] [$tag] $ty { $($body)* });
     };
     (
-        [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
+        [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
             $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
         }
-    ) => {
-        $crate::__beve_enum_body!([$($rgen)*] [$($wgen)*] [$case] $ty {
-            $($($name =>)? $variant $(($($payload)*))?),*
-        } {});
-    };
-}
-
-/// The write half, which `tagged_enum!(write_only ..)` emits by itself,
-/// dispatching on the tagging convention as the both-direction form does.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __beve_write_enum_impls {
-    (
-        [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty { $($body:tt)* }
-    ) => {
-        $crate::__beve_write_internal_enum_impls!(
-            [$($rgen)*] [$($wgen)*] [$case] [$tag] $ty { $($body)* });
-    };
-    (
-        [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
-        }
-    ) => {
-        $crate::__beve_write_enum_body!([$($rgen)*] [$($wgen)*] [$case] $ty {
-            $($($name =>)? $variant $(($($payload)*))?),*
-        } {});
-    };
-}
-
-/// The BEVE impls for [`unit_enum!`](crate::unit_enum), which are the tagged
-/// ones plus a typed array.
-///
-/// A unit enum's value is a string and can be nothing else, so a run of them is
-/// a **string array**: one header for the lot and a length-prefixed name per
-/// element, exactly as a `Vec<String>` is stored, rather than a generic array
-/// carrying a string header per element. Nothing on the reading side changes,
-/// since the sequence driver installs a typed array's element header and hands
-/// out one value either way, so the two forms stay interchangeable.
-///
-/// [`tagged_enum!`](crate::tagged_enum) cannot do this even for a declaration
-/// that happens to be all unit variants: `ARRAY` is one constant for the type,
-/// and a variant carrying a value writes an object.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __beve_unit_enum_impls {
-    ($($t:tt)*) => { $crate::__beve_unit_enum_select!(__beve_enum_body $($t)*); };
-}
-
-/// The write half, which `unit_enum!(write_only ..)` emits by itself.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __beve_write_unit_enum_impls {
-    ($($t:tt)*) => { $crate::__beve_unit_enum_select!(__beve_write_enum_body $($t)*); };
-}
-
-/// The string-array packing that makes a run of a unit enum one typed array,
-/// written once for both directions.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __beve_unit_enum_select {
-    (
-        $b:ident [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($($name:literal =>)? $variant:ident),* $(,)?
-        }
-    ) => {
-        $crate::$b!([$($rgen)*] [$($wgen)*] [$case] $ty {
-            $($($name =>)? $variant),*
-        } {
-            const ARRAY: ::core::option::Option<&'static [u8]> =
-                ::core::option::Option::Some(&[$crate::beve::header::STRING_ARRAY]);
-
-            #[inline]
-            fn write_payload<O: $crate::Options>(
-                items: &[Self],
-                w: &mut $crate::beve::Writer<'_, O>,
-            ) where
-                Self: ::core::marker::Sized,
-            {
-                // The header and count are already out, so an element is its
-                // name with a length in front and nothing else. A real `match`
-                // here, where `write` needs a chain, because this macro's own
-                // matcher has already refused a variant that carries a value:
-                // every arm has the same shape, so nothing has to branch and
-                // the compiler checks the arms cover the enum.
-                for item in items {
-                    w.write_str_body(match item {
-                        $( Self::$variant => $crate::__json_key!([$case] $($name)? [$variant]) ),*
-                    });
-                }
-            }
-        });
-    };
-}
-
-/// The BEVE impls themselves, with `$typed` holding the two items that make a
-/// run of this enum a string array, or nothing.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __beve_enum_body {
-    (
-        [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
-        } { $($typed:tt)* }
-    ) => {
-        $crate::__beve_read_enum_body!([$de $($rgen)*] [$($wgen)*] [$case] $ty {
-            $($($name =>)? $variant $(($($payload)*))?),*
-        } { });
-        $crate::__beve_write_enum_body!([$de $($rgen)*] [$($wgen)*] [$case] $ty {
-            $($($name =>)? $variant $(($($payload)*))?),*
-        } { $($typed)* });
-    };
-}
-
-/// The read half. A unit enum's string-array packing is the write half's, the
-/// enum driver taking either form on the way in, so `$typed` arrives empty.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __beve_read_enum_body {
-    (
-        [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
-        } { }
     ) => {
         impl<$de $($rgen)*> $crate::beve::ReadEnum<$de> for $ty {
             #[inline]
@@ -2955,6 +2847,96 @@ macro_rules! __beve_read_enum_body {
                 r.read_enum(self)
             }
         }
+    };
+}
+
+/// The write half, which `tagged_enum!(write_only ..)` emits by itself,
+/// dispatching on the tagging convention as the both-direction form does.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __beve_write_enum_impls {
+    (
+        [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty { $($body:tt)* }
+    ) => {
+        $crate::__beve_write_internal_enum_impls!(
+            [$($rgen)*] [$($wgen)*] [$case] [$tag] $ty { $($body)* });
+    };
+    (
+        [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+        }
+    ) => {
+        $crate::__beve_write_enum_body!([$($rgen)*] [$($wgen)*] [$case] $ty {
+            $($($name =>)? $variant $(($($payload)*))?),*
+        } {});
+    };
+}
+
+/// The BEVE impls for [`unit_enum!`](crate::unit_enum), which are the tagged
+/// ones plus a typed array.
+///
+/// A unit enum's value is a string and can be nothing else, so a run of them is
+/// a **string array**: one header for the lot and a length-prefixed name per
+/// element, exactly as a `Vec<String>` is stored, rather than a generic array
+/// carrying a string header per element. Nothing on the reading side changes,
+/// since the sequence driver installs a typed array's element header and hands
+/// out one value either way, so the two forms stay interchangeable.
+///
+/// [`tagged_enum!`](crate::tagged_enum) cannot do this even for a declaration
+/// that happens to be all unit variants: `ARRAY` is one constant for the type,
+/// and a variant carrying a value writes an object.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __beve_unit_enum_impls {
+    (
+        [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
+            $($($name:literal =>)? $variant:ident),* $(,)?
+        }
+    ) => {
+        $crate::__beve_read_enum_impls!([$($rgen)*] [$($wgen)*] [$case] [] $ty {
+            $($($name =>)? $variant),*
+        });
+        $crate::__beve_write_unit_enum_impls!([$($rgen)*] [$($wgen)*] [$case] $ty {
+            $($($name =>)? $variant),*
+        });
+    };
+}
+
+/// The write half, which `unit_enum!(write_only ..)` emits by itself.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __beve_write_unit_enum_impls {
+    (
+        [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
+            $($($name:literal =>)? $variant:ident),* $(,)?
+        }
+    ) => {
+        $crate::__beve_write_enum_body!([$($rgen)*] [$($wgen)*] [$case] $ty {
+            $($($name =>)? $variant),*
+        } {
+            const ARRAY: ::core::option::Option<&'static [u8]> =
+                ::core::option::Option::Some(&[$crate::beve::header::STRING_ARRAY]);
+
+            #[inline]
+            fn write_payload<O: $crate::Options>(
+                items: &[Self],
+                w: &mut $crate::beve::Writer<'_, O>,
+            ) where
+                Self: ::core::marker::Sized,
+            {
+                // The header and count are already out, so an element is its
+                // name with a length in front and nothing else. A real `match`
+                // here, where `write` needs a chain, because this macro's own
+                // matcher has already refused a variant that carries a value:
+                // every arm has the same shape, so nothing has to branch and
+                // the compiler checks the arms cover the enum.
+                for item in items {
+                    w.write_str_body(match item {
+                        $( Self::$variant => $crate::__json_key!([$case] $($name)? [$variant]) ),*
+                    });
+                }
+            }
+        });
     };
 }
 

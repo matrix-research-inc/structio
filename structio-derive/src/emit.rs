@@ -249,8 +249,9 @@ fn object_body(
                 return Err(Error::new(
                     required,
                     "`required` is a rule about reading: a document that \
-                     leaves this member out is `MissingKey`. A `write_only` \
-                     type is never read, so there is nothing to require",
+                     leaves this member out is `MissingKey`. A type declared \
+                     `write_only` is never read, so there is nothing to \
+                     require",
                 ));
             }
             body.punct('#', Spacing::Alone);
