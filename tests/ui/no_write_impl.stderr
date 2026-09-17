@@ -1,0 +1,96 @@
+error[E0277]: the trait bound `Token: structio::json::Write` is not satisfied
+  --> tests/ui/no_write_impl.rs:27:1
+   |
+27 | structio::object!(Session { token });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | |
+   | unsatisfied trait bound
+   | required by a bound introduced by this call
+   |
+help: the trait `structio::json::Write` is not implemented for `Token`
+  --> tests/ui/no_write_impl.rs:8:1
+   |
+ 8 | struct Token(u32);
+   | ^^^^^^^^^^^^
+   = note: a type becomes writable by being declared with `structio::object!` or `#[derive(Structio)]`, or by a `json::Write` impl written by hand
+   = note: the direction axis narrows only to the write half -- there is no `read_only` -- so a type used in a struct that is only ever read still needs this impl
+   = note: there is no empty stub: a member that writes nothing truncates the object. `w.write_null()` with `is_null` returning `true` lets `SkipNull` drop the member
+   = help: the following other types implement trait `structio::json::Write`:
+             &T
+             ()
+             (A, B)
+             (A, B, C)
+             (A, B, C, D)
+             (A, B, C, D, E)
+             (A, B, C, D, E, F)
+             (A, B, C, D, E, F, G)
+           and $N others
+note: required by a bound in `structio::json::Writer::<'a, O>::member`
+  --> $DIR/src/json/writer.rs
+   |
+   |     pub fn member<T: Write + ?Sized>(&mut self, prefix: &str, value: &T) {
+   |                      ^^^^^ required by this bound in `Writer::<'a, O>::member`
+   = note: this error originates in the macro `$crate::__json_write_impls` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Token: structio::beve::Write` is not satisfied
+  --> tests/ui/no_write_impl.rs:27:1
+   |
+27 | structio::object!(Session { token });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | |
+   | unsatisfied trait bound
+   | required by a bound introduced by this call
+   |
+help: the trait `structio::beve::Write` is not implemented for `Token`
+  --> tests/ui/no_write_impl.rs:8:1
+   |
+ 8 | struct Token(u32);
+   | ^^^^^^^^^^^^
+   = note: a type becomes writable by being declared with `structio::object!` or `#[derive(Structio)]`, or by a `beve::Write` impl written by hand
+   = note: the direction axis narrows only to the write half -- there is no `read_only` -- so a type used in a struct that is only ever read still needs this impl
+   = note: there is no empty stub: a member that writes nothing truncates the object. `w.write_null()` with `is_null` returning `true` lets `SkipNull` drop the member
+   = help: the following other types implement trait `structio::beve::Write`:
+             &T
+             ()
+             (A, B)
+             (A, B, C)
+             (A, B, C, D)
+             (A, B, C, D, E)
+             (A, B, C, D, E, F)
+             (A, B, C, D, E, F, G)
+           and $N others
+note: required by a bound in `structio::beve::Writer::<'a, O>::member`
+  --> $DIR/src/beve/writer.rs
+   |
+   |     pub fn member<T: Write + ?Sized>(&mut self, key: &[u8], value: &T) {
+   |                      ^^^^^ required by this bound in `Writer::<'a, O>::member`
+   = note: this error originates in the macro `$crate::__beve_write_impls` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Token: structio::beve::Write` is not satisfied
+  --> tests/ui/no_write_impl.rs:27:1
+   |
+27 | structio::object!(Session { token });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | |
+   | unsatisfied trait bound
+   | required by a bound introduced by this call
+   |
+help: the trait `structio::beve::Write` is not implemented for `Token`
+  --> tests/ui/no_write_impl.rs:8:1
+   |
+ 8 | struct Token(u32);
+   | ^^^^^^^^^^^^
+   = note: a type becomes writable by being declared with `structio::object!` or `#[derive(Structio)]`, or by a `beve::Write` impl written by hand
+   = note: the direction axis narrows only to the write half -- there is no `read_only` -- so a type used in a struct that is only ever read still needs this impl
+   = note: there is no empty stub: a member that writes nothing truncates the object. `w.write_null()` with `is_null` returning `true` lets `SkipNull` drop the member
+   = help: the following other types implement trait `structio::beve::Write`:
+             &T
+             ()
+             (A, B)
+             (A, B, C)
+             (A, B, C, D)
+             (A, B, C, D, E)
+             (A, B, C, D, E, F)
+             (A, B, C, D, E, F, G)
+           and $N others
+   = note: this error originates in the macro `$crate::__beve_write_impls` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)

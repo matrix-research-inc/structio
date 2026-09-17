@@ -1,0 +1,7 @@
+error: unrecognized field marker `#[requried]`; the only one is `#[required]`
+ --> tests/ui/a_misspelled_marker.rs:7:1
+  |
+7 | structio::object!(write_only Gauge { #[requried] label });
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__is_required` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)

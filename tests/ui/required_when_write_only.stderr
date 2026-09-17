@@ -1,0 +1,7 @@
+error: `#[required]` is a rule about reading: a document that leaves this member out is `MissingKey`. A type declared `write_only` is never read, so there is nothing to require
+ --> tests/ui/required_when_write_only.rs:5:1
+  |
+5 | structio::object!(write_only Gauge { #[required] label });
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__required_direction` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)

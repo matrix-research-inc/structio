@@ -20,10 +20,9 @@
 //! policies.
 //!
 //! The diagnostics themselves, the `#[diagnostic::on_unimplemented]` notes on
-//! `Read`, `ReadAs`, `Write` and `WriteAs`, are compiler messages and are
-//! asserted nowhere: the root crate carries no compile-fail harness. The one in
-//! `structio-derive` is not a substitute, its cases being written to be refused
-//! at the attribute and so never to reach the type checker at all.
+//! `Read`, `ReadAs`, `Write` and `WriteAs`, are compiler messages, so what
+//! holds their wording in place is `tests/ui`, where the fixtures are programs
+//! that must not compile. All eight are pinned there, in both formats.
 
 use structio::{
     ErrorCode, Options, SkipNull, beve, from_beve, from_str, json, to_beve, to_beve_with,
