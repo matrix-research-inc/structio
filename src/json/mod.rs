@@ -11,6 +11,7 @@ pub mod impls;
 pub mod minify;
 pub mod parser;
 pub mod prettify;
+pub mod raw;
 pub mod stream;
 mod traits;
 pub mod writer;
@@ -18,7 +19,10 @@ pub mod writer;
 pub use impls::{FromJsonKey, ToJsonKey};
 pub use minify::{minify, minify_into, minify_into_with, minify_with};
 pub use parser::{JsonStr, MAX_DEPTH, Parser};
-pub use prettify::{prettify, prettify_into, prettify_into_with, prettify_with};
+pub use prettify::{
+    prettify, prettify_into, prettify_into_with, prettify_value_into, prettify_with,
+};
+pub use raw::Raw;
 pub use stream::{
     Documents, Feed, Iter, Mode, from_reader, from_reader_with, to_writer, to_writer_buffered,
     to_writer_buffered_with, to_writer_with,

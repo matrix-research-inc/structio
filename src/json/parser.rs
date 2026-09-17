@@ -6,9 +6,11 @@
 //! hold them.
 //!
 //! Input is always a `&str`, so the whole document is known to be valid UTF-8
-//! before parsing starts. String values can therefore be sliced out and handed
-//! back without revalidation, and unescaping only has to produce valid UTF-8
-//! for the escapes it expands.
+//! before parsing starts, and the cursor keeps it as one. String values can
+//! therefore be sliced out and handed back without revalidation, a reader
+//! capturing a whole span can take it through [`Parser::rest_str`] without
+//! establishing again what the input already proved, and unescaping only has
+//! to produce valid UTF-8 for the escapes it expands.
 
 use core::marker::PhantomData;
 
@@ -30,7 +32,27 @@ pub const MAX_DEPTH: u32 = 256;
 /// at the points that consult a setting, so an unselected behaviour costs no
 /// code. It defaults to [`Standard`] where the type is written out.
 pub struct Parser<'de, O: Options = Standard> {
-    data: &'de [u8],
+    /// The document, kept as the `&str` every constructor is handed. What that
+    /// buys is [`rest_str`](Parser::rest_str): the input's UTF-8 validity is
+    /// established once, by whoever produced the `&str`, and a reader
+    /// capturing a span of the document does not have to establish it again.
+    data: &'de str,
+    /// The same document as bytes, which is what every scan in here walks.
+    ///
+    /// Held rather than taken from `data` at each use, though `as_bytes` is a
+    /// view rather than a conversion and costs nothing once the optimizer has
+    /// run. It costs something before then: unoptimized, it materializes a fat
+    /// pointer at every bounds test, which is about a sixth more stack per
+    /// frame across the readers, and the recursive ones multiply that by the
+    /// nesting limit. On the [`MAX_DEPTH`] test it is the difference between
+    /// 300 KiB of a 2 MiB thread stack left over and 70 KiB, and a debug build
+    /// is half of what CI runs. Holding it costs sixteen bytes and one store
+    /// per parser, in the frame that owns the parser rather than in any of the
+    /// ones it recurses through.
+    ///
+    /// The two views are set together and neither is ever reassigned, so there
+    /// is no way for them to come apart.
+    bytes: &'de [u8],
     idx: usize,
     depth: u32,
     /// The key to attach to the failure this parse is about to return. See
@@ -99,7 +121,8 @@ impl<'de, O: Options> Parser<'de, O> {
     #[inline]
     pub fn with_options(input: &'de str) -> Self {
         Parser {
-            data: input.as_bytes(),
+            data: input,
+            bytes: input.as_bytes(),
             idx: 0,
             depth: 0,
             error_key: None,
@@ -205,18 +228,51 @@ impl<'de, O: Options> Parser<'de, O> {
     /// Remaining input, starting at the cursor.
     #[inline(always)]
     pub fn rest(&self) -> &'de [u8] {
-        // SAFETY-free: `idx` never advances past `data.len()`.
+        // SAFETY-free: `idx` never advances past the document's length.
+        &self.bytes[self.idx..]
+    }
+
+    /// Remaining input as text, starting at the cursor.
+    ///
+    /// [`rest`](Self::rest) for a reader that wants what the input already
+    /// is. The document was a `&str` before parsing started, so a hand-written
+    /// [`Read`] impl capturing a span of it can slice this and be done;
+    /// capturing out of [`rest`](Self::rest) instead means running
+    /// [`from_utf8`](core::str::from_utf8) over the span, which is a second
+    /// walk over bytes this crate already knows are text. That is what
+    /// [`Raw`](crate::json::Raw) takes, and it is the one path that type
+    /// exists for.
+    ///
+    /// **The cursor has to be on a character boundary, and this panics if it
+    /// is not.** Nothing the parser does can put it anywhere else: a
+    /// multi-byte sequence only ever appears inside a string literal, every
+    /// scan here crosses a literal whole, and so the cursor comes to rest
+    /// between tokens rather than partway through a character. The one way
+    /// past that is [`rewind`](Self::rewind), which takes an offset the caller
+    /// chose and only clamps it, so a caller winding back to an index it did
+    /// not get from [`position`](Self::position) can land inside one.
+    ///
+    /// That is why the slice is a plain index. `get(..)` with a fallback was
+    /// the obvious alternative and is the wrong one: the only fallback a
+    /// `&str` has is a shorter one, and handing back `""` would turn a cursor
+    /// that had drifted into a caller reading an empty document, with the
+    /// damage surfacing as a parse that quietly stopped early somewhere else.
+    /// The unchecked slice is worse still, since it would make a safe caller's
+    /// arithmetic load-bearing for soundness. The panic names the byte and the
+    /// character it landed in the middle of, which is the whole diagnosis.
+    #[inline(always)]
+    pub fn rest_str(&self) -> &'de str {
         &self.data[self.idx..]
     }
 
     #[inline(always)]
     fn remaining(&self) -> usize {
-        self.data.len() - self.idx
+        self.bytes.len() - self.idx
     }
 
     #[inline(always)]
     pub(crate) fn peek(&self) -> Option<u8> {
-        self.data.get(self.idx).copied()
+        self.bytes.get(self.idx).copied()
     }
 
     /// Skip JSON whitespace: space, tab, newline, carriage return.
@@ -227,13 +283,13 @@ impl<'de, O: Options> Parser<'de, O> {
     /// caller expected there is reported against it.
     #[inline(always)]
     pub fn skip_ws(&mut self) {
-        self.idx = skip_ws_at::<O>(self.data, self.idx);
+        self.idx = skip_ws_at::<O>(self.bytes, self.idx);
     }
 
     /// Consume `b` if it is next.
     #[inline(always)]
     pub fn try_byte(&mut self, b: u8) -> bool {
-        if self.idx < self.data.len() && self.data[self.idx] == b {
+        if self.idx < self.bytes.len() && self.bytes[self.idx] == b {
             self.idx += 1;
             true
         } else {
@@ -244,10 +300,10 @@ impl<'de, O: Options> Parser<'de, O> {
     /// Consume `b`, or fail with `code`.
     #[inline(always)]
     pub fn expect(&mut self, b: u8, code: ErrorCode) -> PResult<()> {
-        if self.idx < self.data.len() && self.data[self.idx] == b {
+        if self.idx < self.bytes.len() && self.bytes[self.idx] == b {
             self.idx += 1;
             Ok(())
-        } else if self.idx >= self.data.len() {
+        } else if self.idx >= self.bytes.len() {
             Err(ErrorCode::UnexpectedEnd)
         } else {
             Err(code)
@@ -281,7 +337,7 @@ impl<'de, O: Options> Parser<'de, O> {
         if self.try_byte(close) {
             return Ok(false);
         }
-        Err(if self.idx >= self.data.len() {
+        Err(if self.idx >= self.bytes.len() {
             ErrorCode::UnexpectedEnd
         } else {
             ErrorCode::ExpectedComma
@@ -333,7 +389,7 @@ impl<'de, O: Options> Parser<'de, O> {
         let n = k.len();
         let i = self.idx;
         // `i + n < len` covers both the key bytes and the closing quote.
-        if i + n < self.data.len() && self.data[i + n] == b'"' && &self.data[i..i + n] == k {
+        if i + n < self.bytes.len() && self.bytes[i + n] == b'"' && &self.bytes[i..i + n] == k {
             self.idx = i + n + 1;
             true
         } else {
@@ -842,9 +898,9 @@ impl<'de, O: Options> Parser<'de, O> {
         const TRUE: u64 = u64::from_le_bytes(*b"true\0\0\0\0");
         const FALSE: u64 = u64::from_le_bytes(*b"false\0\0\0");
         let i = self.idx;
-        if i + 8 <= self.data.len() {
-            // SAFETY: `i + 8 <= self.data.len()`.
-            let word = unsafe { load_u64(self.data, i) };
+        if i + 8 <= self.bytes.len() {
+            // SAFETY: `i + 8 <= self.bytes.len()`.
+            let word = unsafe { load_u64(self.bytes, i) };
             let is_f = word as u8 == b'f';
             let want = select(is_f, FALSE, TRUE);
             let mask = select(is_f, 0xFF_FFFF_FFFF, 0xFFFF_FFFF);
@@ -853,7 +909,7 @@ impl<'de, O: Options> Parser<'de, O> {
                 return Ok(!is_f);
             }
         }
-        let (value, end) = read_bool_slow(self.data, i)?;
+        let (value, end) = read_bool_slow(self.bytes, i)?;
         self.idx = end;
         Ok(value)
     }
@@ -861,7 +917,7 @@ impl<'de, O: Options> Parser<'de, O> {
     #[inline(always)]
     pub(crate) fn expect_lit(&mut self, lit: &[u8], code: ErrorCode) -> PResult<()> {
         let n = lit.len();
-        if self.remaining() >= n && &self.data[self.idx..self.idx + n] == lit {
+        if self.remaining() >= n && &self.bytes[self.idx..self.idx + n] == lit {
             self.idx += n;
             Ok(())
         } else {
@@ -889,15 +945,15 @@ impl<'de, O: Options> Parser<'de, O> {
     /// any source change nearby to explain it.
     #[inline(always)]
     pub fn read_u64(&mut self) -> PResult<u64> {
-        let v = parse_u64(self.data, &mut self.idx)?;
-        reject_float_tail(self.data, self.idx)?;
+        let v = parse_u64(self.bytes, &mut self.idx)?;
+        reject_float_tail(self.bytes, self.idx)?;
         Ok(v)
     }
 
     #[inline(always)]
     pub fn read_i64(&mut self) -> PResult<i64> {
-        let v = parse_i64(self.data, &mut self.idx)?;
-        reject_float_tail(self.data, self.idx)?;
+        let v = parse_i64(self.bytes, &mut self.idx)?;
+        reject_float_tail(self.bytes, self.idx)?;
         Ok(v)
     }
 
@@ -906,12 +962,12 @@ impl<'de, O: Options> Parser<'de, O> {
     /// hint it is the call an array of floats makes per element.
     #[inline(always)]
     pub fn read_f64(&mut self) -> PResult<f64> {
-        parse_float::<f64>(self.data, &mut self.idx)
+        parse_float::<f64>(self.bytes, &mut self.idx)
     }
 
     #[inline(always)]
     pub fn read_f32(&mut self) -> PResult<f32> {
-        parse_float::<f32>(self.data, &mut self.idx)
+        parse_float::<f32>(self.bytes, &mut self.idx)
     }
 
     /// Parse a 128-bit unsigned integer.
@@ -919,23 +975,23 @@ impl<'de, O: Options> Parser<'de, O> {
     /// Wide integers are rare, so this is a straightforward digit loop rather
     /// than the SWAR path the 64-bit case uses.
     pub fn read_u128(&mut self) -> PResult<u128> {
-        let n = self.data.len();
+        let n = self.bytes.len();
         let mut i = self.idx;
-        if i >= n || !self.data[i].is_ascii_digit() {
+        if i >= n || !self.bytes[i].is_ascii_digit() {
             return Err(ErrorCode::ExpectedNumber);
         }
-        if self.data[i] == b'0' {
+        if self.bytes[i] == b'0' {
             i += 1;
-            if i < n && self.data[i].is_ascii_digit() {
+            if i < n && self.bytes[i].is_ascii_digit() {
                 return Err(ErrorCode::InvalidNumber);
             }
             self.idx = i;
-            reject_float_tail(self.data, i)?;
+            reject_float_tail(self.bytes, i)?;
             return Ok(0);
         }
         let mut v: u128 = 0;
         while i < n {
-            let c = self.data[i].wrapping_sub(b'0');
+            let c = self.bytes[i].wrapping_sub(b'0');
             if c >= 10 {
                 break;
             }
@@ -946,7 +1002,7 @@ impl<'de, O: Options> Parser<'de, O> {
             i += 1;
         }
         self.idx = i;
-        reject_float_tail(self.data, i)?;
+        reject_float_tail(self.bytes, i)?;
         Ok(v)
     }
 
@@ -1025,11 +1081,11 @@ impl<'de, O: Options> Parser<'de, O> {
     #[inline]
     pub fn read_number_str(&mut self) -> PResult<&'de str> {
         let start = self.idx;
-        scan_number(self.data, &mut self.idx)?;
+        scan_number(self.bytes, &mut self.idx)?;
         // SAFETY: the input was a `&str`, and the scanner accepts only ASCII
         // bytes, so both ends of this range are char boundaries and the range
         // is valid UTF-8.
-        Ok(unsafe { core::str::from_utf8_unchecked(&self.data[start..self.idx]) })
+        Ok(unsafe { core::str::from_utf8_unchecked(&self.bytes[start..self.idx]) })
     }
 
     // -----------------------------------------------------------------------
@@ -1048,13 +1104,13 @@ impl<'de, O: Options> Parser<'de, O> {
     /// conversion all live here.
     #[inline(always)]
     fn scan_body(&mut self, from: usize) -> PResult<::core::result::Result<&'de str, usize>> {
-        match scan_string(self.data, from) {
+        match scan_string(self.bytes, from) {
             Some((pos, b'"')) => {
                 self.idx = pos + 1;
                 // SAFETY: the input was a `&str` and `"` is ASCII, so this
                 // range starts and ends on char boundaries and is valid UTF-8.
                 Ok(Ok(unsafe {
-                    core::str::from_utf8_unchecked(&self.data[from..pos])
+                    core::str::from_utf8_unchecked(&self.bytes[from..pos])
                 }))
             }
             Some((pos, b'\\')) => Ok(Err(pos)),
@@ -1130,15 +1186,15 @@ impl<'de, O: Options> Parser<'de, O> {
         // original `&str` delimited by ASCII bytes, or the UTF-8 encoding of a
         // `char`, so `out` stays valid UTF-8 throughout.
         let bytes = unsafe { out.as_mut_vec() };
-        bytes.extend_from_slice(&self.data[start..first]);
+        bytes.extend_from_slice(&self.bytes[start..first]);
         let mut i = self.expand_escape(first + 1, bytes)?;
         loop {
-            let stop = match scan_string(self.data, i) {
+            let stop = match scan_string(self.bytes, i) {
                 Some((pos, _)) => pos,
                 None => return Err(ErrorCode::UnexpectedEnd),
             };
-            bytes.extend_from_slice(&self.data[i..stop]);
-            match self.data[stop] {
+            bytes.extend_from_slice(&self.bytes[i..stop]);
+            match self.bytes[stop] {
                 b'"' => {
                     self.idx = stop + 1;
                     return Ok(());
@@ -1154,7 +1210,7 @@ impl<'de, O: Options> Parser<'de, O> {
     /// Expand one escape starting at `i` (just past the backslash). Returns the
     /// index of the first byte after it.
     fn expand_escape(&self, i: usize, out: &mut Vec<u8>) -> PResult<usize> {
-        let c = *self.data.get(i).ok_or(ErrorCode::UnexpectedEnd)?;
+        let c = *self.bytes.get(i).ok_or(ErrorCode::UnexpectedEnd)?;
         let simple = match c {
             b'"' => b'"',
             b'\\' => b'\\',
@@ -1183,7 +1239,7 @@ impl<'de, O: Options> Parser<'de, O> {
 
         if (0xD800..0xDC00).contains(&hi) {
             // High surrogate: a low surrogate must follow, as its own escape.
-            if self.data.get(next) != Some(&b'\\') || self.data.get(next + 1) != Some(&b'u') {
+            if self.bytes.get(next) != Some(&b'\\') || self.bytes.get(next + 1) != Some(&b'u') {
                 return Err(ErrorCode::InvalidSurrogate);
             }
             let lo = self.read_hex4(next + 2)?;
@@ -1205,12 +1261,12 @@ impl<'de, O: Options> Parser<'de, O> {
 
     #[inline]
     fn read_hex4(&self, i: usize) -> PResult<u32> {
-        if i + 4 > self.data.len() {
+        if i + 4 > self.bytes.len() {
             return Err(ErrorCode::UnexpectedEnd);
         }
         let mut v = 0u32;
         for k in 0..4 {
-            let d = match self.data[i + k] {
+            let d = match self.bytes[i + k] {
                 c @ b'0'..=b'9' => (c - b'0') as u32,
                 c @ b'a'..=b'f' => (c - b'a' + 10) as u32,
                 c @ b'A'..=b'F' => (c - b'A' + 10) as u32,
@@ -1232,7 +1288,7 @@ impl<'de, O: Options> Parser<'de, O> {
     fn skip_string_body(&mut self) -> PResult<()> {
         let mut i = self.idx;
         loop {
-            match scan_string(self.data, i) {
+            match scan_string(self.bytes, i) {
                 Some((pos, b'"')) => {
                     self.idx = pos + 1;
                     return Ok(());
@@ -1241,7 +1297,7 @@ impl<'de, O: Options> Parser<'de, O> {
                     // Step over the backslash and whatever it escapes, so an
                     // escaped quote does not end the scan.
                     i = pos + 2;
-                    if i > self.data.len() {
+                    if i > self.bytes.len() {
                         return Err(ErrorCode::UnexpectedEnd);
                     }
                 }
@@ -1327,9 +1383,9 @@ impl<'de, O: Options> Parser<'de, O> {
             Some(b'n') => self.expect_lit(b"null", ErrorCode::ExpectedNull),
             Some(c) if c == b'-' || c.is_ascii_digit() => {
                 let mut i = self.idx;
-                let n = self.data.len();
+                let n = self.bytes.len();
                 while i < n {
-                    match self.data[i] {
+                    match self.bytes[i] {
                         b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E' => i += 1,
                         _ => break,
                     }
@@ -1348,7 +1404,7 @@ impl<'de, O: Options> Parser<'de, O> {
     #[inline]
     pub fn finish(&mut self) -> PResult<()> {
         self.skip_ws();
-        if self.idx == self.data.len() {
+        if self.idx == self.bytes.len() {
             Ok(())
         } else {
             Err(ErrorCode::TrailingContent)

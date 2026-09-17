@@ -13,10 +13,10 @@
 
 use std::collections::BTreeMap;
 
-use structio::json::{prettify_into, prettify_into_with, prettify_with};
+use structio::json::{self, Parser, Writer, prettify_into, prettify_into_with, prettify_with};
 use structio::{
-    AllowComments, ErrorCode, Options, Pretty, PrettyInlineArrays, Standard, from_str, prettify,
-    to_string, to_string_with,
+    AllowComments, ErrorCode, Options, Pretty, PrettyInlineArrays, Standard, from_str, minify,
+    prettify, to_string, to_string_with,
 };
 
 /// Four spaces, to catch anything that assumed the default width.
@@ -365,6 +365,127 @@ fn a_failed_prettify_into_still_hands_the_string_back() {
     out.clear();
     prettify_into("[]", &mut out).unwrap();
     assert_eq!(out, "[]");
+}
+
+// ---------------------------------------------------------------------------
+// One value, into a writer that is already part-way through a document
+// ---------------------------------------------------------------------------
+
+/// A field holding JSON *text* where the document expects a *value*, written
+/// the way someone outside this crate has to write it. `json::Raw` is the one
+/// in the crate; this is the same shape with none of its privileges, which is
+/// the point of the entry point being public.
+struct Body(&'static str);
+
+impl json::Write for Body {
+    fn write<O: Options>(&self, w: &mut Writer<'_, O>) {
+        // The spans below are all one value, so this cannot fail. A type
+        // taking spans from elsewhere settles that before it writes, since a
+        // failure here would already have emitted part of the value.
+        json::prettify_value_into(self.0, w).expect("one value");
+    }
+}
+
+#[test]
+fn a_value_laid_out_at_depth_zero_is_what_prettify_gives() {
+    // A fresh writer is at depth zero, which is where `prettify` starts, so
+    // the two have to agree byte for byte. They are one implementation, and
+    // this is what says so.
+    let compact = to_string(&sample());
+
+    for (label, want, got) in [
+        ("Pretty", prettify(&compact).unwrap(), {
+            let mut w = Writer::<Pretty>::new();
+            json::prettify_value_into(&compact, &mut w).unwrap();
+            w.into_string()
+        }),
+        ("Wide", prettify_with::<Wide>(&compact).unwrap(), {
+            let mut w = Writer::<Wide>::new();
+            json::prettify_value_into(&compact, &mut w).unwrap();
+            w.into_string()
+        }),
+    ] {
+        assert_eq!(got, want, "{label}");
+    }
+}
+
+#[test]
+fn a_value_is_laid_out_at_the_writers_current_depth() {
+    // Two containers deep, so an implementation that reached for depth zero
+    // or for one level of it comes out visibly wrong rather than accidentally
+    // right.
+    let mut member = BTreeMap::new();
+    member.insert("body".to_string(), Body(r#"{"a":[1,2],"b":{}}"#));
+    let doc = vec![member];
+
+    // The property that matters: the value laid out mid-document is what the
+    // whole document laid out gives, which is what keeps one set of layout
+    // rules rather than two.
+    assert_eq!(
+        to_string_with::<Pretty, _>(&doc),
+        prettify(&to_string(&doc)).unwrap()
+    );
+    assert_eq!(
+        to_string_with::<Pretty, _>(&doc),
+        "[\n  {\n    \"body\": {\n      \"a\": [\n        1,\n        2\n      ],\n      \
+         \"b\": {}\n    }\n  }\n]"
+    );
+
+    // And the policy is the writer's, down to the settings that are not the
+    // defaults.
+    assert_eq!(
+        to_string_with::<WideInline, _>(&doc),
+        prettify_with::<WideInline>(&to_string(&doc)).unwrap()
+    );
+}
+
+#[test]
+fn a_compact_policy_compacts_into_the_writer() {
+    // `PRETTY` is honoured rather than assumed, exactly as `prettify_with`
+    // honours it, so this is the minifying walk into a writer.
+    let input = "{\n  \"a\": [1, 2],\n  \"b\": {}\n}";
+
+    let mut w = Writer::<Standard>::new();
+    json::prettify_value_into(input, &mut w).unwrap();
+    assert_eq!(w.into_string(), minify(input).unwrap());
+}
+
+#[test]
+fn malformed_input_is_reported_rather_than_quietly_written() {
+    // The failure is an error against the byte that stopped the walk, in the
+    // currency the rest of this module uses: an offset into the input that was
+    // handed in.
+    for (doc, code, index) in [
+        (r#"{"a":}"#, ErrorCode::UnexpectedCharacter, 5),
+        ("[1 2]", ErrorCode::ExpectedComma, 3),
+        // One value and nothing else, so a tail is refused rather than copied
+        // into the middle of the surrounding document.
+        ("1 2", ErrorCode::TrailingContent, 2),
+    ] {
+        let mut w = Writer::<Pretty>::new();
+        let e = json::prettify_value_into(doc, &mut w).unwrap_err();
+        assert_eq!((e.code, e.index), (code, index), "{doc:?}");
+    }
+}
+
+#[test]
+fn a_failed_layout_leaves_what_it_had_already_written() {
+    // Pinned rather than fixed: a writer cannot be rewound, so the bytes
+    // written before the error are in the document for good. This is the
+    // reason the doc comment tells an implementation that must not do that to
+    // check first.
+    let mut w = Writer::<Pretty>::new();
+    assert!(json::prettify_value_into(r#"{"a":}"#, &mut w).is_err());
+    assert_eq!(w.into_string(), "{\n  \"a\": ");
+
+    // Checking first is the pattern, and it is what `Raw` does: one walk that
+    // emits nothing, then the layout that cannot now fail.
+    let mut w = Writer::<Pretty>::new();
+    let mut probe = Parser::<Pretty>::with_options(r#"{"a":}"#);
+    if probe.skip_value().is_ok() && probe.finish().is_ok() {
+        json::prettify_value_into(r#"{"a":}"#, &mut w).unwrap();
+    }
+    assert_eq!(w.into_string(), "", "the probe let a bad span through");
 }
 
 // ---------------------------------------------------------------------------

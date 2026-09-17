@@ -15,6 +15,11 @@
 //! would have produced, and stays that way when a setting is added, because
 //! there is no second copy of the rules to keep in step.
 //!
+//! [`prettify_value_into`] is that same walk aimed at a writer that is already
+//! part-way through a document, for the [`Write`](crate::json::Write) impl
+//! holding JSON text where the document expects a value. It is the one entry
+//! point here that does not start at depth zero.
+//!
 //! Values themselves are copied, not re-encoded. A number keeps the spelling
 //! the input gave it and a string keeps its escapes, so `1.50` stays `1.50` and
 //! `A` stays `A`. The output is the input's data laid out again, not
@@ -137,12 +142,96 @@ pub fn prettify_into_with<O: Options>(input: &str, out: &mut String) -> Result<(
     });
 
     let mut w = Writer::<O>::from_vec(buf);
-    let mut p = Parser::<O>::with_options(input);
-    let result = walk(&mut p, &mut w);
+    // The same call a `Write` impl makes, over a writer that happens to be
+    // fresh and so at depth zero. One implementation, and it is the public one
+    // that every test of this function exercises.
+    let result = prettify_value_into::<O>(input, &mut w);
     // Hand the buffer back whether or not the walk got to the end, so the
     // caller keeps the allocation either way.
     *out = w.into_string();
-    result.map_err(|code| Error::new(code, p.position()))
+    result
+}
+
+/// Lay one JSON value out into a writer that is already part-way through a
+/// document.
+///
+/// Every other entry point here begins a fresh document at depth zero and
+/// hands back the text of it, which is everything a caller holding a document
+/// wants and nothing a [`Write`](crate::json::Write) impl can use. This one
+/// takes the writer instead, and lays `input` out at that writer's current
+/// nesting depth under the policy it carries, so the value arrives indented
+/// against its neighbours rather than as a blob starting again at column zero.
+/// It is what a type holding JSON *text* where the document expects a *value*
+/// needs; [`Raw`](crate::json::Raw) is that type here, and this is the call its
+/// [`Write`](crate::json::Write) impl makes.
+///
+/// ```
+/// use structio::{Options, Pretty, json};
+///
+/// /// A value this program forwards rather than reads, kept as its text.
+/// struct Body(&'static str);
+///
+/// impl json::Write for Body {
+///     fn write<O: Options>(&self, w: &mut json::Writer<'_, O>) {
+///         // The span was settled when the `Body` was built, so it lays out.
+///         json::prettify_value_into(self.0, w).unwrap();
+///     }
+/// }
+///
+/// // Laid out where the element actually sits, not at column zero.
+/// assert_eq!(
+///     structio::to_string_with::<Pretty, _>(&vec![Body(r#"{"a":[1]}"#)]),
+///     "[\n  {\n    \"a\": [\n      1\n    ]\n  }\n]"
+/// );
+/// ```
+///
+/// `input` has to be exactly one JSON value, whitespace on either side and
+/// nothing else, which is [`prettify`]'s rule too, a document being one value.
+/// Anything after it is [`TrailingContent`](crate::ErrorCode::TrailingContent)
+/// rather than something copied through, a tail landing in the middle of the
+/// surrounding document being the one place it could land.
+///
+/// The tokens are what survive. A number keeps the spelling `input` gave it and
+/// a string keeps its escapes, exactly as under [`prettify`], because the walk
+/// copies tokens rather than decoding and re-encoding them. The whitespace
+/// between them does not: the input's own layout is dropped and the policy's is
+/// written in its place, which is the whole of what the call is for. Under
+/// [`ALLOW_COMMENTS`](Options::ALLOW_COMMENTS) a comment is whitespace and goes
+/// the same way, there being no writer here that can emit one.
+///
+/// A compact policy is honoured rather than overridden, as it is by
+/// [`prettify_with`], so this minifies `input` into the writer under
+/// [`Standard`](crate::Standard). That is why `Raw` reaches here only under
+/// [`PRETTY`](Options::PRETTY): compacted output and the span it arrived as
+/// differ only in whitespace, and rewriting that whitespace would give up the
+/// bytes it exists to preserve for nothing.
+///
+/// **A call that fails leaves behind what it had already written.** A writer
+/// cannot be rewound, for the reason [`Writer`] gives, so a span that turns out
+/// to be malformed halfway through has its first half in the document and no
+/// way to take it back. An impl that must not do that has to settle the
+/// question before it emits a byte, by walking `input` first with
+/// [`Parser::skip_value`](crate::json::Parser::skip_value) and
+/// [`Parser::finish`](crate::json::Parser::finish), or by having accepted it
+/// earlier through [`Raw::new`](crate::json::Raw::new). `Raw`'s own
+/// [`Write`](crate::json::Write) impl takes the first of those routes, and the
+/// probe pass it pays for is what a second layout walk would cost anyway.
+///
+/// The error's offset is a position in `input`. An impl composing this into one
+/// of its own has nowhere to put that: an offset into a span of a larger
+/// document names the wrong byte of that document, so the code travels and the
+/// offset is dropped. See
+/// [docs/errors.md](https://github.com/stephenberry/structio/blob/main/docs/errors.md#two-error-currencies-and-why)
+/// for why the seam is there.
+///
+/// This is the one member of the `prettify` family not also re-exported at the
+/// crate root. The root carries the entry points you reach for with a document
+/// in hand; reaching for this one means having a [`Writer`], which happens
+/// inside a `Write` impl and nowhere else, and `Writer` is not at the root
+/// either.
+pub fn prettify_value_into<O: Options>(input: &str, w: &mut Writer<'_, O>) -> Result<()> {
+    let mut p = Parser::<O>::with_options(input);
+    walk(&mut p, w).map_err(|code| Error::new(code, p.position()))
 }
 
 /// One whole document: the value, then nothing but whitespace.
@@ -159,6 +248,11 @@ fn walk<O: Options>(p: &mut Parser<'_, O>, w: &mut Writer<'_, O>) -> PResult<()>
 /// above skips the leading run once, an opening bracket skips what follows it,
 /// and `colon` and `comma_or_close` skip what follows them. Skipping again per
 /// value would be a third of the whitespace work in a document that has none.
+///
+/// Private, and [`prettify_value_into`] is what a caller outside this module
+/// reaches for: the same walk with the leading whitespace skipped for it, the
+/// tail checked, and the error given a position, rather than a cursor contract
+/// stated in prose and enforced by a debug assertion.
 fn value<O: Options>(p: &mut Parser<'_, O>, w: &mut Writer<'_, O>) -> PResult<()> {
     debug_assert!(
         !matches!(p.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')),

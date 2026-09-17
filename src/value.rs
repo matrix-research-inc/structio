@@ -2,11 +2,17 @@
 //!
 //! Everything else in this crate reads straight into a type you declared.
 //! [`Value`] is for the value that has no such type: a register tree a
-//! device publishes and a host walks by path, a body a coordinator forwards
-//! without reading, a setting stored under a key some plugin chose. It is an
-//! ordinary tree, null, bool, number, string, array or object, with the
-//! accessors such a tree needs and nothing that would make it a substitute
-//! for a declared type.
+//! device publishes and a host walks by path, a setting stored under a key
+//! some plugin chose. It is an ordinary tree, null, bool, number, string,
+//! array or object, with the accessors such a tree needs and nothing that
+//! would make it a substitute for a declared type.
+//!
+//! It is not a way of forwarding a body untouched. An object's keys come back
+//! sorted, a number comes back in the spelling this module gives it rather
+//! than the one the document used, and an escape comes back decoded, so a
+//! document that arrives, passes through here, and is written out again is
+//! not the document that arrived. [`json::Raw`] is the
+//! field that carries one through unchanged.
 //!
 //! It reads and writes through both formats like any other type, so it can be
 //! a field of an [`object!`](crate::object) declaration, a whole document, or

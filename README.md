@@ -80,6 +80,7 @@ Reach for structio when one of these matters more:
 - **Enums by name, not by index.** `unit_enum!` writes a variant as its name; `tagged_enum!` writes one carrying a value as a one-member object keyed by that name; `tagged_enum!(.. as tag "kind")` puts that name inside the payload's object instead, the convention most JSON APIs use. Adding or reordering variants does not change what a document already means.
 - **Keys are hashed at compile time.** The macro picks the cheapest perfect hash that fits your key set, from a single byte comparison up to a full key hash.
 - **Reads reuse what you already own.** Parsing into an existing value refills its buffers instead of reallocating them, so a loop over records of the same shape settles into no allocation at all.
+- **JSON that goes through untouched.** A `json::Raw` field holds one value as the text that spelled it, so a body a gateway forwards keeps the key order, the number spellings and the escapes it arrived with. Reading borrows the span out of the document and writing copies it back; under `Pretty` it is laid out again at the depth it actually sits at, rather than left as an unindented blob.
 - **One field out of a BEVE document.** `from_beve_at(&bytes, "/servers/1/port")` walks the headers in front of the value and decodes nothing else, and `validate_beve` checks a document is well formed without decoding any of it.
 - **Both formats stream, both ways.** `Documents` and `Feed` hand out one value at a time from a reader or from chunks pushed at you, in JSON and in BEVE, so a file too large to hold costs one record rather than the file. A BEVE typed array streams element by element too.
 - **Arrays a reader can point at.** `to_beve_aligned` writes BEVE's aligned typed arrays, padding each numeric payload onto its own element width so the block can be borrowed rather than copied. A `Cow<'de, [f64]>` field takes that borrow where the document allows it and copies where it does not. The same document either way, and every reader here takes both forms.
@@ -108,6 +109,7 @@ The crate root carries the JSON entry points unqualified and the BEVE ones with 
 | `from_reader::<T>(impl io::Read)` | Read a whole document from a reader, then parse. |
 | `prettify(&str) -> Result<String>` | Lay out JSON text that did not come from a `Write` impl. |
 | `minify(&str) -> Result<String>` | Take the whitespace back out of JSON text. |
+| `Raw<'de>` | A field carrying one value through as the text that spelled it. See [schemas](docs/schemas.md#json-that-goes-through-untouched). |
 | `Documents<R>` | Pull a sequence of values out of a reader. |
 | `Feed` | Push chunks in, take values out as they complete. |
 
@@ -170,7 +172,7 @@ No comparison against `serde_json` has been run, so please do not infer one.
 
 ## What it does not do
 
-**Statically known types first.** A document you have no type for reads into `Value`, a plain tree with the accessors a tree needs, meant for the register map walked by path or the body forwarded unread. It is a destination, not a stage every read passes through, and anything you could declare a type for is better read into that type. `beve_to_json` turns any BEVE document into JSON without either.
+**Statically known types first.** A document you have no type for reads into `Value`, a plain tree with the accessors a tree needs, meant for a shape nothing declares and something walks by path: the register map a device publishes, a setting stored under a key some plugin chose. It is a destination, not a stage every read passes through, and anything you could declare a type for is better read into that type. A body you forward rather than look at is a different problem, and a tree is the wrong answer to it: `Value` sorts an object's keys, respells its numbers, and decodes its escapes, so what comes out is a different document than the one that arrived. [`json::Raw`](docs/schemas.md#json-that-goes-through-untouched) is the field that carries one through unchanged. `beve_to_json` turns any BEVE document into JSON without either.
 
 **No `json_to_beve`.** BEVE prefixes every container with its count and JSON gives that up only at the end, so the reverse of the above is not the same one-pass walk. JSON with a schema is `from_str::<T>` and then `to_beve`.
 
