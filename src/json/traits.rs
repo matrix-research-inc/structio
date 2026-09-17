@@ -71,8 +71,9 @@ pub trait Read<'de>: Sized {
 #[diagnostic::on_unimplemented(
     note = "a type becomes writable by being declared with `structio::object!` or \
             `#[derive(Structio)]`, or by a `json::Write` impl written by hand",
-    note = "a declaration generates both directions at once, so a type used in a \
-            struct that is only ever read still needs this impl",
+    note = "the direction axis narrows only to the write half -- there is no \
+            `read_only` -- so a type used in a struct that is only ever read \
+            still needs this impl",
     note = "there is no empty stub: a member that writes nothing truncates the \
             object. `w.write_null()` with `is_null` returning `true` lets \
             `SkipNull` drop the member"
@@ -161,8 +162,8 @@ pub trait ReadAs<'de, T> {
 #[diagnostic::on_unimplemented(
     note = "`{Self}` is the adapter the field named; it is what carries the impl, \
             rather than the field's own type",
-    note = "a declaration generates both directions at once, so an adapter used in \
-            a struct that is only ever read still needs this half",
+    note = "the direction axis narrows only to the write half, so an adapter \
+            used in a struct that is only ever read still needs this half",
     note = "there is no empty stub: a member that writes nothing truncates the \
             object. `w.write_null()` with `is_null` returning `true` lets \
             `SkipNull` drop the member"

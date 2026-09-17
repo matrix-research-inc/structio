@@ -61,7 +61,7 @@ fn main() {
 }
 ```
 
-That declares and writes in both formats without a `Default`. Where nothing reads the type at all, `#[structio(write_only)]` says so outright, and then its *fields'* types are relieved of the same requirement rather than only the type itself; see [One direction only](schemas.md#one-direction-only). See also [`Default` is required where values are constructed](schemas.md#default-is-required-where-values-are-constructed).
+That declares and writes in both formats without a `Default`. Where nothing reads the type at all, `#[structio(write_only)]` says so outright, and then its *fields'* types are relieved of `Default` too, and of the read impls with it; see [One direction only](schemas.md#one-direction-only). See also [`Default` is required where values are constructed](schemas.md#default-is-required-where-values-are-constructed).
 
 ## Attributes
 
@@ -203,7 +203,8 @@ Not planned: `flatten`, which changes the shape of the object the reader sees an
 | `#[serde(deny_unknown_fields)]` | none | The default policy already refuses unknown keys; `SkipUnknown` steps over them. A per-type override is not planned. |
 | `#[serde(flatten)]` | none | Not planned. |
 | `#[serde(untagged)]` | none | A value with no tag has no name to look up. |
-| `#[derive(Serialize)]` alone | `#[structio(write_only)]` | One derive covers both directions, so which of them to generate is an attribute rather than a second derive. There is no `read_only`; see [One direction only](schemas.md#one-direction-only). |
+| `#[derive(Serialize)]` alone | `#[structio(write_only)]` | One derive covers both directions, so narrowing to the write half is an attribute rather than a second derive. |
+| `#[derive(Deserialize)]` alone | none | A declaration narrows to the write half or to neither, so a read-only type's fields still need their `Write` impls. See [One direction only](schemas.md#one-direction-only). |
 | `#[serde(borrow)]` | not needed | A lifetime on the type is the input lifetime. |
 | `#[serde(default)]` with no path | `#[derive(Default)]` | A missing key keeps what the destination held, and the entry points that return a value start from `Default`. |
 

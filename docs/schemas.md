@@ -226,7 +226,7 @@ The shared half, the field list and its compile-time hash, is emitted once eithe
 
 ### One direction only
 
-The same declaration generates the reading impls and the writing ones, so **every field's type has to satisfy both**, even in a struct the program only ever writes. A declaration that leads with `write_only` generates the write half alone:
+A declaration generates the reading impls and the writing ones together by default, so **every field's type has to satisfy both**, even in a struct the program only ever writes. A declaration that leads with `write_only` generates the write half alone:
 
 ```rust
 use structio::{Options, beve, json, to_beve, to_string};
@@ -273,7 +273,7 @@ It comes first, in front of the generics and the type, and every shape takes it:
 
 `#[required]` is refused on a write-only declaration, at the declaration. It is a rule about reading -- a document that leaves the member out is `MissingKey` -- and a declaration that generates no read has nothing to require.
 
-There is no `read_only`. The two halves are not equally expensive to satisfy: a read constructs a value before it fills one, so it asks a field's type for `Default` as well as for an impl, and that is the burden worth being able to put down. The syntax has room for the other one if that stops being true.
+There is no `read_only`, because nothing has asked for one. The two halves are not symmetric in what they cost to satisfy, and not in one direction either: a read asks a field's type for `Default` as well as for an impl, while a write the program never performs has no inert stub at all, a member that writes nothing being a truncated object rather than a no-op. The syntax has room for the other narrowing in the same position, and so do the impls, each format's read half being a macro of its own already.
 
 ### Positional structs
 

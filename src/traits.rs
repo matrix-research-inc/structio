@@ -197,8 +197,8 @@ impl<T> ReadWrite for T where T: crate::json::ReadWrite + crate::beve::ReadWrite
 ///
 /// The write-only counterpart of [`ReadWrite`]. A declaration that leads with
 /// `write_only` generates no read impls, so a generic one bounds its type
-/// parameters by this instead, and a parameter of such a type needs no
-/// `Default` either: nothing constructs a value it would have to fill.
+/// parameters by this instead, and a type parameter of such a declaration
+/// needs no `Default` either: nothing constructs a value it would have to fill.
 ///
 /// ```ignore
 /// structio::object!(write_only [T: structio::Write] Sample<T> { value });
@@ -209,6 +209,9 @@ impl<T> ReadWrite for T where T: crate::json::ReadWrite + crate::beve::ReadWrite
 ///
 /// Unlike [`ReadWrite`] this does not require `Sized`: `str` and `[u8]` are
 /// writable, and it is reading that has to have somewhere to put the value.
+///
+/// There is no `Read` counterpart at this level. The direction axis narrows
+/// only to the write half, so nothing would spell one.
 ///
 /// [`json::Write`]: crate::json::Write
 /// [`beve::Write`]: crate::beve::Write
