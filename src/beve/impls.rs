@@ -24,6 +24,7 @@ use crate::beve::traits::{
 };
 use crate::beve::writer::Writer;
 use crate::error::{ErrorCode, PResult};
+use crate::map::OrderedMap;
 use crate::options::Options;
 use crate::traits::Same;
 
@@ -861,6 +862,35 @@ impl_map!(
     [+ Ord] [] [] BTreeMap<K, V>,
 );
 
+/// [`OrderedMap`] keeps the order its members arrived in, which is what makes
+/// it the map behind [`Object`](crate::Object).
+///
+/// Hand-written rather than an arm of `impl_map!`: that macro is generic over
+/// the key type, and this map's key is always a `String`. It reserves on the
+/// member count, as the hashed map does, since its entries live in one vector.
+impl<'de, V: Read<'de> + Default> Read<'de> for OrderedMap<V> {
+    fn read<O: Options>(&mut self, r: &mut Reader<'de, O>) -> PResult<()> {
+        self.clear();
+        r.read_map_counted(|n| {
+            self.reserve(cautious::<(String, V)>(n));
+            move |r, key| {
+                let k = String::from_key(key)?;
+                let mut v = V::default();
+                v.read(r)?;
+                self.insert(k, v);
+                Ok(())
+            }
+        })
+    }
+}
+
+impl<V: Write> Write for OrderedMap<V> {
+    #[inline]
+    fn write<O: Options>(&self, w: &mut Writer<'_, O>) {
+        w.write_keyed(self.len(), self.iter());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tuples, as generic arrays
 // ---------------------------------------------------------------------------
@@ -1272,3 +1302,35 @@ impl_map_as!(
     [: Eq + Hash] [, S: BuildHasher + Default] [, S] HashMap<KA, VA>, HashMap<K, V, S>, reserve reserve;
     [: Ord] [] [] BTreeMap<KA, VA>, BTreeMap<K, V>;
 );
+
+/// [`OrderedMap`]'s adapter form takes one adapter rather than two, since its
+/// key type is fixed: the object header is always the string-keyed one, and the
+/// keys go through `String`'s own [`FromBeveKey`]/[`ToBeveKey`].
+impl<'de, VA, V: Default> ReadAs<'de, OrderedMap<V>> for OrderedMap<VA>
+where
+    VA: ReadAs<'de, V>,
+{
+    fn read<O: Options>(value: &mut OrderedMap<V>, r: &mut Reader<'de, O>) -> PResult<()> {
+        value.clear();
+        r.read_map_counted(|n| {
+            value.reserve(cautious::<(String, V)>(n));
+            move |r, key| {
+                let k = String::from_key(key)?;
+                let mut v = V::default();
+                VA::read(&mut v, r)?;
+                value.insert(k, v);
+                Ok(())
+            }
+        })
+    }
+}
+
+impl<VA, V> WriteAs<OrderedMap<V>> for OrderedMap<VA>
+where
+    VA: WriteAs<V>,
+{
+    #[inline]
+    fn write<O: Options>(value: &OrderedMap<V>, w: &mut Writer<'_, O>) {
+        w.write_keyed_with::<Same, VA, _, _, _>(value.len(), value.iter());
+    }
+}

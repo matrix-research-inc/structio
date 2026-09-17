@@ -21,6 +21,7 @@ use crate::json::traits::{
     Read, ReadArray, ReadAs, ReadKeyAs, Write, WriteArray, WriteAs, WriteKeyAs,
 };
 use crate::json::writer::Writer;
+use crate::map::OrderedMap;
 use crate::options::Options;
 use crate::traits::Same;
 
@@ -551,6 +552,32 @@ impl_map!(
     [+ Ord] [] [] BTreeMap<K, V>,
 );
 
+/// [`OrderedMap`] keeps the order its members arrived in, which is what makes
+/// it the map behind [`Object`](crate::Object).
+///
+/// Hand-written rather than an arm of `impl_map!`: that macro is generic over
+/// the key type, and this map's key is always a `String`.
+impl<'de, V: Read<'de> + Default> Read<'de> for OrderedMap<V> {
+    #[inline]
+    fn read<O: Options>(&mut self, p: &mut Parser<'de, O>) -> PResult<()> {
+        self.clear();
+        p.read_map(|p, key| {
+            let k = String::from_key(key.as_str())?;
+            let mut v = V::default();
+            v.read(p)?;
+            self.insert(k, v);
+            Ok(())
+        })
+    }
+}
+
+impl<V: Write> Write for OrderedMap<V> {
+    #[inline]
+    fn write<O: Options>(&self, w: &mut Writer<'_, O>) {
+        w.write_keyed(self.iter());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tuples, as JSON arrays
 // ---------------------------------------------------------------------------
@@ -903,3 +930,33 @@ impl_map_as!(
     [: Eq + Hash] [, S: BuildHasher + Default] [, S] HashMap<KA, VA>, HashMap<K, V, S>;
     [: Ord] [] [] BTreeMap<KA, VA>, BTreeMap<K, V>;
 );
+
+/// [`OrderedMap`]'s adapter form takes one adapter rather than two, since its
+/// key type is fixed: `OrderedMap<Millis>` adapts the values and leaves the
+/// keys to `String`'s own [`FromJsonKey`]/[`ToJsonKey`].
+impl<'de, VA, V: Default> ReadAs<'de, OrderedMap<V>> for OrderedMap<VA>
+where
+    VA: ReadAs<'de, V>,
+{
+    #[inline]
+    fn read<O: Options>(value: &mut OrderedMap<V>, p: &mut Parser<'de, O>) -> PResult<()> {
+        value.clear();
+        p.read_map(|p, key| {
+            let k = String::from_key(key.as_str())?;
+            let mut v = V::default();
+            VA::read(&mut v, p)?;
+            value.insert(k, v);
+            Ok(())
+        })
+    }
+}
+
+impl<VA, V> WriteAs<OrderedMap<V>> for OrderedMap<VA>
+where
+    VA: WriteAs<V>,
+{
+    #[inline]
+    fn write<O: Options>(value: &OrderedMap<V>, w: &mut Writer<'_, O>) {
+        w.write_keyed_with::<Same, VA, _, _, _>(value.iter());
+    }
+}

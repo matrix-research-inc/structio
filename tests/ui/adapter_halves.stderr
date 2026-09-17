@@ -20,7 +20,7 @@ help: the trait `structio::json::ReadAs<'_, _>` is not implemented for `Tenths`
              `HashMap<KA, VA>` implements `structio::json::ReadAs<'de, HashMap<K, V, S>>`
              `HashSet<A>` implements `structio::json::ReadAs<'de, HashSet<T, S>>`
              `Option<A>` implements `structio::json::ReadAs<'de, Option<T>>`
-             `Rc<A>` implements `structio::json::ReadAs<'de, Rc<T>>`
+             `OrderedMap<VA>` implements `structio::json::ReadAs<'de, OrderedMap<V>>`
            and $N others
 
 error[E0277]: the trait bound `Tenths: structio::beve::ReadAs<'_, _>` is not satisfied
@@ -45,7 +45,7 @@ help: the trait `structio::beve::ReadAs<'_, _>` is not implemented for `Tenths`
              `HashMap<KA, VA>` implements `structio::beve::ReadAs<'de, HashMap<K, V, S>>`
              `HashSet<A>` implements `structio::beve::ReadAs<'de, HashSet<T, S>>`
              `Option<A>` implements `structio::beve::ReadAs<'de, Option<T>>`
-             `Rc<A>` implements `structio::beve::ReadAs<'de, Rc<T>>`
+             `OrderedMap<VA>` implements `structio::beve::ReadAs<'de, OrderedMap<V>>`
            and $N others
 
 error[E0277]: the trait bound `Skipped: structio::json::WriteAs<_>` is not satisfied
@@ -73,7 +73,7 @@ help: the trait `structio::json::WriteAs<_>` is not implemented for `Skipped`
              `HashMap<KA, VA>` implements `structio::json::WriteAs<HashMap<K, V, S>>`
              `HashSet<A>` implements `structio::json::WriteAs<HashSet<T, S>>`
              `Option<A>` implements `structio::json::WriteAs<Option<T>>`
-             `Rc<A>` implements `structio::json::WriteAs<Rc<T>>`
+             `OrderedMap<VA>` implements `structio::json::WriteAs<OrderedMap<V>>`
            and $N others
 note: required by a bound in `structio::json::Writer::<'a, O>::member_with`
   --> $DIR/src/json/writer.rs
@@ -106,7 +106,7 @@ help: the trait `structio::beve::WriteAs<_>` is not implemented for `Skipped`
              `HashMap<KA, VA>` implements `structio::beve::WriteAs<HashMap<K, V, S>>`
              `HashSet<A>` implements `structio::beve::WriteAs<HashSet<T, S>>`
              `Option<A>` implements `structio::beve::WriteAs<Option<T>>`
-             `Rc<A>` implements `structio::beve::WriteAs<Rc<T>>`
+             `OrderedMap<VA>` implements `structio::beve::WriteAs<OrderedMap<V>>`
            and $N others
 note: required by a bound in `structio::beve::Writer::<'a, O>::member_with`
   --> $DIR/src/beve/writer.rs
@@ -136,5 +136,5 @@ help: the trait `structio::beve::WriteAs<_>` is not implemented for `Skipped`
              `HashMap<KA, VA>` implements `structio::beve::WriteAs<HashMap<K, V, S>>`
              `HashSet<A>` implements `structio::beve::WriteAs<HashSet<T, S>>`
              `Option<A>` implements `structio::beve::WriteAs<Option<T>>`
-             `Rc<A>` implements `structio::beve::WriteAs<Rc<T>>`
+             `OrderedMap<VA>` implements `structio::beve::WriteAs<OrderedMap<V>>`
            and $N others
