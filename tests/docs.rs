@@ -30,35 +30,38 @@ fn quoted_region(source: &str, file: &str) -> String {
     region.trim_end_matches('\n').to_string()
 }
 
-/// The first fenced Rust block after `heading`.
-fn fenced_block(markdown: &str, heading: &str) -> String {
+/// The first fenced Rust block after `anchor`, which is any literal text the
+/// file contains: a heading where the block sits under one, and the line of
+/// prose it follows where it does not.
+fn fenced_block(markdown: &str, anchor: &str) -> String {
     let from = markdown
-        .find(heading)
-        .unwrap_or_else(|| panic!("no heading {heading:?}"));
+        .find(anchor)
+        .unwrap_or_else(|| panic!("no anchor {anchor:?}"));
     let rest = &markdown[from..];
     let open = rest
         .find("```rust\n")
-        .expect("no rust block under the heading")
+        .expect("no rust block after the anchor")
         + "```rust\n".len();
     let len = rest[open..].find("\n```").expect("unterminated rust block");
     rest[open..open + len].to_string()
 }
 
 /// Assert that a fenced block in a markdown file is a marked region of an
-/// example, verbatim.
-fn assert_quotes(doc_path: &str, heading: &str, example_path: &str) {
+/// example, verbatim. `anchor` locates the block: it is matched literally, so
+/// a doc with no heading over the block can name the prose above it instead.
+fn assert_quotes(doc_path: &str, anchor: &str, example_path: &str) {
     let example = repo(example_path);
     let doc = repo(doc_path);
 
     let want = quoted_region(&example, example_path);
-    let got = fenced_block(&doc, heading);
+    let got = fenced_block(&doc, anchor);
 
     assert_eq!(
         got, want,
         "{doc_path} has drifted from {example_path}.\n\
          The example is the source of truth, because it is the half that gets \
          compiled. Copy the region between its `docs:begin` and `docs:end` \
-         markers into the ```rust block under `{heading}`."
+         markers into the ```rust block after `{anchor}`."
     );
 }
 
@@ -85,4 +88,12 @@ fn docs_quote_the_example_verbatim() {
     // An adapter is four impls whose signatures nobody remembers, so the
     // documented ones have to be the ones that compile.
     assert_quotes("docs/schemas.md", "### Adapters", "examples/adapters.rs");
+    // Whether a derived type needs a `Default` is the question the derive gets
+    // asked most, and the answer is a type the compiler either accepts or does
+    // not, so the documented one is the one that builds.
+    assert_quotes(
+        "docs/derive.md",
+        "A type nothing reads carries none:",
+        "examples/derive.rs",
+    );
 }
