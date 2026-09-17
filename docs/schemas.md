@@ -470,11 +470,11 @@ assert_eq!(structio::to_string(&request), text);
 
 #### `Value` is not this
 
-Both are destinations for a value with no declared type, and they are for opposite jobs. `Value` is a tree, so it sorts an object's keys, respells every number through this crate's formatters, and decodes a string's escapes, and it has nowhere to put an integer literal wider than the types it stores:
+Both are destinations for a value with no declared type, and they are for opposite jobs. `Value` is a tree. It keeps an object's members in the order the document listed them, but it respells every number through this crate's formatters, decodes a string's escapes, lays the tokens out under its own policy rather than the producer's, and has nowhere to put an integer literal wider than the types it stores:
 
 ```
 in : {"z":1,"a":1.0,"big":12345678901234567890123,"s":"\u0041"}
-out: {"a":1.0,"big":1.2345678901234568E22,"s":"A","z":1}
+out: {"z":1,"a":1.0,"big":1.2345678901234568E22,"s":"A"}
 ```
 
 Every one of those is the right behaviour for a document you are going to *look at* and the wrong one for a document you are going to hand on. The body that leaves is not the body that arrived, so anything downstream that hashes it or verifies a signature over it now fails on a document nobody meant to change. Reach for `Value` to walk a document and for `Raw` to carry one.

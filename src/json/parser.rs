@@ -740,16 +740,15 @@ impl<'de, O: Options> Parser<'de, O> {
     /// members are that variant's own fields.
     ///
     /// A tag that comes first costs one pass. One that comes later is found
-    /// by stepping over the members before it, which are then read after the
-    /// members that follow it, so a document whose keys were sorted (as a
-    /// document built from a map is) reads the same as one that put the tag
-    /// first. The members before the tag are walked twice, once to step over
-    /// them and once to read them, and because they are read last, a key
-    /// that appears both before and after the tag keeps the earlier value
-    /// where the tag-first form keeps the later. A payload member that is
-    /// itself tagged late stacks its own run on this one. An object with no
-    /// tag at all is [`ErrorCode::ExpectedTag`], reported against its first
-    /// key.
+    /// by stepping over the members before it, which are then read after
+    /// the members that follow it, so a document whose keys were sorted
+    /// reads the same as one that put the tag first. The members before the
+    /// tag are walked twice, once to step over them and once to read them,
+    /// and because they are read last, a key that appears both before and
+    /// after the tag keeps the earlier value where the tag-first form keeps
+    /// the later. A payload member that is itself tagged late stacks its
+    /// own run on this one. An object with no tag at all is
+    /// [`ErrorCode::ExpectedTag`], reported against its first key.
     ///
     /// A tag that names no variant is [`ErrorCode::UnknownVariant`] under
     /// every policy, for the reason [`read_enum`](Self::read_enum) gives.

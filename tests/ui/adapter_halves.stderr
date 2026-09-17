@@ -13,15 +13,7 @@ help: the trait `structio::json::ReadAs<'_, _>` is not implemented for `Tenths`
    = note: a declaration generates both directions unless it narrows to one: an adapter in a struct declared `write_only` carries the write half alone
    = note: where the struct really is read, a stub whose body is `p.skip_value()` is legitimate there
    = help: the following other types implement trait `structio::json::ReadAs<'de, T>`:
-             `Arc<A>` implements `structio::json::ReadAs<'de, Arc<T>>`
-             `BTreeMap<KA, VA>` implements `structio::json::ReadAs<'de, BTreeMap<K, V>>`
-             `BTreeSet<A>` implements `structio::json::ReadAs<'de, BTreeSet<T>>`
-             `Box<A>` implements `structio::json::ReadAs<'de, Box<T>>`
-             `HashMap<KA, VA>` implements `structio::json::ReadAs<'de, HashMap<K, V, S>>`
-             `HashSet<A>` implements `structio::json::ReadAs<'de, HashSet<T, S>>`
-             `Option<A>` implements `structio::json::ReadAs<'de, Option<T>>`
-             `Rc<A>` implements `structio::json::ReadAs<'de, Rc<T>>`
-           and $N others
+             $IMPLEMENTORS
 
 error[E0277]: the trait bound `Tenths: structio::beve::ReadAs<'_, _>` is not satisfied
   --> tests/ui/adapter_halves.rs:40:45
@@ -38,15 +30,7 @@ help: the trait `structio::beve::ReadAs<'_, _>` is not implemented for `Tenths`
    = note: a declaration generates both directions unless it narrows to one: an adapter in a struct declared `write_only` carries the write half alone
    = note: where the struct really is read, a stub whose body is `r.skip_value()` is legitimate there
    = help: the following other types implement trait `structio::beve::ReadAs<'de, T>`:
-             `Arc<A>` implements `structio::beve::ReadAs<'de, Arc<T>>`
-             `BTreeMap<KA, VA>` implements `structio::beve::ReadAs<'de, BTreeMap<K, V>>`
-             `BTreeSet<A>` implements `structio::beve::ReadAs<'de, BTreeSet<T>>`
-             `Box<A>` implements `structio::beve::ReadAs<'de, Box<T>>`
-             `HashMap<KA, VA>` implements `structio::beve::ReadAs<'de, HashMap<K, V, S>>`
-             `HashSet<A>` implements `structio::beve::ReadAs<'de, HashSet<T, S>>`
-             `Option<A>` implements `structio::beve::ReadAs<'de, Option<T>>`
-             `Rc<A>` implements `structio::beve::ReadAs<'de, Rc<T>>`
-           and $N others
+             $IMPLEMENTORS
 
 error[E0277]: the trait bound `Skipped: structio::json::WriteAs<_>` is not satisfied
   --> tests/ui/adapter_halves.rs:47:45
@@ -66,15 +50,7 @@ help: the trait `structio::json::WriteAs<_>` is not implemented for `Skipped`
    = note: the direction axis narrows only to the write half, so an adapter used in a struct that is only ever read still needs this half
    = note: there is no empty stub: a member that writes nothing truncates the object. `w.write_null()` with `is_null` returning `true` lets `SkipNull` drop the member
    = help: the following other types implement trait `structio::json::WriteAs<T>`:
-             `Arc<A>` implements `structio::json::WriteAs<Arc<T>>`
-             `BTreeMap<KA, VA>` implements `structio::json::WriteAs<BTreeMap<K, V>>`
-             `BTreeSet<A>` implements `structio::json::WriteAs<BTreeSet<T>>`
-             `Box<A>` implements `structio::json::WriteAs<Box<T>>`
-             `HashMap<KA, VA>` implements `structio::json::WriteAs<HashMap<K, V, S>>`
-             `HashSet<A>` implements `structio::json::WriteAs<HashSet<T, S>>`
-             `Option<A>` implements `structio::json::WriteAs<Option<T>>`
-             `Rc<A>` implements `structio::json::WriteAs<Rc<T>>`
-           and $N others
+             $IMPLEMENTORS
 note: required by a bound in `structio::json::Writer::<'a, O>::member_with`
   --> $DIR/src/json/writer.rs
    |
@@ -99,15 +75,7 @@ help: the trait `structio::beve::WriteAs<_>` is not implemented for `Skipped`
    = note: the direction axis narrows only to the write half, so an adapter used in a struct that is only ever read still needs this half
    = note: there is no empty stub: a member that writes nothing truncates the object. `w.write_null()` with `is_null` returning `true` lets `SkipNull` drop the member
    = help: the following other types implement trait `structio::beve::WriteAs<T>`:
-             `Arc<A>` implements `structio::beve::WriteAs<Arc<T>>`
-             `BTreeMap<KA, VA>` implements `structio::beve::WriteAs<BTreeMap<K, V>>`
-             `BTreeSet<A>` implements `structio::beve::WriteAs<BTreeSet<T>>`
-             `Box<A>` implements `structio::beve::WriteAs<Box<T>>`
-             `HashMap<KA, VA>` implements `structio::beve::WriteAs<HashMap<K, V, S>>`
-             `HashSet<A>` implements `structio::beve::WriteAs<HashSet<T, S>>`
-             `Option<A>` implements `structio::beve::WriteAs<Option<T>>`
-             `Rc<A>` implements `structio::beve::WriteAs<Rc<T>>`
-           and $N others
+             $IMPLEMENTORS
 note: required by a bound in `structio::beve::Writer::<'a, O>::member_with`
   --> $DIR/src/beve/writer.rs
    |
@@ -129,12 +97,4 @@ help: the trait `structio::beve::WriteAs<_>` is not implemented for `Skipped`
    = note: the direction axis narrows only to the write half, so an adapter used in a struct that is only ever read still needs this half
    = note: there is no empty stub: a member that writes nothing truncates the object. `w.write_null()` with `is_null` returning `true` lets `SkipNull` drop the member
    = help: the following other types implement trait `structio::beve::WriteAs<T>`:
-             `Arc<A>` implements `structio::beve::WriteAs<Arc<T>>`
-             `BTreeMap<KA, VA>` implements `structio::beve::WriteAs<BTreeMap<K, V>>`
-             `BTreeSet<A>` implements `structio::beve::WriteAs<BTreeSet<T>>`
-             `Box<A>` implements `structio::beve::WriteAs<Box<T>>`
-             `HashMap<KA, VA>` implements `structio::beve::WriteAs<HashMap<K, V, S>>`
-             `HashSet<A>` implements `structio::beve::WriteAs<HashSet<T, S>>`
-             `Option<A>` implements `structio::beve::WriteAs<Option<T>>`
-             `Rc<A>` implements `structio::beve::WriteAs<Rc<T>>`
-           and $N others
+             $IMPLEMENTORS

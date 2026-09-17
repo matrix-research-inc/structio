@@ -223,7 +223,7 @@ This is the convention most JSON APIs settled on, and the one a C++ Glaze `std::
 
 ### The tag need not come first
 
-A tag that comes first is read in one pass, the member deciding the variant arriving before the members whose meaning it decides. A tag that comes later is found by stepping over the members before it; the variant is dispatched, the members after the tag are read, and then the ones stepped over are read into the same value. A document whose keys were sorted, which is what a map-backed writer produces, therefore reads the same as one that put the tag first:
+A tag that comes first is read in one pass, the member deciding the variant arriving before the members whose meaning it decides. A tag that comes later is found by stepping over the members before it; the variant is dispatched, the members after the tag are read, and then the ones stepped over are read into the same value. A document whose keys were sorted, which is what a `BTreeMap` field produces, therefore reads the same as one that put the tag first:
 
 ```rust
 from_str::<Shape>(r#"{"kind":"Circle","radius":1}"#)?;  // one pass

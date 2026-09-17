@@ -210,14 +210,17 @@ fn a_late_tag_inside_a_late_tag_loses_nothing() {
         a: 1,
         z: Shape::Circle(Circle { radius: 2.5 }),
     });
-    let sorted =
+    // Sorted order, which is what a sorted-key producer emits and where the
+    // tag lands after `a` rather than first. A `Value` writes its members as
+    // they were given, so this is the order that reaches the reader.
+    let outer_late =
         structio::value!({"a": 1, "kind": "Frame", "z": {"kind": "Circle", "radius": 2.5}});
     assert_eq!(
-        sorted.to_string(),
+        outer_late.to_string(),
         r#"{"a":1,"kind":"Frame","z":{"kind":"Circle","radius":2.5}}"#
     );
-    assert_eq!(from_str::<Framed>(&sorted.to_string()).unwrap(), want);
-    assert_eq!(from_beve::<Framed>(&sorted.to_beve()).unwrap(), want);
+    assert_eq!(from_str::<Framed>(&outer_late.to_string()).unwrap(), want);
+    assert_eq!(from_beve::<Framed>(&outer_late.to_beve()).unwrap(), want);
     // The inner tag late as well.
     let text = r#"{"a":1,"kind":"Frame","z":{"radius":2.5,"kind":"Circle"}}"#;
     assert_eq!(from_str::<Framed>(text).unwrap(), want);
