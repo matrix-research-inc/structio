@@ -1,0 +1,7 @@
+error: structio: a declaration narrows to the write half or to neither, so there is no `read_only`. A type that is only ever read still generates its write impls, and its fields still need them: a field with nothing to say on the way out writes `null`, with `is_null` returning `true` so that `SkipNull` drops the member
+ --> tests/ui/read_only.rs:6:1
+  |
+6 | structio::object!(read_only Config { host });
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__no_read_only` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,0 +1,11 @@
+error: `required` is a rule about reading: a document that leaves this member out is `MissingKey`. A type declared `write_only` is never read, so there is nothing to require
+ --> tests/ui/write_only_misuse.rs:4:16
+  |
+4 |     #[structio(required)]
+  |                ^^^^^^^^
+
+error: `write_only` describes the whole type, so it goes on the type: a declaration generates one direction or both, not one direction for one field. A field that is written but not read is `skip_read`, a stage 3 attribute
+  --> tests/ui/write_only_misuse.rs:10:16
+   |
+10 |     #[structio(write_only)]
+   |                ^^^^^^^^^^

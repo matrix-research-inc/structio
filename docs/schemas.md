@@ -224,6 +224,57 @@ A borrowed `&[u8]` is the case that forces this: BEVE stores a run of bytes verb
 
 The shared half, the field list and its compile-time hash, is emitted once either way, so a type declared with `beve_object!` can be given JSON impls by hand later without conflict.
 
+### One direction only
+
+A declaration generates the reading impls and the writing ones together by default, so **every field's type has to satisfy both**, even in a struct the program only ever writes. A declaration that leads with `write_only` generates the write half alone:
+
+```rust
+use structio::{Options, beve, json, to_beve, to_string};
+
+/// A handle onto a device register, meaningful on the way out alone.
+struct Register(u32);
+
+impl json::Write for Register {
+    fn write<O: Options>(&self, w: &mut json::Writer<'_, O>) {
+        self.0.write(w);
+    }
+}
+
+impl beve::Write for Register {
+    fn write<O: Options>(&self, w: &mut beve::Writer<'_, O>) {
+        self.0.write(w);
+    }
+}
+
+struct Surface {
+    id: Register,
+    volts: f64,
+}
+
+structio::object!(write_only Surface { id, volts });
+
+fn main() {
+    let s = Surface {
+        id: Register(7),
+        volts: 3.25,
+    };
+
+    assert_eq!(to_string(&s), r#"{"id":7,"volts":3.25}"#);
+
+    // The same two members as a BEVE object. Nothing reads a `Surface` back in
+    // either format, so nothing in it needs a `Read` impl or a `Default`.
+    assert!(!to_beve(&s).is_empty());
+}
+```
+
+`Register` has no `Read` impl and no `Default`, and needs neither: nothing in a write-only declaration constructs a value or fills one. That is the whole of what the narrowing buys, and what it does not touch is worth saying too. The keys, the case rule, the adapters, the typed array a positional struct packs into, the string array a run of a unit enum packs into and what `SkipNull` drops are all the bytes the unnarrowed declaration would have written.
+
+It comes first, in front of the generics and the type, and every shape takes it: `array!(write_only ..)`, `unit_enum!(write_only ..)` and `tagged_enum!(write_only ..)`. The two axes narrow independently, so `json_object!(write_only ..)` is one format and one direction.
+
+`#[required]` is refused on a write-only declaration, at the declaration. It is a rule about reading -- a document that leaves the member out is `MissingKey` -- and a declaration that generates no read has nothing to require.
+
+There is no `read_only`, because nothing has asked for one. The two halves are not symmetric in what they cost to satisfy, and not in one direction either: a read asks a field's type for `Default` as well as for an impl, while a write the program never performs has no inert stub at all, a member that writes nothing being a truncated object rather than a no-op. The syntax has room for the other narrowing in the same position, and so do the impls, each format's read half being a macro of its own already.
+
 ### Positional structs
 
 Some types are encoded as arrays rather than objects: a coordinate, a colour, a row of a table, anything whose field names carry no information the reader does not already have. `array!` declares those. It takes brackets where `object!` takes braces, and the shape of the declaration is the shape of the output:
@@ -349,7 +400,7 @@ A type outside this table can still be a field, through an [adapter](#types-you-
 
 ### `Default` is required where values are constructed
 
-Any type that has to be *created* during a read needs `Default`: an `Option`'s payload, the new tail of a growing `Vec`, a map's values, and an enum variant's payload, since reading a variant the destination is not already holding has to build one. Types that are only ever read *into* an existing slot do not.
+A declaration that generates no read constructs nothing, so a `write_only` type needs none of this; see [One direction only](#one-direction-only). Where a read is generated, any type that has to be *created* during it needs `Default`: an `Option`'s payload, the new tail of a growing `Vec`, a map's values, and an enum variant's payload, since reading a variant the destination is not already holding has to build one. Types that are only ever read *into* an existing slot do not.
 
 This is the same requirement Glaze places on the types it deserializes, and it is what lets reading reuse the storage a value already holds instead of building a new one and assigning over the top.
 

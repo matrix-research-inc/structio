@@ -1,0 +1,7 @@
+error: structio: `write_only` in front of a declaration is the marker that narrows it to the write half, so `write_only::..` was read as that marker followed by a stray `::`. Name the type without the leading `::`, or bring it into scope with a `use` and name it there
+ --> tests/ui/write_only_module_path.rs:7:1
+  |
+7 | structio::object!(write_only::Surface { id });
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__write_only_is_the_marker` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)

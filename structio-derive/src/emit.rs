@@ -35,7 +35,7 @@ pub(crate) fn expand(input: &Input) -> Result<TokenStream> {
             per_format(container.format, "object"),
             container.rename_all.clone(),
             None,
-            object_body(fields, at)?,
+            object_body(fields, container.write_only.is_some(), at)?,
         ),
         Shape::Enum(variants) => {
             if variants.is_empty() {
@@ -69,10 +69,19 @@ pub(crate) fn expand(input: &Input) -> Result<TokenStream> {
     out.punct('!', Spacing::Alone);
 
     let mut call = Out::new(at);
+    if container.write_only.is_some() {
+        call.ident("write_only");
+    }
     if !input.generics.is_empty() {
         call.group(
             Delimiter::Bracket,
-            impl_generics(&input.generics, &root, container.format, at),
+            impl_generics(
+                &input.generics,
+                &root,
+                container.format,
+                container.write_only.is_some(),
+                at,
+            ),
         );
     }
     call.extend(type_tokens(input));
@@ -131,10 +140,21 @@ fn per_format(format: Format, base: &'static str) -> &'static str {
     }
 }
 
-/// The bracketed impl generics: each parameter as declared, with the format's
-/// read-and-write bound appended to every type parameter, since the impls
-/// read and write through it.
-fn impl_generics(params: &[Param], root: &[TokenTree], format: Format, at: Span) -> Vec<TokenTree> {
+/// The bracketed impl generics: each parameter as declared, with the bound the
+/// impls need through it appended to every type parameter.
+///
+/// That is the format's read-and-write bound, and `Default`, because a read
+/// constructs a value of the parameter to fill. A `write_only` declaration
+/// generates no read, so it appends the write bound alone and no `Default`:
+/// the two halves of the burden go together, and narrowing the direction is
+/// what lifts them.
+fn impl_generics(
+    params: &[Param],
+    root: &[TokenTree],
+    format: Format,
+    write_only: bool,
+    at: Span,
+) -> Vec<TokenTree> {
     let mut out = Out::new(at);
     for (i, param) in params.iter().enumerate() {
         if i > 0 {
@@ -169,14 +189,18 @@ fn impl_generics(params: &[Param], root: &[TokenTree], format: Format, at: Span)
                         out.path_sep();
                     }
                 }
-                out.ident("ReadWrite");
-                out.punct('+', Spacing::Alone);
-                out.path_sep();
-                out.ident("core");
-                out.path_sep();
-                out.ident("default");
-                out.path_sep();
-                out.ident("Default");
+                if write_only {
+                    out.ident("Write");
+                } else {
+                    out.ident("ReadWrite");
+                    out.punct('+', Spacing::Alone);
+                    out.path_sep();
+                    out.ident("core");
+                    out.path_sep();
+                    out.ident("default");
+                    out.path_sep();
+                    out.ident("Default");
+                }
             }
         }
     }
@@ -207,7 +231,11 @@ fn type_tokens(input: &Input) -> Vec<TokenTree> {
 }
 
 /// `{ #[required] "key" => field as With, .., }`
-fn object_body(fields: &[crate::parse::Field], at: Span) -> Result<Vec<TokenTree>> {
+fn object_body(
+    fields: &[crate::parse::Field],
+    write_only: bool,
+    at: Span,
+) -> Result<Vec<TokenTree>> {
     let mut body = Out::new(at);
     let mut skipped = false;
     for field in fields {
@@ -217,6 +245,15 @@ fn object_body(fields: &[crate::parse::Field], at: Span) -> Result<Vec<TokenTree
             continue;
         }
         if let Some(required) = opts.required {
+            if write_only {
+                return Err(Error::new(
+                    required,
+                    "`required` is a rule about reading: a document that \
+                     leaves this member out is `MissingKey`. A type declared \
+                     `write_only` is never read, so there is nothing to \
+                     require",
+                ));
+            }
             body.punct('#', Spacing::Alone);
             let mut marker = Out::new(required);
             marker.ident("required");

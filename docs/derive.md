@@ -61,7 +61,7 @@ fn main() {
 }
 ```
 
-That declares and writes in both formats without a `Default`. See [`Default` is required where values are constructed](schemas.md#default-is-required-where-values-are-constructed).
+That declares and writes in both formats without a `Default`. Where nothing reads the type at all, `#[structio(write_only)]` says so outright, and then its *fields'* types are relieved of `Default` too, and of the read impls with it; see [One direction only](schemas.md#one-direction-only). See also [`Default` is required where values are constructed](schemas.md#default-is-required-where-values-are-constructed).
 
 ## Attributes
 
@@ -76,6 +76,7 @@ Every attribute maps onto one piece of the macro syntax. Nothing here is a secon
 | `array` | `array!` rather than `object!`: the struct is written as a positional array. |
 | `array, element = "u8"` | `array!(T [u8; ..])`, the [homogeneous form](schemas.md#homogeneous-structs) that BEVE writes as one typed array. |
 | `json` / `beve` | `json_object!`, `json_array!`, `json_tagged_enum!` or the `beve_` counterpart: impls for one format only. |
+| `write_only` | `write_only` in front of the declaration: the write impls alone and no read, so no field's type needs a read impl or a `Default`. Every shape takes it, and it composes with `json` / `beve`. See [One direction only](schemas.md#one-direction-only). |
 | `crate = "path"` | The path to structio where it is re-exported under another name. The default is `::structio`. |
 
 ### On a field
@@ -118,7 +119,7 @@ structio::object!(['a, T: Clone + PartialEq + ::structio::ReadWrite + ::core::de
 });
 ```
 
-Each type parameter gets the format's read-and-write bound and `Default` appended, since the impls read and write through it; `json` and `beve` narrow that to `json::ReadWrite` or `beve::ReadWrite`. A parameter's default is dropped, as an impl requires. A `where` clause is folded onto the parameters it bounds. A predicate on anything else, `Vec<T>: Clone` say, has nowhere to go and is refused at the predicate: the macros take bounds inline and nothing else.
+Each type parameter gets the format's read-and-write bound and `Default` appended, since the impls read and write through it; `json` and `beve` narrow that to `json::ReadWrite` or `beve::ReadWrite`. A `write_only` type appends `::structio::Write`, the write half of the same bound, and no `Default`: with no read generated there is nothing to construct. A parameter's default is dropped, as an impl requires. A `where` clause is folded onto the parameters it bounds. A predicate on anything else, `Vec<T>: Clone` say, has nowhere to go and is refused at the predicate: the macros take bounds inline and nothing else.
 
 A lifetime is the input lifetime, exactly as it is for a declared type that leads with one.
 
@@ -161,6 +162,7 @@ An error out of the expansion lands on the declaration as a whole: a field whose
 - **A union.** Which field holds the value is not something the bytes can say.
 - **A variant with several values, or with named fields.** See [Enums](#enums).
 - **A `where` predicate on anything but the type's own parameters.** See [Generics](#generics).
+- **`required` on a `write_only` type.** Absence is a rule about reading, and such a type is never read.
 - **An attribute from a later stage.** Named as such, with the stage, rather than as an unknown attribute.
 
 ## Later stages
@@ -173,7 +175,6 @@ The derive ships in three stages. This is stage 1, which covers everything the m
 - **`tag = "kind", content = "data"`**, adjacent tagging: `{"kind":"NotTracking","data":{"mode":2}}`, with the two members accepted in either order.
 - **`alias = "key"`** on a field or variant: one more key accepted on read, pointing at the same field.
 - **`transparent`**, a one-field struct written as that field: `Read` and `Write` delegate, with no object and no keys around it.
-- **`write_only`**, the `Keys` and `WriteObject` half and no read impl, for a type that is only ever written: a declaration generates both directions, so today every field type has to satisfy a read the program never performs.
 
 **Stage 3** adds per-field policy:
 
@@ -202,6 +203,8 @@ Not planned: `flatten`, which changes the shape of the object the reader sees an
 | `#[serde(deny_unknown_fields)]` | none | The default policy already refuses unknown keys; `SkipUnknown` steps over them. A per-type override is not planned. |
 | `#[serde(flatten)]` | none | Not planned. |
 | `#[serde(untagged)]` | none | A value with no tag has no name to look up. |
+| `#[derive(Serialize)]` alone | `#[structio(write_only)]` | One derive covers both directions, so narrowing to the write half is an attribute rather than a second derive. |
+| `#[derive(Deserialize)]` alone | none | A declaration narrows to the write half or to neither, so a read-only type's fields still need their `Write` impls. See [One direction only](schemas.md#one-direction-only). |
 | `#[serde(borrow)]` | not needed | A lifetime on the type is the input lifetime. |
 | `#[serde(default)]` with no path | `#[derive(Default)]` | A missing key keeps what the destination held, and the entry points that return a value start from `Default`. |
 

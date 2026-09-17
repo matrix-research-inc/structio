@@ -51,6 +51,14 @@ harness = false
 name = "derive"
 required-features = ["derive"]
 
+[dev-dependencies]
+# The compile-fail harness for tests/ui, for the same reason `structio-derive`
+# carries it: `nocompile` depends on nothing but `std`. What it pins here is
+# the messages the declaration macros produce when a declaration is refused,
+# which no ordinary test can reach -- the fixtures are programs that must not
+# compile.
+nocompile = "0.6"
+
 [[example]]
 name = "derive"
 required-features = ["derive"]

@@ -182,12 +182,47 @@ impl<O: Options, T: Keys> Fields<O, T> {
 /// [`json::ReadWrite`]: crate::json::ReadWrite
 /// [`beve::ReadWrite`]: crate::beve::ReadWrite
 #[diagnostic::on_unimplemented(
-    note = "this is `Read` and `Write` in both formats at once, the bound the \
-            derive appends to every type parameter; one `structio::object!` or \
-            `#[derive(Structio)]` declaration covers both halves"
+    note = "this is `Read` and `Write` in both formats at once, the bound a \
+            declaration appends to every type parameter; one \
+            `structio::object!` or `#[derive(Structio)]` declaration covers \
+            both halves",
+    note = "a `write_only` declaration appends `structio::Write` instead, \
+            which is this without the read half"
 )]
 pub trait ReadWrite: crate::json::ReadWrite + crate::beve::ReadWrite {}
 impl<T> ReadWrite for T where T: crate::json::ReadWrite + crate::beve::ReadWrite {}
+
+/// Convenience bound for generic containers that are only ever written:
+/// writable in every format this crate supports.
+///
+/// The write-only counterpart of [`ReadWrite`]. A declaration that leads with
+/// `write_only` generates no read impls, so a generic one bounds its type
+/// parameters by this instead, and a type parameter of such a declaration
+/// needs no `Default` either: nothing constructs a value it would have to fill.
+///
+/// ```ignore
+/// structio::object!(write_only [T: structio::Write] Sample<T> { value });
+/// ```
+///
+/// For a type that is only ever written in one format, the narrower
+/// [`json::Write`] or [`beve::Write`] will do.
+///
+/// Unlike [`ReadWrite`] this does not require `Sized`: `str` and `[u8]` are
+/// writable, and it is reading that has to have somewhere to put the value.
+///
+/// There is no `Read` counterpart at this level. The direction axis narrows
+/// only to the write half, so nothing would spell one.
+///
+/// [`json::Write`]: crate::json::Write
+/// [`beve::Write`]: crate::beve::Write
+#[diagnostic::on_unimplemented(
+    note = "this is `Write` in both formats at once, the bound a `write_only` \
+            declaration appends to every type parameter; one \
+            `structio::object!(write_only ..)` or `#[structio(write_only)]` \
+            declaration covers it"
+)]
+pub trait Write: crate::json::Write + crate::beve::Write {}
+impl<T: ?Sized> Write for T where T: crate::json::Write + crate::beve::Write {}
 
 /// The length of a struct encoded as a positional array.
 ///

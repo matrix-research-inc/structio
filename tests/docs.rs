@@ -96,4 +96,12 @@ fn docs_quote_the_example_verbatim() {
         "A type nothing reads carries none:",
         "examples/derive.rs",
     );
+    // Narrowing a declaration to one direction is worth nothing unless a
+    // field's type really can drop its read half, so the documented case is
+    // one the compiler has accepted.
+    assert_quotes(
+        "docs/schemas.md",
+        "### One direction only",
+        "examples/write_only.rs",
+    );
 }

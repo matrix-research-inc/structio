@@ -92,6 +92,8 @@ structio::unit_enum!([const N: usize] Slot<N> { Free, Taken });
 
 `json_tagged_enum!` and `beve_tagged_enum!` generate one side only, as their `object!` counterparts do.
 
+A declaration that leads with `write_only` generates one *direction* only, the write half: `unit_enum!(write_only ..)` and `tagged_enum!(write_only ..)`, and the two narrowings compose. See [One direction only](schemas.md#one-direction-only).
+
 ## One payload, of a type you already declared
 
 A variant carries at most one value. That is the shape a `std::variant<A, B, C>` has, and the one that composes: the payload is an ordinary type, declared with `object!` or `array!` or built in, and the enum adds only the tag.

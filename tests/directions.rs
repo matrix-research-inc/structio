@@ -1,11 +1,12 @@
-//! A type that travels in one direction, given the half a declaration asks for
-//! anyway.
+//! A field that travels in one direction inside a struct that travels in both.
 //!
-//! The format axis is narrowable and the direction axis is not: `object!` and
-//! `#[derive(Structio)]` generate the reading impls and the writing ones
-//! together, so a field's type needs both even where the struct only ever moves
-//! one way. Both halves of that meet here, because the stub each one wants is
-//! not the same stub.
+//! Where the whole type moves one way, a declaration says so: `write_only`
+//! generates the writing impls alone and a field's type needs no read impl at
+//! all. That is `tests/write_only.rs`. What is left here is the case it does
+//! not answer, and the older one: a struct that really is read and written,
+//! holding one field that means nothing in one of those directions. Its type
+//! has to satisfy both halves anyway, so it supplies a stub for the half it
+//! has no answer for, and the stub each direction wants is not the same stub.
 //!
 //! A value with no meaning coming back in is answered by a `Read` that skips.
 //! Skipping is inert: the value is consumed and nothing is claimed about it.
@@ -19,10 +20,9 @@
 //! policies.
 //!
 //! The diagnostics themselves, the `#[diagnostic::on_unimplemented]` notes on
-//! `Read`, `ReadAs`, `Write` and `WriteAs`, are compiler messages and are
-//! asserted nowhere: the root crate carries no compile-fail harness. The one in
-//! `structio-derive` is not a substitute, its cases being written to be refused
-//! at the attribute and so never to reach the type checker at all.
+//! `Read`, `ReadAs`, `Write` and `WriteAs`, are compiler messages, so what
+//! holds their wording in place is `tests/ui`, where the fixtures are programs
+//! that must not compile. All eight are pinned there, in both formats.
 
 use structio::{
     ErrorCode, Options, SkipNull, beve, from_beve, from_str, json, to_beve, to_beve_with,
