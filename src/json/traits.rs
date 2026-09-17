@@ -36,9 +36,12 @@ use crate::traits::{Elements, Keys, Variants};
 #[diagnostic::on_unimplemented(
     note = "a type becomes readable by being declared with `structio::object!` or \
             `#[derive(Structio)]`, or by a `json::Read` impl written by hand",
-    note = "a declaration generates both directions at once, so a type used in a \
-            struct that is only ever written still needs this impl",
-    note = "a stub whose body is `p.skip_value()` is legitimate there"
+    note = "a declaration generates both directions unless it narrows to one: a \
+            struct that is only ever written is declared \
+            `object!(write_only ..)` or `#[structio(write_only)]`, and then \
+            nothing in it needs a read impl",
+    note = "where the struct really is read, a stub whose body is \
+            `p.skip_value()` is legitimate there"
 )]
 pub trait Read<'de>: Sized {
     /// Parse into `self`, from the cursor's current position.
@@ -129,9 +132,11 @@ pub trait Write {
 #[diagnostic::on_unimplemented(
     note = "`{Self}` is the adapter the field named; it is what carries the impl, \
             rather than the field's own type",
-    note = "a declaration generates both directions at once, so an adapter used in \
-            a struct that is only ever written still needs this half",
-    note = "a stub whose body is `p.skip_value()` is legitimate there"
+    note = "a declaration generates both directions unless it narrows to one: an \
+            adapter in a struct declared `write_only` carries the write half \
+            alone",
+    note = "where the struct really is read, a stub whose body is \
+            `p.skip_value()` is legitimate there"
 )]
 pub trait ReadAs<'de, T> {
     /// Read into `value`, from the cursor's current position.
@@ -363,7 +368,9 @@ pub trait ReadInternallyTagged<'de>: Variants + Sized {
 #[diagnostic::on_unimplemented(
     note = "this is `json::Read` and `json::Write` at once, the bound a JSON-only \
             declaration appends to every type parameter; one \
-            `structio::json_object!` covers both halves"
+            `structio::json_object!` covers both halves",
+    note = "a `write_only` declaration appends `json::Write` instead, which is \
+            this without the read half"
 )]
 pub trait ReadWrite: for<'de> Read<'de> + Write {}
 impl<T> ReadWrite for T where T: for<'de> Read<'de> + Write {}

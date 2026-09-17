@@ -37,9 +37,12 @@ use crate::traits::{Elements, Keys, Variants};
 #[diagnostic::on_unimplemented(
     note = "a type becomes readable by being declared with `structio::object!` or \
             `#[derive(Structio)]`, or by a `beve::Read` impl written by hand",
-    note = "a declaration generates both directions at once, so a type used in a \
-            struct that is only ever written still needs this impl",
-    note = "a stub whose body is `r.skip_value()` is legitimate there"
+    note = "a declaration generates both directions unless it narrows to one: a \
+            struct that is only ever written is declared \
+            `object!(write_only ..)` or `#[structio(write_only)]`, and then \
+            nothing in it needs a read impl",
+    note = "where the struct really is read, a stub whose body is \
+            `r.skip_value()` is legitimate there"
 )]
 pub trait Read<'de>: Sized {
     /// Read into `self`, from the reader's current position.
@@ -185,9 +188,11 @@ pub trait Write {
 #[diagnostic::on_unimplemented(
     note = "`{Self}` is the adapter the field named; it is what carries the impl, \
             rather than the field's own type",
-    note = "a declaration generates both directions at once, so an adapter used in \
-            a struct that is only ever written still needs this half",
-    note = "a stub whose body is `r.skip_value()` is legitimate there"
+    note = "a declaration generates both directions unless it narrows to one: an \
+            adapter in a struct declared `write_only` carries the write half \
+            alone",
+    note = "where the struct really is read, a stub whose body is \
+            `r.skip_value()` is legitimate there"
 )]
 pub trait ReadAs<'de, T> {
     /// Read into `value`, from the reader's current position.
@@ -524,7 +529,9 @@ pub trait ReadInternallyTagged<'de>: Variants + Sized {
 #[diagnostic::on_unimplemented(
     note = "this is `beve::Read` and `beve::Write` at once, the bound a BEVE-only \
             declaration appends to every type parameter; one \
-            `structio::beve_object!` covers both halves"
+            `structio::beve_object!` covers both halves",
+    note = "a `write_only` declaration appends `beve::Write` instead, which is \
+            this without the read half"
 )]
 pub trait ReadWrite: for<'de> Read<'de> + Write {}
 impl<T> ReadWrite for T where T: for<'de> Read<'de> + Write {}
