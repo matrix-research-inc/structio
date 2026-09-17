@@ -16,15 +16,7 @@ help: the trait `structio::json::Read<'_>` is not implemented for `Register`
    = note: a declaration generates both directions unless it narrows to one: a struct that is only ever written is declared `object!(write_only ..)` or `#[structio(write_only)]`, and then nothing in it needs a read impl
    = note: where the struct really is read, a stub whose body is `p.skip_value()` is legitimate there
    = help: the following other types implement trait `structio::json::Read<'de>`:
-             &'de str
-             ()
-             (A, B)
-             (A, B, C)
-             (A, B, C, D)
-             (A, B, C, D, E)
-             (A, B, C, D, E, F)
-             (A, B, C, D, E, F, G)
-           and $N others
+             $IMPLEMENTORS
    = note: this error originates in the macro `$crate::__json_read_impls` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `Register: structio::beve::Read<'_>` is not satisfied
@@ -45,13 +37,5 @@ help: the trait `structio::beve::Read<'_>` is not implemented for `Register`
    = note: a declaration generates both directions unless it narrows to one: a struct that is only ever written is declared `object!(write_only ..)` or `#[structio(write_only)]`, and then nothing in it needs a read impl
    = note: where the struct really is read, a stub whose body is `r.skip_value()` is legitimate there
    = help: the following other types implement trait `structio::beve::Read<'de>`:
-             &'de [u8]
-             &'de str
-             ()
-             (A, B)
-             (A, B, C)
-             (A, B, C, D)
-             (A, B, C, D, E)
-             (A, B, C, D, E, F)
-           and $N others
+             $IMPLEMENTORS
    = note: this error originates in the macro `$crate::__beve_read_impls` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)

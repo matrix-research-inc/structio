@@ -21,6 +21,16 @@
 //! the intended trade: renaming one is then a visible edit here rather than a
 //! silent change to what a user is shown.
 //!
+//! The implementor lists are elided to `$IMPLEMENTORS`. rustc prints the first
+//! few types implementing the trait and sorts them, so one impl added anywhere
+//! in this crate can displace an entry and re-bless every golden whose
+//! diagnostic reaches that trait. It has happened: adding `OrderedMap`'s
+//! adapter impls rewrote five lines in `adapter_halves.stderr`, a fixture
+//! about neither the type nor the trait. That list is the one part of these
+//! messages the crate does not author, and so the one part worth not pinning.
+//! The heading above it stays, because it names the trait, and the notes
+//! stay, because they are the product.
+//!
 //! Skipped under Miri, which cannot spawn the compiler these fixtures need,
 //! and on Windows, where `nocompile` declines to claim support.
 
@@ -31,6 +41,7 @@
 fn a_refused_declaration_says_what_to_do_instead() {
     let mut t = nocompile::cases!();
     t.dependency_path("structio", ".");
+    t.elide_implementors(true);
     t.compile_fail_dir("tests/ui");
     t.assert();
 }
