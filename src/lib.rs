@@ -302,6 +302,7 @@ pub mod ext;
 pub mod json;
 pub mod keymap;
 mod macros;
+pub mod map;
 mod num;
 pub mod options;
 mod stream;
@@ -313,6 +314,7 @@ pub mod value;
 pub use error::{Error, ErrorCode, Result, StreamError, StreamResult};
 pub use ext::{Complex, Matrix, MatrixLayout, MatrixRef};
 pub use keymap::KeyMap;
+pub use map::OrderedMap;
 pub use options::{
     AllowComments, Options, Pretty, PrettyInlineArrays, RequireKeys, SkipNull, SkipUnknown,
     Standard,
