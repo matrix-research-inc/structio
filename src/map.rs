@@ -5,8 +5,8 @@
 //! and write it back and the members come out alphabetised, which makes the
 //! result impossible to diff against anything that kept the order, including
 //! serde_json and Glaze's own `glz::generic`. [`OrderedMap`] is the map that
-//! keeps it. It is the Rust counterpart of Glaze's `glz::ordered_small_map`,
-//! built for the same shape of data: many small objects, a few large ones, and
+//! keeps it. It is the Rust counterpart of Glaze's `glz::ordered_map`, built
+//! for the same shape of data: many small objects, a few large ones, and
 //! lookups that must not pay for the large case in the small one.
 //!
 //! # Order is the storage
@@ -18,45 +18,74 @@
 //! existing key replaces its value where it already sits rather than moving it
 //! to the end, so the order a document was read in survives being edited.
 //! [`remove`](OrderedMap::remove) shifts the entries above it down, which costs
-//! `O(n)` and is the price of not disturbing everything else.
+//! `O(n)` and is the price of not disturbing everything else; the bucket table
+//! records positions, so the same removal walks it once to decrement the
+//! positions above the hole.
 //!
-//! # Linear below eight, indexed above
+//! # Linear below eight, hashed above
 //!
 //! Below `LINEAR_MAX` entries there is no index at all: a lookup compares keys
 //! one after another, straight down a vector that is already in cache. The
 //! threshold is eight because that is where the overwhelming majority of JSON
 //! objects live, and because below it the linear scan is not a fallback but the
-//! faster answer — hashing a key costs more than the handful of
+//! faster answer: hashing a key costs more than the handful of
 //! length-then-bytes comparisons it would save, and an index would be a second
 //! allocation for a map that fits in one cache line's worth of pointers.
 //!
-//! Above the threshold a lazily built index of `(hash, position)` pairs, sorted
-//! by hash, turns a lookup into a binary search. The hash is 32 bits, so it
-//! narrows rather than decides: entries sharing a hash form a run, and a lookup
-//! walks that run comparing whole keys. A 32-bit hash is a filter, never an
-//! answer, and the index lookup is written so that a collision costs a few
-//! extra comparisons and can never return the wrong entry.
+//! The ninth entry allocates a `HashTable`: a power-of-two array of buckets,
+//! each holding the position of an entry and 32 bits of that entry's hash,
+//! addressed by the low bits of the hash and resolved by robin hood probing
+//! over open addressing. This is the structure Glaze's `glz::ordered_map` uses.
+//! A bucket is eight bytes and holds no key, so a probe walks a dense array and
+//! rejects a wrong bucket on a 32-bit compare without touching the entries at
+//! all. The stored hash is a filter, never an answer: a bucket whose hash
+//! matches is still confirmed against the stored key before its position is
+//! returned, so a collision costs one comparison and can never produce the
+//! wrong entry.
 //!
-//! # The index covers a prefix
+//! Filling the table is linear. An insert places a single bucket, and the table
+//! is rebuilt only when the entries outgrow three quarters of it, which doubles
+//! the buckets and so costs `O(1)` per insert amortised.
 //!
-//! An index built over `n` entries is invalidated by appending the `n+1`th, and
-//! rebuilding on every append would make filling a map quadratic. So, as in
-//! Glaze, the index covers only the first `covered` entries; anything appended
-//! past that is found by scanning the tail. The tail is bounded:
-//! [`insert`](OrderedMap::insert) rebuilds the index whenever the tail would
-//! grow past `TAIL_MAX`, so a lookup is at worst a binary search plus eight
-//! comparisons, and filling a map pays for a sort once every eight inserts
-//! rather than once per insert.
+//! # Robin hood, and why a miss costs what a hit does
 //!
-//! Rebuilding happens only in `&mut self` methods. [`get`](OrderedMap::get),
+//! A bucket's *distance* is how far it sits from the bucket its hash asked for.
+//! Probing walks forward from that ideal bucket, and on the way an insert swaps
+//! itself with any occupant closer to home than the probe has already
+//! travelled, taking from the rich and carrying the displaced entry onward. The
+//! effect is that distances along a probe chain stay in the order the probe
+//! visits them, which gives a lookup a second way to stop: reaching an occupant
+//! whose own distance is shorter than the distance already walked proves the
+//! key is absent, because an insert would have stolen that bucket. So a miss
+//! ends on the same short walk a hit does, instead of running to the next empty
+//! bucket. Deletion has to preserve that ordering, which is why removing an
+//! entry shifts the rest of its chain back one bucket rather than leaving a
+//! tombstone behind: see `HashTable::erase`.
+//!
+//! # Why not a sorted index
+//!
+//! The obvious index for a map that is filled once and then read is an array of
+//! `(hash, position)` sorted by hash and binary-searched, which is what
+//! `glz::ordered_small_map` carries and what this module held until it was
+//! measured. Glaze can afford it because it builds the array *lazily*, on the
+//! first lookup after an insert, through a `mutable` member reached from a
+//! `const` method. Rust has no such route: `get(&self)` cannot rebuild
+//! anything, and the ways to make it able to, interior mutability on the hot
+//! path or a `&mut self` lookup that would spread through every caller, cost
+//! more than they are worth here. That leaves rebuilding from `insert`, where a
+//! sort per insert is `O(n log n)` per insert. Sorting only every eighth insert
+//! and scanning the unsorted tail divides that by eight without changing what
+//! it is: filling `n` entries stayed quadratic, and at a thousand keys this map
+//! cost eight times what a `BTreeMap` did. The same structure that is linear to
+//! fill in C++ is quadratic here, and the whole of the difference is the lazy
+//! rebuild.
+//!
+//! An open-addressed table has no such dependency. The insert that invalidates
+//! it also repairs it, one bucket at a time, so a lookup never has anything to
+//! fix up and never needs to mutate: [`get`](OrderedMap::get),
 //! [`get_mut`](OrderedMap::get_mut) and
-//! [`contains_key`](OrderedMap::contains_key) take `&self` and mutate nothing:
-//! there is no interior mutability here, no `Cell`, and no `unsafe`. Glaze can
-//! keep its index `mutable` and refresh it from a `const` lookup; the Rust
-//! equivalent would be a `RefCell` on the hot path, and a bounded tail scan is
-//! cheaper than the borrow flag it would cost. The one thing that grows a map
-//! is `insert`, which already holds `&mut self`, so nothing is lost by putting
-//! the work there.
+//! [`contains_key`](OrderedMap::contains_key) read and nothing more. There is
+//! no interior mutability here, no `Cell`, and no `unsafe`.
 //!
 //! # Equality ignores order
 //!
@@ -74,23 +103,49 @@
 use crate::keymap::full_hash;
 use std::iter::FusedIterator;
 
-/// Entry count at or below which no index is built and lookups scan.
+/// Entry count at or below which no table is built and lookups scan.
 ///
 /// See the module docs: eight is where a scan of a contiguous vector still
-/// beats hashing plus a binary search, and it covers the great majority of real
-/// JSON objects.
+/// beats hashing plus a probe, and it covers the great majority of real JSON
+/// objects.
 const LINEAR_MAX: usize = 8;
 
-/// How far the uncovered tail may grow before [`OrderedMap::insert`] rebuilds
-/// the index.
+/// The smallest bucket table, which is the one a map gets the moment it
+/// outgrows [`LINEAR_MAX`].
 ///
-/// This is the whole of the amortisation: rebuilding sorts `n` entries, so
-/// doing it every `TAIL_MAX` inserts costs `O(log n)` per insert, while a
-/// lookup pays at most this many key comparisons after its binary search. Eight
-/// keeps both small; it is deliberately the same size as [`LINEAR_MAX`], since
-/// a tail scan is exactly the linear search that a map this size would have
-/// used anyway.
-const TAIL_MAX: usize = 8;
+/// Sixteen rather than eight because nine entries is where the table first
+/// appears, and nine will not fit in eight buckets at all, let alone under the
+/// load factor. Nine in sixteen is a load of 0.56, so the first table has room
+/// to take a few more entries before it doubles.
+const MIN_BUCKETS: usize = 16;
+
+/// How full the bucket table is allowed to get, as a count rather than a
+/// fraction.
+///
+/// Three quarters, the same as Glaze's `max_load_factor` and as `std`'s. Robin
+/// hood probing degrades with load rather than falling off a cliff, so the
+/// number trades memory for probe length smoothly; it is not tuned here because
+/// nothing measured has asked it to move. The bucket count is a power of two,
+/// so the division is exact and the limit is an integer.
+#[inline]
+const fn load_limit(buckets: usize) -> usize {
+    buckets / 4 * 3
+}
+
+/// Buckets enough to hold `entries` under [`load_limit`], never fewer than
+/// [`MIN_BUCKETS`].
+///
+/// Doubling from the minimum rather than computing the power of two directly:
+/// the loop runs at most as many times as the table has doublings in it, it is
+/// only ever reached from a rebuild that is already `O(n)`, and it cannot
+/// overflow the way `n * 4 / 3` rounded up can.
+fn buckets_for(entries: usize) -> usize {
+    let mut buckets = MIN_BUCKETS;
+    while entries > load_limit(buckets) {
+        buckets *= 2;
+    }
+    buckets
+}
 
 /// Seed for [`full_hash`]. Any odd constant will do - it is the multiplier in
 /// the final `bitmix`, and multiplying by an odd number is a bijection, so no
@@ -99,16 +154,20 @@ const TAIL_MAX: usize = 8;
 /// independent choices.
 const HASH_SEED: u64 = 0xA076_1D64_78BD_642F;
 
-/// Widest map the index can address, since a slot stores its position as a
-/// `u32`.
+/// Widest map the table can address, since a bucket stores its entry's
+/// position as a `u32`.
 ///
 /// A map this large is not a thing any document produces - it would need tens
 /// of gigabytes of keys - but the bound has to be stated somewhere, and stating
-/// it here means the degenerate case loses its index and keeps its correctness
-/// rather than truncating a position.
+/// it here means the degenerate case loses its table and keeps its correctness
+/// rather than truncating a position. A map past this point has no table at
+/// all: every lookup scans the entries, which is slow and right, and it gets
+/// its table back the moment removals bring it under the bound. The last
+/// position such a map holds is `u32::MAX - 1`, one below [`EMPTY`], so no
+/// entry can be mistaken for an empty bucket.
 const MAX_INDEXED: usize = u32::MAX as usize;
 
-/// Hash of a key, narrowed to the 32 bits a slot stores.
+/// Hash of a key, narrowed to the 32 bits a bucket stores.
 ///
 /// The high half, though the low one would do as well. [`full_hash`] ends in
 /// `bitmix`, whose last step is `h ^ h.rotate_right(49)`, and that fold puts
@@ -133,112 +192,270 @@ fn hash_key(key: &str) -> u32 {
     (full_hash(bytes, bytes.len(), HASH_SEED) >> 32) as u32
 }
 
-/// One index slot: where an entry is, and enough of its hash to skip it
-/// cheaply.
-#[derive(Clone, Copy)]
-struct Slot {
-    hash: u32,
-    pos: u32,
-}
-
-/// The sorted hash index over a prefix of the entries.
+/// Marks a bucket that holds nothing.
 ///
-/// Kept as a named type rather than a bare `Vec` in the map so that the things
-/// an index might later carry have somewhere to live. Glaze's version carries a
-/// bloom filter beside the sorted slots, to answer "this key is certainly new"
-/// without a search and so skip the duplicate check that every insert otherwise
-/// pays for. It is deliberately left out here: a bloom filter is a cache,
-/// trading 128 bytes per map for time, and this repository's rule is that such
-/// a trade is justified by measurement rather than by argument. Adding one
-/// later means a field here, a line in [`HashIndex::rebuild`], and a test in
-/// [`OrderedMap::insert`] - not a change to anything around them.
-#[derive(Clone, Default)]
-struct HashIndex {
-    /// Slots for entries `0..covered`, sorted by hash. Ties are in no
-    /// particular order, which is why a lookup walks the whole run.
-    slots: Vec<Slot>,
+/// `u32::MAX` rather than a flag byte beside the position: it keeps a bucket to
+/// eight bytes and two aligned loads, and [`MAX_INDEXED`] is chosen so that no
+/// live position ever reaches it.
+const EMPTY: u32 = u32::MAX;
+
+/// One bucket: which entry lives here, and enough of its hash to reject it
+/// without reading the entry.
+///
+/// Eight bytes, so a cache line holds eight of them and a probe that has to
+/// walk usually walks within one.
+#[derive(Clone, Copy)]
+struct Bucket {
+    /// Position of the entry in the map's vector, or [`EMPTY`].
+    index: u32,
+    /// [`hash_key`] of that entry's key. Meaningless when the bucket is empty.
+    hash: u32,
 }
 
-impl HashIndex {
-    /// How many leading entries the index accounts for. Every slot describes
-    /// exactly one covered entry, so the count is the coverage; there is no
-    /// second counter to keep in step.
+impl Bucket {
+    /// A bucket holding nothing. The hash is zero only because it has to be
+    /// something; nothing reads it without checking [`Bucket::is_empty`] first.
+    const VACANT: Bucket = Bucket {
+        index: EMPTY,
+        hash: 0,
+    };
+
     #[inline]
-    fn covered(&self) -> usize {
-        self.slots.len()
+    fn is_empty(self) -> bool {
+        self.index == EMPTY
+    }
+}
+
+/// The open-addressed bucket table.
+///
+/// Either it is empty, meaning the map scans, or it describes *every* entry;
+/// there is no state in between. That is the whole of the bookkeeping: whoever
+/// changes the entries either keeps the table in step bucket by bucket or drops
+/// it, and a lookup's only question is which of the two it is looking at.
+///
+/// The table is a separate type rather than a bare `Vec` in the map so that the
+/// probe and its invariant sit together, away from the ordering work that is
+/// the map's own business.
+#[derive(Clone, Default)]
+struct HashTable {
+    /// A power-of-two number of buckets, or none at all. Indexed by the low
+    /// bits of a hash, so the power of two is what makes the mask work.
+    buckets: Vec<Bucket>,
+}
+
+impl HashTable {
+    /// Whether there is no table, and so whether lookups have to scan.
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.buckets.is_empty()
     }
 
+    /// Give up the table. The buckets' capacity is kept for the next rebuild,
+    /// which is usually the next insert when a map is hovering around
+    /// [`LINEAR_MAX`].
     #[inline]
     fn clear(&mut self) {
-        self.slots.clear();
+        self.buckets.clear();
     }
 
-    /// Re-hash every entry and sort, so that the index covers all of `data`.
-    fn rebuild<V>(&mut self, data: &[(String, V)]) {
-        self.slots.clear();
-        if data.len() > MAX_INDEXED {
-            // No position would fit in a slot. Coverage stays at zero and every
-            // lookup scans, which is slow and correct.
-            return;
+    /// The mask that turns a hash into a bucket. Only valid for a table that
+    /// has buckets, which every probe has already established.
+    #[inline]
+    fn mask(&self) -> u32 {
+        debug_assert!(!self.buckets.is_empty());
+        (self.buckets.len() - 1) as u32
+    }
+
+    /// The bucket a hash asks for, before any probing.
+    #[inline]
+    fn ideal(&self, hash: u32) -> u32 {
+        hash & self.mask()
+    }
+
+    /// How far the bucket at `at` sits from the one its hash asked for.
+    ///
+    /// Wrapping subtraction under the mask, so a chain that runs off the end of
+    /// the table and back to the start measures the same as one that does not.
+    #[inline]
+    fn distance(&self, at: u32, hash: u32) -> u32 {
+        at.wrapping_sub(self.ideal(hash)) & self.mask()
+    }
+
+    /// The next bucket in a probe, wrapping at the end of the table.
+    #[inline]
+    fn next(&self, at: u32) -> u32 {
+        (at + 1) & self.mask()
+    }
+
+    /// Position of `key`, whose hash is `hash`, or `None`.
+    ///
+    /// Two things end the walk. An empty bucket means the key was never
+    /// inserted, since an insert would have taken that bucket rather than pass
+    /// it. An occupant closer to its ideal bucket than the probe has already
+    /// travelled means the same, because an insert would have displaced it - so
+    /// a miss ends where a hit would have, rather than at the end of the chain.
+    ///
+    /// The stored hash only filters. Every bucket whose hash matches is
+    /// confirmed against the stored key, which is what keeps a 32-bit collision
+    /// to the cost of one comparison.
+    fn find<V>(&self, entries: &[(String, V)], key: &str, hash: u32) -> Option<usize> {
+        let mut at = self.ideal(hash);
+        let mut travelled = 0u32;
+        loop {
+            let bucket = self.buckets[at as usize];
+            if bucket.is_empty() || self.distance(at, bucket.hash) < travelled {
+                return None;
+            }
+            if bucket.hash == hash {
+                let pos = bucket.index as usize;
+                if entries[pos].0.as_str() == key {
+                    return Some(pos);
+                }
+            }
+            at = self.next(at);
+            travelled += 1;
         }
-        self.slots.reserve(data.len());
-        for (pos, (key, _)) in data.iter().enumerate() {
-            self.slots.push(Slot {
+    }
+
+    /// Put `entry` in the table, taking any bucket from an occupant that is
+    /// closer to home than the probe has travelled and carrying that occupant
+    /// on.
+    ///
+    /// No duplicate check: the caller has already established that this entry's
+    /// key is not in the table, either by probing for it or by having just
+    /// emptied the table to rebuild it.
+    ///
+    /// This terminates because the load factor keeps at least one bucket empty.
+    fn place(&mut self, entry: Bucket) {
+        debug_assert!(!entry.is_empty());
+        let mut carried = entry;
+        let mut at = self.ideal(carried.hash);
+        let mut travelled = 0u32;
+        loop {
+            let occupant = self.buckets[at as usize];
+            if occupant.is_empty() {
+                self.buckets[at as usize] = carried;
+                return;
+            }
+            let theirs = self.distance(at, occupant.hash);
+            if theirs < travelled {
+                self.buckets[at as usize] = carried;
+                carried = occupant;
+                travelled = theirs;
+            }
+            at = self.next(at);
+            travelled += 1;
+        }
+    }
+
+    /// The bucket holding the entry at `pos`.
+    ///
+    /// Used by removal, which knows the position and needs the bucket. The walk
+    /// cannot use the robin hood early exit, since it is looking for a
+    /// particular position rather than for a key, so it stops at the position
+    /// itself; the table describes every entry, so it is always there. The loop
+    /// is bounded anyway, because a bound that can only be crossed by a bug is
+    /// cheaper to state than to debug.
+    fn bucket_of<V>(&self, entries: &[(String, V)], pos: u32) -> u32 {
+        let hash = hash_key(&entries[pos as usize].0);
+        let mut at = self.ideal(hash);
+        for _ in 0..self.buckets.len() {
+            if self.buckets[at as usize].index == pos {
+                return at;
+            }
+            at = self.next(at);
+        }
+        unreachable!("structio: OrderedMap entry {pos} has no bucket");
+    }
+
+    /// Empty the bucket at `at`, pulling the rest of its chain back one.
+    ///
+    /// A tombstone would be simpler and would wreck the probe: every lookup
+    /// that walks past one pays for it forever, and the robin hood early exit
+    /// stops being sound because a displaced entry can sit behind a bucket that
+    /// no longer holds the key that displaced it. So each following bucket that
+    /// is not already where its hash asked for it - that is, each one that was
+    /// pushed along by something - moves back one place, and the hole travels
+    /// to the end of the chain. Distances all drop by one, which preserves
+    /// their order, and every entry stays reachable from its ideal bucket.
+    fn erase(&mut self, at: u32) {
+        let mut hole = at;
+        let mut curr = self.next(at);
+        loop {
+            let bucket = self.buckets[curr as usize];
+            if bucket.is_empty() || self.distance(curr, bucket.hash) == 0 {
+                self.buckets[hole as usize] = Bucket::VACANT;
+                return;
+            }
+            self.buckets[hole as usize] = bucket;
+            hole = curr;
+            curr = self.next(curr);
+        }
+    }
+
+    /// Account for the entry at `pos` having been removed and everything above
+    /// it having shifted down one.
+    ///
+    /// Every bucket has to be visited, since positions are scattered across the
+    /// table by hash and there is nothing to search. It is a linear sweep of a
+    /// dense array with no branches worth predicting, and it is on a removal
+    /// that already shifted `O(n)` entries.
+    fn shift_down_above(&mut self, pos: u32) {
+        for bucket in &mut self.buckets {
+            if !bucket.is_empty() && bucket.index > pos {
+                bucket.index -= 1;
+            }
+        }
+    }
+
+    /// Size the table for `entries` and fill it from scratch, hashing every
+    /// key.
+    ///
+    /// This is for the first table a map builds and for anything that has moved
+    /// entries around wholesale, where there is no table left worth reading.
+    /// Growing a table that is merely full is [`HashTable::grow`], which does
+    /// not hash anything.
+    fn rebuild<V>(&mut self, entries: &[(String, V)]) {
+        debug_assert!(entries.len() <= MAX_INDEXED);
+        self.buckets.clear();
+        self.buckets
+            .resize(buckets_for(entries.len()), Bucket::VACANT);
+        for (pos, (key, _)) in entries.iter().enumerate() {
+            self.place(Bucket {
+                index: pos as u32,
                 hash: hash_key(key),
-                pos: pos as u32,
             });
         }
-        // Keys are unique, so equal hashes are collisions with nothing to order
-        // them by and no reason to keep their relative order.
-        self.slots.sort_unstable_by_key(|slot| slot.hash);
     }
 
-    /// Update the index for the entry at `pos` having been removed and
-    /// everything above it having shifted down one.
+    /// Double the table, carrying every bucket over as it stands.
     ///
-    /// Only positions move, so the slots stay sorted by hash: dropping one slot
-    /// and decrementing the positions above it preserves both the ordering and
-    /// the one-slot-per-covered-entry invariant, without a re-sort.
-    fn retire(&mut self, pos: usize) {
-        if pos >= self.covered() {
-            // The removed entry was in the uncovered tail. Coverage is unchanged
-            // and no slot refers to a position at or above it.
-            return;
-        }
-        let pos = pos as u32;
-        self.slots.retain(|slot| slot.pos != pos);
-        for slot in &mut self.slots {
-            if slot.pos > pos {
-                slot.pos -= 1;
+    /// Nothing is hashed and nothing is read from the entries. A bucket already
+    /// holds its entry's hash and its position, and neither changes; all that
+    /// changes is which bucket that hash asks for, since the mask is one bit
+    /// wider. Re-hashing here would cost a map more hashing over its lifetime
+    /// than all of its lookups put together, since a fill hashes every key once
+    /// per doubling it lives through.
+    fn grow(&mut self) {
+        let doubled = self.buckets.len() * 2;
+        let old = std::mem::replace(&mut self.buckets, vec![Bucket::VACANT; doubled]);
+        for bucket in old {
+            if !bucket.is_empty() {
+                self.place(bucket);
             }
         }
     }
+}
 
-    /// Position of `key` among the covered entries, or `None`.
-    ///
-    /// The search is a lower bound, so it lands on the *first* slot whose hash
-    /// is at least the key's, which is the head of the run of equal hashes when
-    /// there is one. Walking forward from there to the end of the run therefore
-    /// sees every candidate, and each is confirmed by a full key comparison
-    /// before it is accepted. A 32-bit hash collides; this is the only place
-    /// that matters, and it is why nothing here trusts a hash on its own.
-    fn find<V>(&self, data: &[(String, V)], key: &str) -> Option<usize> {
-        if self.slots.is_empty() {
-            return None;
-        }
-        let hash = hash_key(key);
-        let start = self.slots.partition_point(|slot| slot.hash < hash);
-        for slot in &self.slots[start..] {
-            if slot.hash != hash {
-                break;
-            }
-            let pos = slot.pos as usize;
-            if data[pos].0 == key {
-                return Some(pos);
-            }
-        }
-        None
-    }
+/// What a lookup found, and what an insert needs to know when it did not.
+enum Lookup {
+    /// The key is at this position.
+    Occupied(usize),
+    /// The key is absent, with the hash the probe computed on its way to
+    /// finding that out, so that an insert does not hash the same key twice.
+    /// `None` when the map was small enough to answer by scanning and no hash
+    /// was taken at all.
+    Vacant(Option<u32>),
 }
 
 /// A map from `String` to `V` that remembers the order its keys arrived in.
@@ -263,10 +480,10 @@ impl HashIndex {
 pub struct OrderedMap<V> {
     /// The map itself, in insertion order.
     entries: Vec<(String, V)>,
-    /// Lookup acceleration for `entries[..index.covered()]`. Empty for a small
-    /// map, and never consulted for an answer without a key comparison to
-    /// confirm it.
-    index: HashIndex,
+    /// Lookup acceleration over all of `entries`, or empty for a map small
+    /// enough to scan. Never consulted for an answer without a key comparison
+    /// to confirm it.
+    table: HashTable,
 }
 
 impl<V> OrderedMap<V> {
@@ -275,20 +492,22 @@ impl<V> OrderedMap<V> {
     pub fn new() -> Self {
         OrderedMap {
             entries: Vec::new(),
-            index: HashIndex::default(),
+            table: HashTable::default(),
         }
     }
 
     /// An empty map with room for `capacity` entries.
     ///
-    /// The index is not allocated here: a map that stays small never builds
-    /// one, and one that grows past the linear-search threshold sizes it from
-    /// the entries it actually holds.
+    /// The table is not allocated here, however large the capacity. A table
+    /// that exists describes every entry, so one built ahead of the entries
+    /// would have to be maintained through the first eight inserts that the
+    /// whole point of `LINEAR_MAX` is to leave alone; the map builds it at the
+    /// entry that first needs it, sized from the entries it actually holds.
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         OrderedMap {
             entries: Vec::with_capacity(capacity),
-            index: HashIndex::default(),
+            table: HashTable::default(),
         }
     }
 
@@ -320,25 +539,36 @@ impl<V> OrderedMap<V> {
     #[inline]
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.index.clear();
+        self.table.clear();
     }
 
-    /// Position of `key`, by whichever route is cheaper for this map's size.
+    /// Position of `key`, by whichever route this map's size calls for, and the
+    /// key's hash when the route computed one.
     ///
-    /// The index answers for the covered prefix; the tail beyond it is scanned.
-    /// The tail is at most [`TAIL_MAX`] long, because that is the bound
-    /// [`Self::insert`] maintains, and for a small map coverage is zero and
-    /// this is a plain linear search.
+    /// The two routes are the whole of the lookup story: a scan for a map at or
+    /// below [`LINEAR_MAX`], a single probe of the table for anything larger.
+    #[inline]
+    fn locate(&self, key: &str) -> Lookup {
+        if self.table.is_empty() {
+            return match self.entries.iter().position(|(k, _)| k.as_str() == key) {
+                Some(pos) => Lookup::Occupied(pos),
+                None => Lookup::Vacant(None),
+            };
+        }
+        let hash = hash_key(key);
+        match self.table.find(&self.entries, key, hash) {
+            Some(pos) => Lookup::Occupied(pos),
+            None => Lookup::Vacant(Some(hash)),
+        }
+    }
+
+    /// Position of `key`, for the callers that have nothing to insert.
     #[inline]
     fn find(&self, key: &str) -> Option<usize> {
-        if let Some(pos) = self.index.find(&self.entries, key) {
-            return Some(pos);
+        match self.locate(key) {
+            Lookup::Occupied(pos) => Some(pos),
+            Lookup::Vacant(_) => None,
         }
-        let covered = self.index.covered();
-        self.entries[covered..]
-            .iter()
-            .position(|(k, _)| k.as_str() == key)
-            .map(|offset| covered + offset)
     }
 
     /// A reference to the value `key` maps to.
@@ -383,27 +613,57 @@ impl<V> OrderedMap<V> {
     /// a key first appeared, and writing to it again is not a reason to move
     /// it. This is the one difference from `BTreeMap::insert`, which has no
     /// position to keep.
+    ///
+    /// There is no separate duplicate check to pay for. The probe that would
+    /// find an existing key is the same probe that finds the bucket a new one
+    /// goes in, so an insert costs one walk of the table either way.
     pub fn insert(&mut self, key: String, value: V) -> Option<V> {
-        match self.find(&key) {
-            Some(pos) => Some(std::mem::replace(&mut self.entries[pos].1, value)),
-            None => {
-                self.push_new(key, value);
+        match self.locate(&key) {
+            Lookup::Occupied(pos) => Some(std::mem::replace(&mut self.entries[pos].1, value)),
+            Lookup::Vacant(hash) => {
+                self.push_new(key, value, hash);
                 None
             }
         }
     }
 
-    /// Append an entry whose key is known to be absent, and keep the index's
-    /// tail within bounds.
+    /// Append an entry whose key is known to be absent, and give it a bucket.
+    ///
+    /// `hash` is what the probe that established the key's absence already
+    /// computed, or `None` if it answered by scanning. Either way the entry is
+    /// hashed at most once.
     ///
     /// Returns the new entry's position.
-    fn push_new(&mut self, key: String, value: V) -> usize {
+    fn push_new(&mut self, key: String, value: V, hash: Option<u32>) -> usize {
+        let pos = self.entries.len();
         self.entries.push((key, value));
         let len = self.entries.len();
-        if len > LINEAR_MAX && len - self.index.covered() > TAIL_MAX {
-            self.index.rebuild(&self.entries);
+        if len <= LINEAR_MAX {
+            // Still small enough to scan, and by the table's invariant there is
+            // nothing allocated to keep in step.
+            debug_assert!(self.table.is_empty());
+        } else if len > MAX_INDEXED {
+            // One position too many to address. The table goes, and lookups
+            // scan until removals bring the map back under the bound.
+            self.table.clear();
+        } else if self.table.is_empty() {
+            // The first table this map has needed, over the eight entries that
+            // never had one and the ninth that has just asked for one.
+            self.reindex();
+        } else {
+            if len > load_limit(self.table.buckets.len()) {
+                // Out of room. Doubling is the only `O(n)` work an insert ever
+                // does, and a map does it once per doubling it lives through,
+                // which is what makes filling one linear rather than quadratic.
+                self.table.grow();
+            }
+            let hash = hash.unwrap_or_else(|| hash_key(&self.entries[pos].0));
+            self.table.place(Bucket {
+                index: pos as u32,
+                hash,
+            });
         }
-        len - 1
+        pos
     }
 
     /// Remove `key`, returning its value.
@@ -422,23 +682,49 @@ impl<V> OrderedMap<V> {
         Some(self.remove_at(pos))
     }
 
-    /// Remove the entry at `pos`, shifting the rest down.
+    /// Remove the entry at `pos`, shifting the rest down and repairing the
+    /// table.
+    ///
+    /// Two repairs, and both are needed. The removed key's own bucket is
+    /// emptied by backward shift, so that nothing probing past it is cut off
+    /// from an entry that its own insert displaced. Then every bucket holding a
+    /// position above the hole is decremented, because the entries above it
+    /// have all moved down one.
+    ///
+    /// A removal that takes the map back down to [`LINEAR_MAX`] drops the table
+    /// instead. Below that size the map scans, so keeping a table would be
+    /// keeping a thing no lookup reads and every insert would have to maintain.
     fn remove_at(&mut self, pos: usize) -> (String, V) {
+        if self.table.is_empty() || self.entries.len() - 1 <= LINEAR_MAX {
+            // Nothing to repair, because there is no table or there is about to
+            // be none. The one case where reindexing does more than drop it
+            // here is a map coming back under MAX_INDEXED, which is how a map
+            // too wide to address gets its table back.
+            let removed = self.entries.remove(pos);
+            self.reindex();
+            return removed;
+        }
+        // The bucket has to be found while the entry is still there: it is
+        // found by hashing the key it holds.
+        let bucket = self.table.bucket_of(&self.entries, pos as u32);
+        self.table.erase(bucket);
         let removed = self.entries.remove(pos);
-        self.index.retire(pos);
+        self.table.shift_down_above(pos as u32);
         removed
     }
 
-    /// Rebuild or discard the index after the entries have been reordered or
+    /// Rebuild or discard the table after the entries have been reordered or
     /// thinned wholesale.
     ///
-    /// Used where positions change in ways no slot-by-slot fixup can follow. A
-    /// small map simply drops its index and goes back to scanning.
+    /// Used where positions change in ways no bucket-by-bucket fixup can
+    /// follow, and where the table has outgrown its load factor. A map at or
+    /// below [`LINEAR_MAX`] simply drops its table and goes back to scanning,
+    /// as does one so wide that [`MAX_INDEXED`] cannot address it.
     fn reindex(&mut self) {
-        if self.entries.len() > LINEAR_MAX {
-            self.index.rebuild(&self.entries);
+        if self.entries.len() > LINEAR_MAX && self.entries.len() <= MAX_INDEXED {
+            self.table.rebuild(&self.entries);
         } else {
-            self.index.clear();
+            self.table.clear();
         }
     }
 
@@ -499,9 +785,13 @@ impl<V> OrderedMap<V> {
     /// by `&str` first only to allocate the same string afterwards is the cost
     /// this avoids.
     pub fn entry(&mut self, key: String) -> Entry<'_, V> {
-        match self.find(&key) {
-            Some(pos) => Entry::Occupied(OccupiedEntry { map: self, pos }),
-            None => Entry::Vacant(VacantEntry { map: self, key }),
+        match self.locate(&key) {
+            Lookup::Occupied(pos) => Entry::Occupied(OccupiedEntry { map: self, pos }),
+            Lookup::Vacant(hash) => Entry::Vacant(VacantEntry {
+                map: self,
+                key,
+                hash,
+            }),
         }
     }
 
@@ -571,8 +861,9 @@ impl<V: Clone> Clone for OrderedMap<V> {
         OrderedMap {
             entries: self.entries.clone(),
             // The clone holds the same entries at the same positions, so the
-            // index describes it exactly as well as it describes the original.
-            index: self.index.clone(),
+            // table describes it exactly as well as it describes the original,
+            // and copying the buckets beats probing them all back in.
+            table: self.table.clone(),
         }
     }
 }
@@ -751,6 +1042,11 @@ impl<'a, V> OccupiedEntry<'a, V> {
 pub struct VacantEntry<'a, V> {
     map: &'a mut OrderedMap<V>,
     key: String,
+    /// The hash the probe computed when it found the key absent, or `None` if
+    /// it scanned instead. Carrying it here is sound because the entry holds
+    /// the map exclusively: nothing can change the key or the table between the
+    /// probe and the insert.
+    hash: Option<u32>,
 }
 
 impl<'a, V> VacantEntry<'a, V> {
@@ -770,7 +1066,7 @@ impl<'a, V> VacantEntry<'a, V> {
     pub fn insert(self, value: V) -> &'a mut V {
         // The lookup that produced this entry already established the key is
         // absent, so this appends without searching again.
-        let pos = self.map.push_new(self.key, value);
+        let pos = self.map.push_new(self.key, value, self.hash);
         &mut self.map.entries[pos].1
     }
 }
@@ -1082,37 +1378,87 @@ mod tests {
     }
 
     /// Every invariant the lookup depends on, checked against the entries.
+    ///
+    /// A table either describes the whole map or is not there at all, so the
+    /// first question is which of the two this is. For a table that is there:
+    /// every occupied bucket points at a live entry whose key still hashes to
+    /// the hash the bucket stored, every entry has exactly one bucket, every
+    /// entry is reachable by probing forward from the bucket its hash asked
+    /// for, the robin hood distance ordering holds along the way, and the load
+    /// factor is not exceeded.
     fn assert_index_consistent<V>(map: &OrderedMap<V>) {
-        let covered = map.index.covered();
-        assert!(covered <= map.len(), "index covers more than the map holds");
-        for (slot_pos, slot) in map.index.slots.iter().enumerate() {
-            let pos = slot.pos as usize;
-            assert!(pos < covered, "slot {slot_pos} points outside the prefix");
-            assert_eq!(
-                slot.hash,
-                hash_key(&map.entries[pos].0),
-                "slot {slot_pos} holds a stale hash"
+        let len = map.len();
+        if map.table.is_empty() {
+            assert!(
+                len <= LINEAR_MAX || len > MAX_INDEXED,
+                "a map of {len} entries is missing its table"
             );
-            if slot_pos > 0 {
+            return;
+        }
+        assert!(len > LINEAR_MAX, "a map of {len} entries built a table");
+
+        let buckets = map.table.buckets.len();
+        assert!(
+            buckets.is_power_of_two(),
+            "{buckets} buckets is not a power of two"
+        );
+        assert!(
+            buckets >= MIN_BUCKETS,
+            "{buckets} buckets is below the minimum"
+        );
+        assert!(
+            len <= load_limit(buckets),
+            "{len} entries in {buckets} buckets is over the load factor"
+        );
+
+        let mut bucketed = vec![false; len];
+        for (at, bucket) in map.table.buckets.iter().enumerate() {
+            if bucket.is_empty() {
+                continue;
+            }
+            let at = at as u32;
+            let pos = bucket.index as usize;
+            assert!(pos < len, "bucket {at} points past the entries");
+            assert_eq!(
+                bucket.hash,
+                hash_key(&map.entries[pos].0),
+                "bucket {at} holds a stale hash"
+            );
+            assert!(
+                !std::mem::replace(&mut bucketed[pos], true),
+                "two buckets point at entry {pos}"
+            );
+
+            // Reachability and the robin hood ordering are one statement: every
+            // bucket this entry was pushed past is occupied by something at
+            // least as far from home as the probe is when it goes by, so a
+            // probe for this key neither stops at an empty bucket nor takes the
+            // displacement exit before it arrives.
+            let ideal = map.table.ideal(bucket.hash);
+            for step in 0..map.table.distance(at, bucket.hash) {
+                let passed_at = (ideal + step) & map.table.mask();
+                let passed = map.table.buckets[passed_at as usize];
                 assert!(
-                    map.index.slots[slot_pos - 1].hash <= slot.hash,
-                    "index is not sorted by hash"
+                    !passed.is_empty(),
+                    "entry {pos} is unreachable: bucket {passed_at} is empty"
+                );
+                assert!(
+                    map.table.distance(passed_at, passed.hash) >= step,
+                    "robin hood ordering is broken at bucket {passed_at}"
                 );
             }
         }
-        // Exactly one slot per covered entry.
-        let mut seen = vec![false; covered];
-        for slot in &map.index.slots {
-            assert!(
-                !std::mem::replace(&mut seen[slot.pos as usize], true),
-                "two slots point at the same entry"
-            );
-        }
-        // The tail a lookup has to scan stays bounded.
-        if map.len() > LINEAR_MAX && map.len() <= MAX_INDEXED {
-            assert!(
-                map.len() - covered <= TAIL_MAX,
-                "uncovered tail grew past its bound"
+        assert!(
+            bucketed.iter().all(|&seen| seen),
+            "an entry has no bucket of its own"
+        );
+
+        // And the probe does find them all, which is what the rest is for.
+        for (pos, (key, _)) in map.entries.iter().enumerate() {
+            assert_eq!(
+                map.table.find(&map.entries, key, hash_key(key)),
+                Some(pos),
+                "entry {pos} is not where a probe looks for it"
             );
         }
     }
@@ -1168,7 +1514,237 @@ mod tests {
                 );
             }
             assert_index_consistent(&map);
+            assert_eq!(
+                map.table.buckets.len(),
+                map_of(n).table.buckets.len(),
+                "a duplicate insert grew the table at n = {n}"
+            );
         }
+    }
+
+    // --- the bucket table ---------------------------------------------------
+
+    /// Keys whose hash asks for `bucket` in a table of `buckets` buckets.
+    ///
+    /// Searched rather than written down, for the reason
+    /// [`colliding_pairs`] gives: a hard-coded key stops meaning anything the
+    /// moment the seed or the hash changes, and the test would go on passing
+    /// while testing nothing.
+    fn keys_for_bucket(bucket: u32, buckets: usize, wanted: usize) -> Vec<String> {
+        let mask = (buckets - 1) as u32;
+        let mut found = Vec::new();
+        for i in 0..1_000_000usize {
+            let key = nth_key(i);
+            if hash_key(&key) & mask == bucket {
+                found.push(key);
+                if found.len() == wanted {
+                    return found;
+                }
+            }
+        }
+        panic!("fewer than {wanted} keys land in bucket {bucket} of {buckets}");
+    }
+
+    /// Which bucket a present key sits in.
+    fn bucket_of<V>(map: &OrderedMap<V>, key: &str) -> u32 {
+        let pos = map.find(key).expect("key is present") as u32;
+        map.table.bucket_of(&map.entries, pos)
+    }
+
+    /// How far a present key sits from the bucket it asked for.
+    fn distance_of<V>(map: &OrderedMap<V>, key: &str) -> u32 {
+        map.table.distance(bucket_of(map, key), hash_key(key))
+    }
+
+    #[test]
+    fn the_table_appears_and_doubles_at_the_right_sizes() {
+        let mut map: OrderedMap<usize> = OrderedMap::new();
+        for n in 1..=200usize {
+            map.insert(nth_key(n - 1), n - 1);
+            assert_eq!(map.len(), n);
+            if n <= LINEAR_MAX {
+                assert!(map.table.is_empty(), "a map of {n} entries built a table");
+            } else {
+                assert_eq!(
+                    map.table.buckets.len(),
+                    buckets_for(n),
+                    "wrong table size at n = {n}"
+                );
+            }
+            assert_index_consistent(&map);
+            for i in 0..n {
+                assert_eq!(map.get(&nth_key(i)), Some(&i), "lost a key at n = {n}");
+            }
+        }
+        // The sizes above are not a restatement of the code: the first table
+        // holds the ninth entry, and each one after it is twice the last.
+        assert_eq!(buckets_for(LINEAR_MAX + 1), MIN_BUCKETS);
+        for n in 1..=200usize {
+            let buckets = buckets_for(n);
+            assert!(n <= load_limit(buckets));
+            assert!(buckets == MIN_BUCKETS || n > load_limit(buckets / 2));
+        }
+    }
+
+    #[test]
+    fn probes_wrap_around_the_end_of_the_table() {
+        // Four keys asking for the last bucket of the smallest table, so that
+        // their chain runs off the end and continues at the start.
+        let last = (MIN_BUCKETS - 1) as u32;
+        let chain = keys_for_bucket(last, MIN_BUCKETS, 4);
+        let mut map: OrderedMap<String> = OrderedMap::new();
+        for key in &chain {
+            map.insert(key.clone(), format!("{key}!"));
+        }
+        let mut filler = Vec::new();
+        while map.len() < load_limit(MIN_BUCKETS) {
+            let key = nth_key(5_000_000 + filler.len());
+            map.insert(key.clone(), String::new());
+            filler.push(key);
+        }
+        assert_eq!(map.table.buckets.len(), MIN_BUCKETS);
+        assert_index_consistent(&map);
+
+        let wrapped = chain.iter().filter(|k| bucket_of(&map, k) < last).count();
+        assert_eq!(wrapped, chain.len() - 1, "the chain did not wrap");
+
+        // Every one of them is still found, and so is everything else, which
+        // means the probe wrapped too.
+        for key in &chain {
+            assert_eq!(map.get(key), Some(&format!("{key}!")));
+        }
+        assert_eq!(map.get("absent"), None);
+
+        // Removing the one bucket that is not wrapped shifts the wrapped tail
+        // of the chain back across the end of the table.
+        let head = chain[0].clone();
+        assert_eq!(bucket_of(&map, &head), last);
+        assert_eq!(map.remove(&head), Some(format!("{head}!")));
+        assert_index_consistent(&map);
+        assert_eq!(map.get(&head), None);
+        for key in chain[1..].iter().chain(&filler) {
+            assert!(map.contains_key(key), "lost {key} to a wrapped removal");
+        }
+    }
+
+    #[test]
+    fn a_later_insert_displaces_an_entry_that_is_closer_to_home() {
+        // Eight fillers, parked away from buckets 0 to 3 so that what happens
+        // in that corner of the table is only about the three keys below.
+        let mut filler = keys_for_bucket(8, MIN_BUCKETS, 6);
+        filler.extend(keys_for_bucket(4, MIN_BUCKETS, 2));
+        let mut map: OrderedMap<u32> = OrderedMap::new();
+        for (i, key) in filler.iter().enumerate() {
+            map.insert(key.clone(), i as u32);
+        }
+        assert_eq!(map.len(), LINEAR_MAX);
+
+        // `zero` wants bucket 0 twice over and `one` wants bucket 1, which it
+        // gets first. The second `zero` key then finds bucket 0 taken by an
+        // entry that is home, walks on to bucket 1 one place from its own home,
+        // and finds `one` sitting there with nothing invested - so it takes the
+        // bucket and carries `one` on to bucket 2.
+        let zero = keys_for_bucket(0, MIN_BUCKETS, 2);
+        let one = keys_for_bucket(1, MIN_BUCKETS, 1);
+        map.insert(zero[0].clone(), 100);
+        map.insert(one[0].clone(), 101);
+        map.insert(zero[1].clone(), 102);
+
+        assert_eq!(map.table.buckets.len(), MIN_BUCKETS);
+        assert_eq!(bucket_of(&map, &zero[0]), 0);
+        assert_eq!(
+            bucket_of(&map, &zero[1]),
+            1,
+            "the later insert did not take the bucket"
+        );
+        assert_eq!(
+            bucket_of(&map, &one[0]),
+            2,
+            "the entry that was home was not displaced"
+        );
+        assert_index_consistent(&map);
+
+        assert_eq!(map.get(&zero[0]), Some(&100));
+        assert_eq!(map.get(&one[0]), Some(&101));
+        assert_eq!(map.get(&zero[1]), Some(&102));
+        for (i, key) in filler.iter().enumerate() {
+            assert_eq!(map.get(key), Some(&(i as u32)));
+        }
+    }
+
+    #[test]
+    fn removing_the_head_of_a_chain_keeps_the_rest_reachable() {
+        // Five keys that all ask for the same bucket, so they sit in a run of
+        // five with distances 0 to 4. Removing one of them has to pull the rest
+        // of the run back, or the ones behind the hole become unreachable.
+        let chain = keys_for_bucket(3, MIN_BUCKETS, 5);
+        let mut map: OrderedMap<String> = OrderedMap::new();
+        for key in &chain {
+            map.insert(key.clone(), format!("{key}!"));
+        }
+        let mut filler = Vec::new();
+        while map.len() < load_limit(MIN_BUCKETS) {
+            let key = nth_key(6_000_000 + filler.len());
+            map.insert(key.clone(), String::new());
+            filler.push(key);
+        }
+        assert_index_consistent(&map);
+        for (step, key) in chain.iter().enumerate() {
+            assert_eq!(
+                distance_of(&map, key),
+                step as u32,
+                "the keys did not form one chain"
+            );
+        }
+
+        // The head first, which is the bucket everything behind it was probing
+        // past, then the new head of what is left.
+        for removed in [0usize, 1] {
+            let key = &chain[removed];
+            assert_eq!(map.remove(key), Some(format!("{key}!")));
+            assert_index_consistent(&map);
+            assert_eq!(map.get(key), None);
+            for survivor in &chain[removed + 1..] {
+                assert_eq!(
+                    map.get(survivor),
+                    Some(&format!("{survivor}!")),
+                    "removing {key} cut {survivor} out of its chain"
+                );
+            }
+            for key in &filler {
+                assert_eq!(map.get(key), Some(&String::new()));
+            }
+        }
+    }
+
+    #[test]
+    fn filling_rebuilds_a_bounded_number_of_times() {
+        // The point of the table, stated without a clock: filling a map
+        // rebuilds it once per doubling, and the entries those rebuilds walk
+        // add up to a small multiple of the map rather than of its square.
+        const N: usize = 4_000;
+        let mut map: OrderedMap<usize> = OrderedMap::new();
+        let mut buckets = 0;
+        let mut rebuilds = 0usize;
+        let mut rebuilt_entries = 0usize;
+        for i in 0..N {
+            map.insert(nth_key(i), i);
+            if map.table.buckets.len() != buckets {
+                buckets = map.table.buckets.len();
+                rebuilds += 1;
+                rebuilt_entries += map.len();
+            }
+        }
+        assert_eq!(map.len(), N);
+        assert_index_consistent(&map);
+        assert!(
+            rebuilds <= (N.ilog2() as usize) + 1,
+            "{rebuilds} rebuilds filling {N} entries"
+        );
+        assert!(
+            rebuilt_entries <= 2 * N,
+            "rebuilding walked {rebuilt_entries} entries filling {N}"
+        );
     }
 
     // --- engineered hash collisions ----------------------------------------
@@ -1222,9 +1798,8 @@ mod tests {
         assert_eq!(small.get(a), Some(&"a"));
         assert_eq!(small.get(b), Some(&"b"));
 
-        // Above it, where the run of equal hashes has to be walked. The
-        // colliding keys go in first so that they land in the covered prefix
-        // rather than in the tail the lookup scans anyway.
+        // Above it, where the probe has to walk past a bucket whose stored hash
+        // matches a key that is not the one being looked for.
         let mut big: OrderedMap<String> = OrderedMap::new();
         for (a, _) in &pairs {
             big.insert(a.clone(), format!("{a}!"));
@@ -1232,10 +1807,7 @@ mod tests {
         for i in 0..200 {
             big.insert(nth_key(1_000_000 + i), i.to_string());
         }
-        assert!(
-            big.index.covered() > pairs.len(),
-            "the indexed path was never exercised"
-        );
+        assert!(!big.table.is_empty(), "the hashed path was never exercised");
         assert_index_consistent(&big);
 
         for (a, b) in &pairs {
@@ -1247,7 +1819,8 @@ mod tests {
             big.insert(b.clone(), format!("{b}?"));
         }
         for _ in 0..20 {
-            // Force a rebuild so the collisions are indexed rather than tailed.
+            // Enough further inserts to carry the table through a rebuild with
+            // both halves of every pair in it.
             big.insert(nth_key(2_000_000 + big.len()), String::new());
         }
         assert_index_consistent(&big);
@@ -1339,6 +1912,47 @@ mod tests {
     }
 
     #[test]
+    fn crossing_the_linear_threshold_in_both_directions() {
+        let mut map = map_of(12);
+        assert!(!map.table.is_empty());
+
+        // Down past the threshold, from the front, so that every remaining
+        // entry moves and every bucket has to be corrected.
+        for removed in 0..5 {
+            assert_eq!(map.remove(&nth_key(removed)), Some(removed));
+            assert_index_consistent(&map);
+            assert_eq!(map.len(), 11 - removed);
+            for survivor in removed + 1..12 {
+                assert_eq!(map.get(&nth_key(survivor)), Some(&survivor));
+            }
+        }
+        assert!(
+            map.table.is_empty(),
+            "the table outlived the map's need for it"
+        );
+        assert_eq!(
+            map.keys().cloned().collect::<Vec<_>>(),
+            (5..12).map(nth_key).collect::<Vec<_>>()
+        );
+
+        // And back up, through the rebuild that the ninth entry asks for.
+        for added in 12..24 {
+            map.insert(nth_key(added), added);
+            assert_index_consistent(&map);
+        }
+        assert_eq!(map.len(), 19);
+        assert!(!map.table.is_empty());
+        for i in 0..24 {
+            let found = map.get(&nth_key(i));
+            assert_eq!(found, if i < 5 { None } else { Some(&i) });
+        }
+        assert_eq!(
+            map.keys().cloned().collect::<Vec<_>>(),
+            (5..24).map(nth_key).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn clear_forgets_everything() {
         let mut map = map_of(50);
         map.clear();
@@ -1348,6 +1962,22 @@ mod tests {
         map.insert("a".into(), 1);
         assert_eq!(map.get("a"), Some(&1));
         assert_eq!(map.len(), 1);
+
+        // Refilling past the threshold builds a table over the entries that are
+        // there now, not over the ones that were.
+        map.clear();
+        for i in 0..40 {
+            map.insert(nth_key(i), i);
+            assert_index_consistent(&map);
+        }
+        assert_eq!(map.get("a"), None);
+        assert_eq!(
+            map.keys().cloned().collect::<Vec<_>>(),
+            (0..40).map(nth_key).collect::<Vec<_>>()
+        );
+        for i in 0..40 {
+            assert_eq!(map.get(&nth_key(i)), Some(&i));
+        }
     }
 
     // --- differential against BTreeMap --------------------------------------
@@ -1526,7 +2156,7 @@ mod tests {
     #[test]
     fn entry_stays_indexed_above_the_threshold() {
         let mut map = map_of(100);
-        assert!(map.index.covered() > 0);
+        assert!(!map.table.is_empty());
         for i in 0..100 {
             assert_eq!(*map.entry(nth_key(i)).or_insert(usize::MAX), i);
         }
@@ -1649,10 +2279,10 @@ mod tests {
             assert_eq!(found, if i % 3 == 0 { Some(&i) } else { None });
         }
 
-        // Down to under the threshold, where the index goes away entirely.
+        // Down to under the threshold, where the table goes away entirely.
         map.retain(|key, _| key == nth_key(0));
         assert_eq!(map.len(), 1);
-        assert_eq!(map.index.covered(), 0);
+        assert!(map.table.is_empty());
         assert_eq!(map.get(&nth_key(0)), Some(&0));
     }
 
