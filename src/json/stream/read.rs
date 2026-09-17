@@ -169,6 +169,13 @@ impl<R: io::Read, O: Options> Documents<R, O> {
     /// longer known, so there is nothing honest to resume from. It is reported
     /// once and ends the stream, rather than being returned forever and
     /// turning the natural `while let` loop into a spin.
+    ///
+    /// This is the borrowing half of a pair, and the only streaming form open
+    /// to a type that borrows from the document it was read out of. The `'a` is
+    /// what makes that work: the value's input lifetime is the borrow of the
+    /// reader, so the window cannot be filled, compacted or dropped while a
+    /// field still points into it. [`Documents::next_value_into`] is the owning
+    /// half, and says what the difference costs.
     pub fn next_value<'a, T: Read<'a> + Default>(&'a mut self) -> Option<StreamResult<T>> {
         match self.locate() {
             Ok(Some(span)) => Some(window::parse::<O, T>(&self.win, span)),
@@ -182,6 +189,27 @@ impl<R: io::Read, O: Options> Documents<R, O> {
     /// Mirrors [`read_into`](crate::read_into): `value` keeps its allocations
     /// between calls, so a loop over a million records of the same shape
     /// settles into doing no allocation at all.
+    ///
+    /// The `for<'de>` bound is a soundness requirement rather than a
+    /// convenience, and it is what a type with a borrowing field, such as one
+    /// holding a `&'de str` or a [`Raw`](crate::json::Raw), fails to satisfy.
+    /// `value` is a `&mut T` that outlives this call in both directions: it was
+    /// alive before the window was filled and is still alive after the window
+    /// has compacted the bytes this value was read out of. A `T` that had
+    /// borrowed from the window would then be holding a pointer into bytes that
+    /// have moved. Only a `T` that can be read under *any* input lifetime
+    /// borrows from no input at all, and `for<'de>` is how that is spelled.
+    ///
+    /// So the two forms divide the work rather than overlapping, and which one
+    /// a type has is decided by whether it borrows.
+    /// [`Documents::next_value`] is the borrowing form, and a borrowing type
+    /// has only that one, [`Documents::iter`] carrying the same `for<'de>`
+    /// bound as this. What such a type gives up is the allocation reuse, which
+    /// costs it nothing for the fields that borrow, those being subslices of
+    /// the window either way, and costs it a rebuild per value for any owned
+    /// field standing beside them. That is a real limitation of the streaming
+    /// path and not a bound anybody can loosen: the alternative is not slower,
+    /// it is unsound.
     pub fn next_value_into<T: for<'de> Read<'de>>(
         &mut self,
         value: &mut T,

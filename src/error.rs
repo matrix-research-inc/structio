@@ -240,6 +240,15 @@ impl std::error::Error for ErrorCode {}
 /// should render it first, with [`display_with`](Self::display_with), and
 /// carry the `String`. See [`docs/errors.md`] for the shape that has.
 ///
+/// This is the currency of the public entry points. The trait methods speak the
+/// other one, [`ErrorCode`] alone, the offset being attached once at the entry
+/// point from the cursor that stopped. An impl that composes an entry point
+/// into itself, as [`Raw`](crate::json::Raw) composes
+/// [`minify_with`](crate::json::minify_with), passes the code up and drops the
+/// offset: it is a position in the span that call was handed, and a position in
+/// a span names the wrong byte of the document the span came out of. That seam
+/// is deliberate, and [`docs/errors.md`] has why.
+///
 /// [`docs/errors.md`]: https://github.com/stephenberry/structio/blob/main/docs/errors.md
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Error {

@@ -50,6 +50,14 @@ pub trait Read<'de>: Sized {
 /// the trait being generic over it, which is what keeps a bound on a container
 /// element spelled `T: Write` instead of `T: Write<O>`. An implementation
 /// forwards `w` on and never names `O` unless it wants to read a setting.
+///
+/// Writing returns nothing, so an impl has no way to report a failure, and it
+/// cannot take a byte back either: a [`Writer`] does not rewind, for the reason
+/// its own documentation gives. An impl that might change its mind about what
+/// to emit therefore has to settle the question before it emits its first byte
+/// rather than discover it half way through.
+/// [`Raw`](crate::json::Raw) is the worked example, deciding with a probe pass
+/// whether its span can be laid out before laying out any of it.
 pub trait Write {
     fn write<O: Options>(&self, w: &mut Writer<'_, O>);
 

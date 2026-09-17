@@ -61,6 +61,36 @@ pub const fn quoted_key<const N: usize>(key: &str) -> [u8; N] {
 /// defaults to [`Standard`], though a constructor cannot infer from that, so
 /// build one as `Writer::<Standard>::new()`. Trait implementations take
 /// `&mut Writer<'_, O>` and stay generic over it.
+///
+/// # Output only goes forwards
+///
+/// **A writer cannot be rewound.** There is no truncate, no checkpoint, no way
+/// to drop back to a mark, and the nesting depth is not readable either. That
+/// follows from what a writer is rather than being an omission.
+/// [`Writer::to_sink`] hands the front of the buffer to an [`io::Write`] as it
+/// fills, so a byte a caller wanted back may already be down a socket and
+/// beyond recall. A checkpoint could be honoured only by refusing to drain
+/// until it was released, which is buffering without a bound, and that is the
+/// one property the sink exists to provide.
+///
+/// The in-memory writer could offer it, and deliberately does not. A
+/// [`Write`] impl is handed `&mut Writer<'_, O>` and cannot
+/// tell the two apart, so an operation that worked on one and quietly held a
+/// stream's whole output in memory on the other would be worse than no
+/// operation: the failure would show up as a machine running out of memory
+/// under load, in an impl whose author had no way to know it was doing that.
+///
+/// What this asks of an implementation is that it settle a question *before*
+/// emitting its first byte rather than part way through. A type that might have
+/// to write something other than what it started on walks its input first and
+/// commits afterwards. [`Raw`](crate::json::Raw) is the worked example: it may
+/// have to fall back to emitting its span verbatim, so under
+/// [`Options::PRETTY`] a probe pass walks the span and settles whether it lays
+/// out at all, and only then does
+/// [`prettify_value_into`](crate::json::prettify_value_into) emit anything. The
+/// probe costs a second walk over the span; a fallback discovered part way
+/// through the layout would write the value twice, and no arrangement of the
+/// code makes that recoverable.
 pub struct Writer<'a, O: Options = Standard> {
     buf: Vec<u8>,
     /// Highest length an append may reach on the fast path.
