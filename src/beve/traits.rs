@@ -34,6 +34,13 @@ use crate::traits::{Elements, Keys, Variants};
 ///
 /// The `'de` lifetime is the input buffer's. BEVE strings carry no escapes, so
 /// a `&'de str` field always borrows and never has to fall back to a copy.
+#[diagnostic::on_unimplemented(
+    note = "a type becomes readable by being declared with `structio::object!` or \
+            `#[derive(Structio)]`, or by a `beve::Read` impl written by hand",
+    note = "a declaration generates both directions at once, so a type used in a \
+            struct that is only ever written still needs this impl",
+    note = "a stub whose body is `r.skip_value()` is legitimate there"
+)]
 pub trait Read<'de>: Sized {
     /// Read into `self`, from the reader's current position.
     ///
@@ -87,6 +94,15 @@ pub trait Read<'de>: Sized {
 /// The method is generic over the [write policy](crate::Options) rather than
 /// the trait being generic over it, so a bound on a container element stays
 /// `T: Write` instead of `T: Write<O>`.
+#[diagnostic::on_unimplemented(
+    note = "a type becomes writable by being declared with `structio::object!` or \
+            `#[derive(Structio)]`, or by a `beve::Write` impl written by hand",
+    note = "a declaration generates both directions at once, so a type used in a \
+            struct that is only ever read still needs this impl",
+    note = "there is no empty stub: a member that writes nothing truncates the \
+            object. `w.write_null()` with `is_null` returning `true` lets \
+            `SkipNull` drop the member"
+)]
 pub trait Write {
     fn write<O: Options>(&self, w: &mut Writer<'_, O>);
 
@@ -166,6 +182,13 @@ pub trait Write {
 /// adapter for both formats, so an adapter used from [`object!`](crate::object)
 /// needs this impl as well as the JSON one; one used from
 /// [`beve_object!`](crate::beve_object) needs only this.
+#[diagnostic::on_unimplemented(
+    note = "`{Self}` is the adapter the field named; it is what carries the impl, \
+            rather than the field's own type",
+    note = "a declaration generates both directions at once, so an adapter used in \
+            a struct that is only ever written still needs this half",
+    note = "a stub whose body is `r.skip_value()` is legitimate there"
+)]
 pub trait ReadAs<'de, T> {
     /// Read into `value`, from the reader's current position.
     ///
@@ -202,6 +225,15 @@ pub trait ReadAs<'de, T> {
 }
 
 /// How a field of type `T` is written when its declaration names this adapter.
+#[diagnostic::on_unimplemented(
+    note = "`{Self}` is the adapter the field named; it is what carries the impl, \
+            rather than the field's own type",
+    note = "a declaration generates both directions at once, so an adapter used in \
+            a struct that is only ever read still needs this half",
+    note = "there is no empty stub: a member that writes nothing truncates the \
+            object. `w.write_null()` with `is_null` returning `true` lets \
+            `SkipNull` drop the member"
+)]
 pub trait WriteAs<T: ?Sized> {
     /// Write `value`.
     ///
@@ -489,5 +521,10 @@ pub trait ReadInternallyTagged<'de>: Variants + Sized {
 ///
 /// Prefer [`crate::ReadWrite`], which also covers JSON, unless the type is
 /// deliberately BEVE only.
+#[diagnostic::on_unimplemented(
+    note = "this is `beve::Read` and `beve::Write` at once, the bound a BEVE-only \
+            declaration appends to every type parameter; one \
+            `structio::beve_object!` covers both halves"
+)]
 pub trait ReadWrite: for<'de> Read<'de> + Write {}
 impl<T> ReadWrite for T where T: for<'de> Read<'de> + Write {}

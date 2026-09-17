@@ -181,6 +181,11 @@ impl<O: Options, T: Keys> Fields<O, T> {
 ///
 /// [`json::ReadWrite`]: crate::json::ReadWrite
 /// [`beve::ReadWrite`]: crate::beve::ReadWrite
+#[diagnostic::on_unimplemented(
+    note = "this is `Read` and `Write` in both formats at once, the bound the \
+            derive appends to every type parameter; one `structio::object!` or \
+            `#[derive(Structio)]` declaration covers both halves"
+)]
 pub trait ReadWrite: crate::json::ReadWrite + crate::beve::ReadWrite {}
 impl<T> ReadWrite for T where T: crate::json::ReadWrite + crate::beve::ReadWrite {}
 
