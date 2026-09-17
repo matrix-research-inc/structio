@@ -24,6 +24,7 @@ pub(crate) struct Container {
     pub(crate) array: Option<Span>,
     pub(crate) element: Option<Literal>,
     pub(crate) format: Format,
+    pub(crate) write_only: Option<Span>,
     pub(crate) krate: Option<Literal>,
 }
 
@@ -57,7 +58,7 @@ const CASES: &[&str] = &[
 /// hunting for a typo.
 fn stage_of(name: &str) -> Option<u8> {
     match name {
-        "content" | "alias" | "transparent" | "write_only" => Some(2),
+        "content" | "alias" | "transparent" => Some(2),
         "default" | "skip_if" | "skip_read" | "skip_write" => Some(3),
         _ => None,
     }
@@ -142,15 +143,20 @@ pub(crate) fn container(metas: &[Meta], is_enum: bool) -> Result<Container> {
         array: None,
         element: None,
         format: Format::Both,
+        write_only: None,
         krate: None,
     };
     let mut format_at: Option<Span> = None;
     let (place, accepted) = if is_enum {
-        ("an enum", "`rename_all`, `tag`, `json`, `beve` and `crate`")
+        (
+            "an enum",
+            "`rename_all`, `tag`, `json`, `beve`, `write_only` and `crate`",
+        )
     } else {
         (
             "a struct",
-            "`rename_all`, `array`, `element`, `json`, `beve` and `crate`",
+            "`rename_all`, `array`, `element`, `json`, `beve`, `write_only` \
+             and `crate`",
         )
     };
     for meta in metas {
@@ -206,6 +212,7 @@ pub(crate) fn container(metas: &[Meta], is_enum: bool) -> Result<Container> {
                     Format::Beve
                 };
             }
+            "write_only" => once(&mut out.write_only, meta, flag(meta)?)?,
             "crate" => once(&mut out.krate, meta, string(meta)?)?,
             _ => return Err(unknown(meta, place, accepted)),
         }
@@ -253,6 +260,15 @@ pub(crate) fn field(metas: &[Meta], positional: bool) -> Result<FieldOpts> {
             "skip" => once(&mut out.skip, meta, flag(meta)?)?,
             "required" => once(&mut out.required, meta, flag(meta)?)?,
             "with" => once(&mut out.with, meta, string(meta)?)?,
+            "write_only" => {
+                return Err(Error::new(
+                    meta.name.span(),
+                    "`write_only` describes the whole type, so it goes on the \
+                     type: a declaration generates one direction or both, not \
+                     one direction for one field. A field that is written but \
+                     not read is `skip_read`, a stage 3 attribute",
+                ));
+            }
             _ => {
                 return Err(unknown(
                     meta,

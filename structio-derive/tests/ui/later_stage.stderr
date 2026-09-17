@@ -15,9 +15,3 @@ error: `transparent` is a stage 2 attribute and this derive implements stage 1; 
    |
 15 | #[structio(transparent)]
    |            ^^^^^^^^^^^
-
-error: `write_only` is a stage 2 attribute and this derive implements stage 1; see docs/derive.md for what each stage adds
-  --> tests/ui/later_stage.rs:21:12
-   |
-21 | #[structio(write_only)]
-   |            ^^^^^^^^^^

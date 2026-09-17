@@ -387,3 +387,43 @@ fn a_type_parameter_carries_the_write_bound_alone() {
     );
     assert_eq!(to_string(&Sample { value: 2u8 }), r#"{"value":2}"#);
 }
+// ---------------------------------------------------------------------------
+// The derive says the same thing
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "derive")]
+#[derive(structio::Structio)]
+#[structio(write_only, rename_all = "camelCase")]
+struct Derived {
+    device_id: u32,
+    #[structio(rename = "tag")]
+    label: String,
+    reading: Option<f64>,
+}
+
+#[cfg(feature = "derive")]
+#[derive(structio::Structio)]
+#[structio(write_only)]
+struct DerivedSample<T> {
+    value: T,
+}
+
+#[cfg(feature = "derive")]
+#[test]
+fn the_derive_expands_to_the_narrowed_declaration() {
+    let derived = Derived {
+        device_id: 4,
+        label: "north".into(),
+        reading: None,
+    };
+    let (both, _) = twins();
+    assert_eq!(to_string(&derived), to_string(&both));
+    assert_eq!(to_beve(&derived), to_beve(&both));
+    // And the parameter of a derived generic loses the same two bounds.
+    assert_eq!(
+        to_string(&DerivedSample {
+            value: Register(11)
+        }),
+        r#"{"value":11}"#
+    );
+}
