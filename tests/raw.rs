@@ -3,10 +3,12 @@
 //! Most of this file is about bytes rather than about values, because that is
 //! what the type promises: nothing in the value is decoded on the way in and
 //! nothing is re-encoded on the way out, so a number keeps its spelling, an
-//! object keeps its key order, and a string keeps its escapes. `Value` is the
-//! other destination for a value with no declared type and normalizes all
-//! three, which is why the two are asserted against each other on one document
-//! below: that test is the argument for the type existing.
+//! object keeps its key order, a string keeps its escapes, and the spacing
+//! between the tokens is the producer's. `Value` is the other destination for
+//! a value with no declared type and keeps the key order alone, respelling the
+//! numbers, decoding the escapes and laying the tokens out afresh, which is
+//! why the two are asserted against each other on one document below: that
+//! test is the argument for the type existing.
 //!
 //! `Raw` is JSON only, so every struct here is declared with `json_object!`.
 //!
@@ -146,11 +148,13 @@ fn interior_whitespace_survives_the_compact_path() {
 
 /// The whole argument for the type, on one document.
 ///
-/// `Value` is a tree, so it sorts an object's keys, respells its numbers
-/// through this crate's formatters, and has nowhere to put an integer literal
-/// past the width it stores. Those are the right properties for a value you
-/// are going to look at, and the wrong ones for a value you are going to hand
-/// on unchanged. `Raw` is the passthrough `Value` is not.
+/// `Value` is a tree, so it respells its numbers through this crate's
+/// formatters, decodes an escape to the character it stood for, lays the
+/// tokens out under its own policy, and has nowhere to put an integer literal
+/// past the width it stores. An object's key order it does keep, so that is no
+/// longer one of the differences; the rest are. Those are the right properties
+/// for a value you are going to look at, and the wrong ones for a value you
+/// are going to hand on unchanged. `Raw` is the passthrough `Value` is not.
 #[test]
 fn raw_forwards_the_document_that_value_reshapes() {
     let text = r#"{"z":1.50,"a":12345678901234567890123,"s":"\u0041","w":{ "k" : [] }}"#;
@@ -159,13 +163,14 @@ fn raw_forwards_the_document_that_value_reshapes() {
     assert_eq!(raw.as_str(), text);
     assert_eq!(to_string(&raw), text);
 
-    // The same bytes through the tree: keys sorted, `1.50` respelled, the wide
-    // integer rounded into an `f64` and written back in this crate's own
-    // exponent form, and the escape decoded to the character it stood for.
+    // The same bytes through the tree: the keys in the order they arrived,
+    // but `1.50` respelled, the wide integer rounded into an `f64` and written
+    // back in this crate's own exponent form, the escape decoded to the
+    // character it stood for, and the spacing inside `w` gone.
     let value = Value::from_json(text).unwrap();
     assert_eq!(
         value.to_string(),
-        r#"{"a":1.2345678901234568E22,"s":"A","w":{"k":[]},"z":1.5}"#
+        r#"{"z":1.5,"a":1.2345678901234568E22,"s":"A","w":{"k":[]}}"#
     );
     assert_ne!(value.to_string(), to_string(&raw));
 }

@@ -7,11 +7,11 @@
 //! array or object, with the accessors such a tree needs and nothing that
 //! would make it a substitute for a declared type.
 //!
-//! It is not a way of forwarding a body untouched. An object's keys come back
-//! sorted, a number comes back in the spelling this module gives it rather
-//! than the one the document used, and an escape comes back decoded, so a
-//! document that arrives, passes through here, and is written out again is
-//! not the document that arrived. [`json::Raw`] is the
+//! It is not a way of forwarding a body untouched. An object's members keep
+//! the order they arrived in, but a number comes back in the spelling this
+//! module gives it rather than the one the document used, and an escape comes
+//! back decoded, so a document that arrives, passes through here, and is
+//! written out again is not the document that arrived. [`json::Raw`] is the
 //! field that carries one through unchanged.
 //!
 //! It reads and writes through both formats like any other type, so it can be
@@ -42,14 +42,18 @@
 //!
 //! # Keys
 //!
-//! An object's keys are kept sorted, so a value written and read back
-//! reproduces its bytes whatever order it was built in. BEVE objects keyed by
-//! integers read as strings of their digits, the one form JSON has for a key.
+//! An object's members keep the order the document listed them in, or the
+//! order they were inserted, and they are written back out in that order.
+//! Equality does not: two objects holding the same members compare equal
+//! however they were built, so one value can equal another and still write
+//! different text. [`sort_keys`](OrderedMap::sort_keys) is the route to a
+//! byte-canonical output, sorting once and on request rather than on every
+//! read. BEVE objects keyed by integers read as strings of their digits, the
+//! one form JSON has for a key.
 
 use core::fmt;
 use core::ops;
 use core::str::FromStr;
-use std::collections::BTreeMap;
 
 use crate::beve::header::{self, byte_width};
 use crate::beve::reader::{
@@ -59,11 +63,12 @@ use crate::beve::{self, Reader as BeveReader, Writer as BeveWriter, cautious};
 use crate::error::{ErrorCode, PResult, Result};
 use crate::ext::MatrixLayout;
 use crate::json::{self, Parser, Writer as JsonWriter};
+use crate::map::OrderedMap;
 use crate::num::dtoa::{MAX_FLOAT_BYTES, write_f64};
 use crate::options::{Options, Pretty, Standard};
 
-/// The members of a [`Value::Object`], sorted by key.
-pub type Object = BTreeMap<String, Value>;
+/// The members of a [`Value::Object`], in the order the document listed them.
+pub type Object = OrderedMap<Value>;
 
 /// A value of unknown shape. See the [module docs](self).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -695,6 +700,10 @@ impl FromStr for Value {
 
 /// Build a document from a value that writes JSON.
 ///
+/// The tree comes back in the order the type writes its members, which for a
+/// declared type is the order its fields were declared in, so a `Value` built
+/// this way writes the same text the type itself would have written.
+///
 /// Fails only for a value whose JSON does not read back as a document, which
 /// a `Write` impl of this crate does not produce.
 pub fn to_value<T: json::Write + ?Sized>(value: &T) -> Result<Value> {
@@ -1052,7 +1061,7 @@ impl beve::Write for Number {
 ///     "hosts": ["a", "b"],
 ///     "tls": null,
 /// });
-/// assert_eq!(d.to_string(), r#"{"hosts":["a","b"],"name":"api","port":8080,"tls":null}"#);
+/// assert_eq!(d.to_string(), r#"{"name":"api","port":8080,"hosts":["a","b"],"tls":null}"#);
 /// ```
 #[macro_export]
 macro_rules! value {

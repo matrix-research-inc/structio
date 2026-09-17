@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use structio::{
-    Complex, ErrorCode, Matrix, MatrixLayout, Number, Value, beve_to_json, from_value,
+    Complex, ErrorCode, Matrix, MatrixLayout, Number, Object, Value, beve_to_json, from_value,
     from_value_with, to_beve, to_string, to_value, value,
 };
 
@@ -38,13 +38,12 @@ fn server() -> Server {
 }
 
 #[test]
-fn json_round_trip_keeps_kinds_and_sorts_keys() {
+fn json_round_trip_keeps_kinds_and_member_order() {
     let text = r#"{"z":1,"a":[true,null,-2,1.5,"s"],"m":{"k":{}}}"#;
     let d = Value::from_json(text).unwrap();
-    assert_eq!(
-        d.to_string(),
-        r#"{"a":[true,null,-2,1.5,"s"],"m":{"k":{}},"z":1}"#
-    );
+    // The members come back in the order the document listed them, so the
+    // text a round trip writes is the text that went in.
+    assert_eq!(d.to_string(), text);
     assert!(d["z"].is_u64());
     assert!(d["a"][2].is_i64() && !d["a"][2].is_u64());
     assert!(d["a"][3].is_f64());
@@ -89,7 +88,7 @@ fn a_float_keeps_its_kind_through_text() {
     let d = value!({"whole": 1.0, "neg": -0.0, "big": 1e300, "int": 1});
     assert_eq!(
         d.to_string(),
-        r#"{"big":1E300,"int":1,"neg":-0.0,"whole":1.0}"#
+        r#"{"whole":1.0,"neg":-0.0,"big":1E300,"int":1}"#
     );
     let back = Value::from_json(&d.to_string()).unwrap();
     assert_eq!(back, d);
@@ -162,10 +161,10 @@ fn doc_macro_shapes() {
     });
     assert_eq!(
         d.to_string(),
-        r#"{"expr":6,"f":1.5,"host":"h","list":[1,"a",[],{},{"k":[null]}],"n":3,"neg":-3,"none":null,"nothing":null,"opt":2,"t":true}"#
+        r#"{"host":"h","n":3,"neg":-3,"f":1.5,"t":true,"nothing":null,"list":[1,"a",[],{},{"k":[null]}],"opt":2,"none":null,"expr":6}"#
     );
     assert_eq!(value!([]), Value::Array(Vec::new()));
-    assert_eq!(value!({}), Value::Object(BTreeMap::new()));
+    assert_eq!(value!({}), Value::Object(Object::new()));
     assert_eq!(value!(null), Value::Null);
     assert_eq!(value!("s"), Value::String("s".into()));
     assert_eq!(value!([1, 2,]), value!([1, 2]));
@@ -177,8 +176,10 @@ fn doc_macro_shapes() {
 fn declared_types_move_through_a_document() {
     let s = server();
     let d = to_value(&s).unwrap();
-    // A declared type writes members in declaration order and a document
-    // writes them sorted, so the two agree as documents, not as text.
+    // A declared type writes members in declaration order and so, now, does
+    // a document built from its text, so the two agree as text and not only
+    // as documents.
+    assert_eq!(d.to_string(), to_string(&s));
     assert_eq!(Value::from_json(&to_string(&s)).unwrap(), d);
     assert_eq!(d["port"].as_u64(), Some(8080));
     assert_eq!(from_value::<Server>(&d).unwrap(), s);
@@ -274,11 +275,11 @@ fn beve_reads_what_the_transcoder_writes() {
     };
     let bytes = to_beve(&rich);
     let d = Value::from_beve(&bytes).unwrap();
-    // Through a value so key order does not count. The fixture has no
-    // whole-valued float, which the transcoder's text would turn into an
-    // integer.
-    let sorted = Value::from_json(&beve_to_json(&bytes).unwrap()).unwrap();
-    assert_eq!(sorted, d);
+    // Through a value, whose equality is over the members and not their
+    // order. The fixture has no whole-valued float, which the transcoder's
+    // text would turn into an integer.
+    let transcoded = Value::from_json(&beve_to_json(&bytes).unwrap()).unwrap();
+    assert_eq!(transcoded, d);
     assert!(d["floats"][2].is_f64());
     assert_eq!(d["floats"][1].as_f64(), Some(-2.25));
     assert!(d["ints"][0].is_i64());
@@ -327,6 +328,8 @@ fn display_forms() {
 fn collects_from_iterators() {
     let arr: Value = (1..=3).collect();
     assert_eq!(arr, value!([1, 2, 3]));
+    // `FromIterator` inserts in the order the iterator yields, and that is
+    // the order the object writes.
     let obj: Value = [("b", 2), ("a", 1)].into_iter().collect();
-    assert_eq!(obj.to_string(), r#"{"a":1,"b":2}"#);
+    assert_eq!(obj.to_string(), r#"{"b":2,"a":1}"#);
 }

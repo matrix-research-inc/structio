@@ -11,11 +11,11 @@
 //!
 //! [`Value`](crate::Value) is the other destination for a value with no
 //! declared type, and is not a substitute for this one. It is a tree, so it
-//! sorts an object's keys, respells its numbers through this crate's
-//! formatters, and has nowhere to put an integer literal past the width it
-//! stores. Those are the right properties for a value you are going to *look
-//! at*, and the wrong ones for a value you are going to hand on unchanged.
-//! Reach for `Value` to walk a document and for `Raw` to carry one.
+//! respells its numbers through this crate's formatters, decodes an escape to
+//! the character it stood for, and has nowhere to put an integer literal past
+//! the width it stores. Those are the right properties for a value you are
+//! going to *look at*, and the wrong ones for a value you are going to hand on
+//! unchanged. Reach for `Value` to walk a document and for `Raw` to carry one.
 //!
 //! This is JSON only, which is why it lives here rather than at the crate root
 //! among the format-agnostic names. What a `Raw` holds is JSON text, and BEVE
