@@ -851,6 +851,48 @@ impl<'de, O: Options> Parser<'de, O> {
     where
         F: FnMut(&mut Self, JsonStr<'de>) -> PResult<()>,
     {
+        self.read_map_located(|p, key, _| entry(p, key))
+    }
+
+    /// [`read_map`](Self::read_map), telling the caller where each key begins.
+    ///
+    /// The offset is the key's first byte, just inside the opening quote. That
+    /// is the same byte [`ErrorCode::UnknownKey`] reports, so a reader that
+    /// refuses a key here can hand the offset straight to [`Error`] and the
+    /// message will name what this callback saw.
+    ///
+    /// [`read_map`](Self::read_map) cannot report this, its callback running
+    /// after the colon, and [`position`](Self::position) by then names the
+    /// value. Nor can it be recovered by driving the object by hand: the
+    /// depth counter that bounds nesting is not public, so an object of
+    /// unknown shape has to be read through one of these two.
+    ///
+    /// ```
+    /// use structio::{Error, ErrorCode, json::Parser};
+    ///
+    /// let doc = r#"{"a":1,"nope":2}"#;
+    /// let mut refused = None;
+    ///
+    /// Parser::new(doc)
+    ///     .read_map_located(|p, key, at| {
+    ///         if key.as_str() != "a" {
+    ///             refused = Some(Error::new(ErrorCode::UnknownKey, at));
+    ///         }
+    ///         p.skip_value()
+    ///     })
+    ///     .unwrap();
+    ///
+    /// let e = refused.unwrap();
+    /// assert!(doc[e.index..].starts_with("nope"));
+    /// ```
+    ///
+    /// [`Error`]: crate::Error
+    /// [`ErrorCode::UnknownKey`]: crate::ErrorCode::UnknownKey
+    #[inline]
+    pub fn read_map_located<F>(&mut self, mut entry: F) -> PResult<()>
+    where
+        F: FnMut(&mut Self, JsonStr<'de>, usize) -> PResult<()>,
+    {
         self.skip_ws();
         self.expect(b'{', ErrorCode::ExpectedBrace)?;
         self.enter()?;
@@ -863,9 +905,10 @@ impl<'de, O: Options> Parser<'de, O> {
 
         loop {
             self.expect(b'"', ErrorCode::ExpectedQuote)?;
+            let at = self.idx;
             let key = self.read_string_body()?;
             self.colon()?;
-            entry(self, key)?;
+            entry(self, key, at)?;
             if !self.comma_or_close(b'}')? {
                 self.leave();
                 return Ok(());

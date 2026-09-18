@@ -694,6 +694,13 @@ impl<'de, O: Options> Reader<'de, O> {
     #[inline]
     pub(crate) fn str_body(&mut self) -> PResult<&'de str> {
         let n = self.count()?;
+        self.str_text(n)
+    }
+
+    /// The `DATA` half alone, for a caller that read the size itself because
+    /// it wanted the position the text starts at.
+    #[inline]
+    pub(crate) fn str_text(&mut self, n: usize) -> PResult<&'de str> {
         let bytes = self.take(n)?;
         core::str::from_utf8(bytes).map_err(|_| ErrorCode::InvalidUtf8)
     }
@@ -1034,6 +1041,25 @@ impl<'de, O: Options> Reader<'de, O> {
         self.read_map_counted(|_| entry)
     }
 
+    /// [`read_map`](Self::read_map), telling the caller where each key begins.
+    ///
+    /// The offset is the key's first byte: its raw UTF-8 for a string key,
+    /// past the length prefix, and its little-endian bytes for an integer one.
+    /// For a string key that is the byte [`ErrorCode::UnknownKey`] reports, so
+    /// a reader refusing one here can hand the offset straight to [`Error`].
+    /// An integer key has no such counterpart to agree with, `read_object`
+    /// refusing an integer-keyed object outright as an
+    /// [`UnsupportedKeyType`](crate::ErrorCode::UnsupportedKeyType).
+    ///
+    /// [`Error`]: crate::Error
+    /// [`ErrorCode::UnknownKey`]: crate::ErrorCode::UnknownKey
+    pub fn read_map_located<F>(&mut self, entry: F) -> PResult<()>
+    where
+        F: FnMut(&mut Self, Key<'de>, usize) -> PResult<()>,
+    {
+        self.drive_map(|_| entry)
+    }
+
     /// [`read_map`](Self::read_map), telling the caller how many members to
     /// expect before the first one is read.
     ///
@@ -1046,6 +1072,19 @@ impl<'de, O: Options> Reader<'de, O> {
         S: FnOnce(usize) -> F,
         F: FnMut(&mut Self, Key<'de>) -> PResult<()>,
     {
+        self.drive_map(|n| {
+            let mut entry = start(n);
+            move |r: &mut Self, key, _| entry(r, key)
+        })
+    }
+
+    /// The loop the three public forms share, in the widest shape: counted,
+    /// and told where each key began. Private, no caller having wanted both.
+    fn drive_map<S, F>(&mut self, start: S) -> PResult<()>
+    where
+        S: FnOnce(usize) -> F,
+        F: FnMut(&mut Self, Key<'de>, usize) -> PResult<()>,
+    {
         let h = self.head()?;
         if header::ty(h) != header::TY_OBJECT {
             return Err(ErrorCode::ExpectedObject);
@@ -1057,12 +1096,24 @@ impl<'de, O: Options> Reader<'de, O> {
         self.enter()?;
 
         for _ in 0..members {
-            let key = match cat {
-                header::CAT_FLOAT => Key::Str(self.str_body()?),
-                header::CAT_SIGNED => Key::Signed(sign_extend(le_u128(self.take(width)?), width)),
-                _ => Key::Unsigned(le_u128(self.take(width)?)),
+            // An integer key starts where the member does. A string key does
+            // not: its length comes first, and the position wanted is the text
+            // after it, which is where `object_member` winds back to before
+            // refusing. So the string arm shadows this.
+            let at = self.pos;
+            let (key, at) = match cat {
+                header::CAT_FLOAT => {
+                    let n = self.count()?;
+                    let at = self.pos;
+                    (Key::Str(self.str_text(n)?), at)
+                }
+                header::CAT_SIGNED => (
+                    Key::Signed(sign_extend(le_u128(self.take(width)?), width)),
+                    at,
+                ),
+                _ => (Key::Unsigned(le_u128(self.take(width)?)), at),
             };
-            entry(self, key)?;
+            entry(self, key, at)?;
         }
 
         self.leave();

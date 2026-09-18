@@ -96,7 +96,7 @@ fn a_whole_policy_requiring_everything_names_a_field_too() {
     assert_eq!(e.key, Some("b"));
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct OnlyA {
     a: u32,
 }
@@ -457,4 +457,150 @@ fn a_second_document_does_not_inherit_the_first_s_key() {
     let second = docs.next_value::<Accessor>().unwrap().unwrap_err();
     let second = second.as_parse().unwrap();
     assert_eq!((second.code, second.key), (ErrorCode::ExpectedNumber, None));
+}
+
+// ---------------------------------------------------------------------------
+// Locating a key while driving a map
+// ---------------------------------------------------------------------------
+
+/// A key spelled with an escape, so reading it back has to unescape.
+const ESCAPED: &str = r#"{"a":1,"no\u0070e":2}"#;
+
+#[test]
+fn read_map_located_agrees_with_the_generated_reader() {
+    use structio::json::Parser;
+
+    // The two ways to meet a key have to mean the same byte by it, or an
+    // offset minted in a hand-written reader would name something else once
+    // it reached an Error.
+    for doc in [
+        r#"{"a":1,"nope":2}"#,
+        r#"{ "a" : 1 , "nope" : 2 }"#,
+        "{\n  \"a\": 1,\n  \"nope\": 2\n}",
+        r#"{"a":1,"":2}"#,
+        "{\"a\":1,\"\u{1f600}\":2}",
+        ESCAPED,
+    ] {
+        let from_schema = from_str::<OnlyA>(doc).unwrap_err();
+        assert_eq!(from_schema.code, ErrorCode::UnknownKey);
+
+        let mut by_hand = None;
+        Parser::new(doc)
+            .read_map_located(|p, key, at| {
+                if key.as_str() != "a" {
+                    by_hand = Some((key.into_string(), at));
+                }
+                p.skip_value()
+            })
+            .unwrap();
+
+        let (_, at) = by_hand.unwrap();
+        assert_eq!(at, from_schema.index, "{doc:?}");
+    }
+}
+
+#[test]
+fn beve_read_map_located_agrees_with_the_generated_reader() {
+    use std::collections::BTreeMap;
+    use structio::beve::{Key, Reader};
+    use structio::{from_beve, to_beve};
+
+    #[derive(Debug, Default)]
+    struct JustA {
+        a: u32,
+    }
+    structio::object!(JustA { a });
+
+    // Written as a map so the document holds a key no schema claims.
+    let doc = to_beve(&BTreeMap::from([
+        ("a".to_string(), 1u32),
+        ("nope".to_string(), 2),
+    ]));
+
+    let from_schema = from_beve::<JustA>(&doc).unwrap_err();
+    assert_eq!(from_schema.code, ErrorCode::UnknownKey);
+
+    let mut by_hand = None;
+    Reader::new(&doc)
+        .read_map_located(|r, key, at| {
+            if let Key::Str(name) = key
+                && name != "a"
+            {
+                by_hand = Some((name.to_string(), at));
+            }
+            r.skip_value()
+        })
+        .unwrap();
+
+    let (name, at) = by_hand.unwrap();
+    assert_eq!(name, "nope");
+    // The offset names the key's text, past the length prefix, exactly as the
+    // generated reader's does.
+    assert_eq!(at, from_schema.index);
+    assert_eq!(&doc[at..at + name.len()], name.as_bytes());
+}
+
+#[test]
+fn beve_read_map_located_locates_integer_keys() {
+    use std::collections::BTreeMap;
+    use structio::beve::{Key, Reader};
+    use structio::to_beve;
+
+    // An integer key has no length prefix, so the offset is the first of its
+    // little-endian bytes. Reading them back is the check that it is.
+    let doc = to_beve(&BTreeMap::from([(7u32, 1u8), (9, 2)]));
+
+    let mut seen = Vec::new();
+    Reader::new(&doc)
+        .read_map_located(|r, key, at| {
+            if let Key::Unsigned(n) = key {
+                seen.push((n, at));
+            }
+            r.skip_value()
+        })
+        .unwrap();
+
+    assert_eq!(seen.len(), 2);
+    for (n, at) in seen {
+        let width = 4; // u32 keys
+        let mut bytes = [0u8; 16];
+        bytes[..width].copy_from_slice(&doc[at..at + width]);
+        assert_eq!(u128::from_le_bytes(bytes), n);
+    }
+}
+
+#[test]
+fn beve_read_map_located_locates_signed_keys() {
+    use std::collections::BTreeMap;
+    use structio::beve::{Key, Reader};
+    use structio::to_beve;
+
+    // The signed arm takes its position on a different line from the unsigned
+    // one, so it needs its own check.
+    for doc in [
+        to_beve(&BTreeMap::from([(-7i8, 1u8), (9, 2)])),
+        to_beve(&BTreeMap::from([(-7i16, 1u8), (9, 2)])),
+        to_beve(&BTreeMap::from([(-7i32, 1u8), (9, 2)])),
+        to_beve(&BTreeMap::from([(-7i64, 1u8), (9, 2)])),
+    ] {
+        let mut seen = Vec::new();
+        Reader::new(&doc)
+            .read_map_located(|r, key, at| {
+                if let Key::Signed(n) = key {
+                    seen.push((n, at));
+                }
+                r.skip_value()
+            })
+            .unwrap();
+        assert_eq!(seen.len(), 2, "{doc:?}");
+        for (n, at) in seen {
+            // The width is whatever the encoder chose; reading it back at the
+            // reported offset is what proves the offset is the key's first byte.
+            let width = (doc.len() - at).min(16);
+            let mut bytes = [0u8; 16];
+            bytes[..width].copy_from_slice(&doc[at..at + width]);
+            let raw = i128::from_le_bytes(bytes);
+            assert_eq!(raw & 0xff, n & 0xff, "{n} at {at}");
+        }
+    }
 }
