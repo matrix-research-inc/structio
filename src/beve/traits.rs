@@ -543,3 +543,20 @@ pub trait ReadInternallyTagged<'de>: Variants + Sized {
 )]
 pub trait ReadWrite: for<'de> Read<'de> + Write {}
 impl<T> ReadWrite for T where T: for<'de> Read<'de> + Write {}
+
+/// Convenience bound for a function that parses a `T` out of a document it
+/// owns: readable from any BEVE input, and constructible.
+///
+/// The BEVE counterpart of [`json::ReadOwned`], which carries the full account
+/// of why the bound is higher-ranked and why [`Default`] is part of it.
+///
+/// Prefer [`crate::ReadOwned`], which also covers JSON, unless the type is
+/// deliberately BEVE only.
+///
+/// [`json::ReadOwned`]: crate::json::ReadOwned
+#[diagnostic::on_unimplemented(note = "this is `beve::Read` from a document of any lifetime plus \
+            `Default`, the bound for a function that hands back a value parsed \
+            out of a buffer it owns; `Default` is there because \
+            `beve::Read::read` fills a value that already exists")]
+pub trait ReadOwned: Default + for<'de> Read<'de> {}
+impl<T> ReadOwned for T where T: Default + for<'de> Read<'de> {}

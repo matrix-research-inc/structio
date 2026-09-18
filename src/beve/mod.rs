@@ -107,8 +107,8 @@ pub use impls::{FromBeveKey, NumericBytes, ToBeveKey};
 pub use reader::{Key, MAX_DEPTH, Reader, cautious};
 pub use stream::{Documents, Feed, Iter, Mode, from_reader_array, read_array_into};
 pub use traits::{
-    Read, ReadArray, ReadAs, ReadEnum, ReadInternallyTagged, ReadKeyAs, ReadObject, ReadWrite,
-    Write, WriteArray, WriteAs, WriteKeyAs, WriteObject,
+    Read, ReadArray, ReadAs, ReadEnum, ReadInternallyTagged, ReadKeyAs, ReadObject, ReadOwned,
+    ReadWrite, Write, WriteArray, WriteAs, WriteKeyAs, WriteObject,
 };
 pub use writer::Writer;
 
@@ -753,7 +753,7 @@ pub fn size_aligned_after_with<O: Options, T: Write + ?Sized>(value: &T, prefix:
 /// call. Use [`from_slice`] over a buffer you keep for the borrowing form.
 pub fn from_reader<T, R>(reader: R) -> StreamResult<T>
 where
-    T: for<'de> Read<'de> + Default,
+    T: ReadOwned,
     R: io::Read,
 {
     from_reader_with::<Standard, T, R>(reader)
@@ -763,7 +763,7 @@ where
 pub fn from_reader_with<O, T, R>(mut reader: R) -> StreamResult<T>
 where
     O: Options,
-    T: for<'de> Read<'de> + Default,
+    T: ReadOwned,
     R: io::Read,
 {
     let mut buf = Vec::new();

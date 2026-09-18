@@ -101,7 +101,7 @@
 
 use std::io;
 
-use crate::json::traits::{Read, Write};
+use crate::json::traits::{ReadOwned, Write};
 use crate::json::writer::Writer;
 use crate::options::{Options, Standard};
 
@@ -187,7 +187,7 @@ where
 /// call. [`Documents::next_value`] is the borrowing form.
 pub fn from_reader<T, R>(reader: R) -> StreamResult<T>
 where
-    T: for<'de> Read<'de> + Default,
+    T: ReadOwned,
     R: io::Read,
 {
     from_reader_with::<Standard, T, R>(reader)
@@ -197,7 +197,7 @@ where
 pub fn from_reader_with<O, T, R>(mut reader: R) -> StreamResult<T>
 where
     O: Options,
-    T: for<'de> Read<'de> + Default,
+    T: ReadOwned,
     R: io::Read,
 {
     let mut buf = Vec::new();

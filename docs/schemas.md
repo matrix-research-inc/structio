@@ -497,6 +497,8 @@ A declaration that generates no read constructs nothing, so a `write_only` type 
 
 This is the same requirement Glaze places on the types it deserializes, and it is what lets reading reuse the storage a value already holds instead of building a new one and assigning over the top.
 
+A generic function in that position writes `structio::ReadOwned` for the pair, or `json::ReadOwned` / `beve::ReadOwned` for one format. `from_str` deliberately keeps the lifetime-tied `Read<'de>` so a borrowing type can still be read from text the caller keeps; the owned bound belongs where the buffer does not outlive the call, which is what `from_reader`, `from_value` and the `Documents` iterators carry.
+
 The entry points that *return* a value are the other place it is needed, and for the same reason: a function handed nothing but a document has to build a `T` before it can read into one. That is the constructor's arithmetic rather than a rule about taking part. [`read_into`](../README.md#json) and `read_beve_into` ask the type they are handed for the read impl and nothing else, so a type whose zero value would be a lie can keep one out of its API and hand the parser a value it made itself:
 
 ```rust

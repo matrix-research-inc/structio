@@ -3,7 +3,7 @@
 use std::io;
 use std::marker::PhantomData;
 
-use crate::json::traits::Read;
+use crate::json::traits::{Read, ReadOwned};
 use crate::options::{Options, Standard};
 
 use crate::stream::{DEFAULT_BUFFER, Split};
@@ -203,8 +203,8 @@ impl<R: io::Read, O: Options> Documents<R, O> {
     /// So the two forms divide the work rather than overlapping, and which one
     /// a type has is decided by whether it borrows.
     /// [`Documents::next_value`] is the borrowing form, and a borrowing type
-    /// has only that one, [`Documents::iter`] carrying the same `for<'de>`
-    /// bound as this. What such a type gives up is the allocation reuse, which
+    /// has only that one: [`Documents::iter`] takes [`ReadOwned`], which is
+    /// this bound plus the [`Default`] it needs to construct each value. What such a type gives up is the allocation reuse, which
     /// costs it nothing for the fields that borrow, those being subslices of
     /// the window either way, and costs it a rebuild per value for any owned
     /// field standing beside them. That is a real limitation of the streaming
@@ -231,7 +231,7 @@ impl<R: io::Read, O: Options> Documents<R, O> {
     ///     println!("{}", value.unwrap().id);
     /// }
     /// ```
-    pub fn iter<T: for<'de> Read<'de> + Default>(&mut self) -> Iter<'_, R, T, O> {
+    pub fn iter<T: ReadOwned>(&mut self) -> Iter<'_, R, T, O> {
         Iter {
             docs: self,
             marker: PhantomData,
@@ -267,7 +267,7 @@ pub struct Iter<'d, R, T, O: Options = Standard> {
     marker: PhantomData<fn() -> T>,
 }
 
-impl<R: io::Read, T: for<'de> Read<'de> + Default, O: Options> Iterator for Iter<'_, R, T, O> {
+impl<R: io::Read, T: ReadOwned, O: Options> Iterator for Iter<'_, R, T, O> {
     type Item = StreamResult<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
