@@ -158,7 +158,8 @@ An error out of the expansion lands on the declaration as a whole: a field whose
 
 ## What it refuses
 
-- **A tuple struct or a unit struct.** The macros find a field by name, and `array!` counts by name too. Give the fields names, or declare a tuple instead.
+- **A tuple struct declared as an object.** Its fields have no names, so there is nothing for the keys to be. `#[structio(array)]` declares it [positional](schemas.md#positional-structs), which is the shape it already has; a one-field struct written as that field alone is `transparent`, a stage 2 shape.
+- **A unit struct**, and a tuple struct with no fields. Neither has anything to put on the wire.
 - **A union.** Which field holds the value is not something the bytes can say.
 - **A variant with several values, or with named fields.** See [Enums](#enums).
 - **A `where` predicate on anything but the type's own parameters.** See [Generics](#generics).
@@ -206,6 +207,7 @@ Not planned: `flatten`, which changes the shape of the object the reader sees an
 | `#[derive(Serialize)]` alone | `#[structio(write_only)]` | One derive covers both directions, so narrowing to the write half is an attribute rather than a second derive. |
 | `#[derive(Deserialize)]` alone | none | A declaration narrows to the write half or to neither, so a read-only type's fields still need their `Write` impls. See [One direction only](schemas.md#one-direction-only). |
 | `#[serde(borrow)]` | not needed | A lifetime on the type is the input lifetime. |
+| A tuple struct | `#[structio(array)]` | serde writes one positionally with no attribute. Here a struct is an object unless it says otherwise, and a positional shape is [a contract with no room to move](schemas.md#positional-structs), so it is asked for rather than assumed. |
 | `#[serde(default)]` with no path | `#[derive(Default)]` | A missing key keeps what the destination held, and the entry points that return a value start from `Default`. |
 
 ## Cost
