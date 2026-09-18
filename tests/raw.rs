@@ -657,6 +657,74 @@ fn new_unchecked_stores_the_span_as_it_was_given() {
     );
 }
 
+#[test]
+fn from_string_checks_and_trims_exactly_as_new_does() {
+    for s in [
+        "null",
+        "-1.5e3",
+        r#""\u0041""#,
+        "[]",
+        r#"{"a":[1,{"b":null}]}"#,
+        "  1  ",
+        "\n[1, 2]\t",
+        // The trim moves bytes around inside the buffer, so the cases that
+        // matter are the ones with a character either side of a boundary.
+        " \"h\u{e9}llo\u{2192}\" ",
+        r#"["\ud83d\ude00"]"#,
+        "\t[\"\u{1f600}\", 1]\n",
+        "{\"\u{e9}\":\"\u{2192}\"}",
+    ] {
+        // Equal across the borrowed and the owned form, because what a `Raw`
+        // holds is the span and not which buffer it came out of.
+        assert_eq!(
+            Raw::from_string(s.to_owned()).unwrap(),
+            Raw::new(s).unwrap(),
+            "at {s}"
+        );
+    }
+
+    // Down to the position, and nothing is written into the buffer on the way
+    // to a rejection.
+    for s in [r#"{"a":}"#, "1 2", "", "   ", "\u{e9}"] {
+        assert_eq!(
+            Raw::from_string(s.to_owned()).unwrap_err(),
+            Raw::new(s).unwrap_err(),
+            "at {s}"
+        );
+    }
+}
+
+#[test]
+fn from_string_takes_the_buffer_rather_than_copying_it() {
+    let text = String::from("  {\"a\":[1,2]}  ");
+    let before = text.as_ptr();
+
+    let raw = Raw::from_string(text).unwrap();
+
+    assert_eq!(raw.as_str(), r#"{"a":[1,2]}"#);
+    // Trimming shifted the span to the front of the buffer it arrived in. A
+    // copy would have put it in a fresh allocation somewhere else.
+    assert_eq!(raw.as_str().as_ptr(), before);
+}
+
+#[test]
+fn from_string_unchecked_stores_the_buffer_as_it_was_given() {
+    // Not one value, and not trimmed: the unchecked way in looks at nothing,
+    // exactly as `new_unchecked` does not.
+    assert_eq!(
+        Raw::from_string_unchecked(String::from("  1 2  ")).as_str(),
+        "  1 2  "
+    );
+
+    // Including the empty buffer, which writes nothing at all and truncates
+    // the member it stands in. This is what the defaulted `null` is for.
+    let empty = Envelope {
+        id: 1,
+        payload: Raw::from_string_unchecked(String::new()),
+    };
+    assert_eq!(to_string(&empty), r#"{"id":1,"payload":}"#);
+}
+
 // ---------------------------------------------------------------------------
 // Lifetimes and ownership
 // ---------------------------------------------------------------------------
@@ -680,6 +748,17 @@ fn an_owned_raw_outlives_the_document_it_came_from() {
         envelope.payload.into_owned()
     };
     assert_eq!(stripped.as_str(), "[1,2]");
+}
+
+#[test]
+fn a_raw_built_from_a_string_borrows_nothing() {
+    let owned: Raw<'static> = {
+        let text = format!(r#"{{"id":{},"tag":"{}"}}"#, 7, "a");
+        Raw::from_string(text).unwrap()
+    };
+
+    assert_eq!(owned.as_str(), r#"{"id":7,"tag":"a"}"#);
+    assert_eq!(to_string(&owned), r#"{"id":7,"tag":"a"}"#);
 }
 
 #[test]
@@ -885,4 +964,49 @@ fn a_raw_holding_null_is_a_value_like_any_other() {
     // nothing about the value as a whole.
     let nested = carrying(1, r#"{"a":null}"#);
     assert!(!nested.payload.is_null());
+}
+
+// ---------------------------------------------------------------------------
+// Display
+// ---------------------------------------------------------------------------
+
+#[test]
+fn display_is_the_span_and_nothing_else() {
+    for s in [
+        "null",
+        "1.50",
+        r#""a\nb""#,
+        // The escape stays an escape. `JsonStr` decodes; this type does not.
+        r#""\u0041""#,
+        r#"{"b":1,"a":2}"#,
+        "[1, 2]",
+    ] {
+        let raw = Raw::new(s).unwrap();
+        assert_eq!(raw.to_string(), s, "at {s}");
+        // `Value` prettifies under the alternate flag. A `Raw` has nothing to
+        // lay out, because relaying out its span is the one thing the type
+        // promises not to do; `prettify` is how you ask for that by name.
+        assert_eq!(format!("{raw:#}"), s, "at {s}");
+    }
+}
+
+#[test]
+fn display_is_what_a_compact_write_emits() {
+    let raw = Raw::new(r#"{"b":1.50,"a":[1,2]}"#).unwrap();
+    assert_eq!(raw.to_string(), to_string(&raw));
+
+    // A pretty write lays the span out at the depth it sits at. Display has no
+    // enclosing document to do that against, so the two deliberately differ
+    // and `{:#}` is the compact text rather than the laid-out one.
+    let laid_out = to_string_with::<Pretty, _>(&raw);
+    assert_ne!(raw.to_string(), laid_out);
+    assert_eq!(format!("{raw:#}"), raw.to_string());
+
+    // Including for a span nobody checked, which Display forwards as faithfully
+    // as a write does.
+    let unchecked = Raw::new_unchecked("1 2");
+    assert_eq!(unchecked.to_string(), "1 2");
+    assert_eq!(unchecked.to_string(), to_string(&unchecked));
+
+    assert_eq!(Raw::default().to_string(), "null");
 }

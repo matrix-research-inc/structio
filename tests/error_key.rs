@@ -14,6 +14,8 @@
 //! discarded read never carries one out with it, and that a hand-written
 //! reader can set one of its own.
 
+use std::collections::HashSet;
+
 use structio::{
     Documents, ErrorCode, Matrix, MatrixLayout, RequireKeys, SkipUnknown, beve, from_beve,
     from_beve_with, from_str, from_str_with, json, to_beve, to_string,
@@ -489,6 +491,30 @@ fn key_in_unescapes() {
         assert_eq!(key.as_str(), want, "{doc}");
         assert!(matches!(key, structio::json::JsonStr::Owned(_)), "{doc}");
     }
+}
+
+#[test]
+fn a_key_is_the_string_it_means_rather_than_the_variant_that_carries_it() {
+    // The same key, once spelled plainly and once through an escape, so one
+    // side comes back borrowed and the other owned.
+    let plain = from_str::<OnlyA>(r#"{"a":1,"nope":2}"#).unwrap_err();
+    let plain = plain.key_in(r#"{"a":1,"nope":2}"#).unwrap();
+    let escaped = from_str::<OnlyA>(ESCAPED).unwrap_err();
+    let escaped = escaped.key_in(ESCAPED).unwrap();
+
+    assert!(matches!(plain, structio::json::JsonStr::Borrowed(_)));
+    assert!(matches!(escaped, structio::json::JsonStr::Owned(_)));
+
+    // Both documents named the same key. Comparing the variants rather than
+    // the text would say otherwise.
+    assert_eq!(plain, escaped);
+    assert_eq!(plain.to_string(), "nope");
+    assert_eq!(escaped.to_string(), "nope");
+
+    // And they hash together, so a key read out of an error finds itself in a
+    // set of the names a schema knows.
+    let known: HashSet<structio::json::JsonStr<'_>> = HashSet::from([plain]);
+    assert!(known.contains(&escaped));
 }
 
 #[test]

@@ -12,6 +12,7 @@
 //! establishing again what the input already proved, and unescaping only has
 //! to produce valid UTF-8 for the escapes it expands.
 
+use core::fmt;
 use core::marker::PhantomData;
 
 use crate::error::{ErrorCode, PResult};
@@ -1582,6 +1583,12 @@ pub(crate) fn skip_comment(data: &[u8], at: usize) -> Option<usize> {
 ///
 /// Deliberately not `Cow`: the borrowed case is the overwhelmingly common one,
 /// and giving it a type of our own keeps that visible at every call site.
+///
+/// The variant is how the text got here, not what the text is. Both hold the
+/// string the document meant, with the escapes already resolved, so equality,
+/// hashing and [`Display`](core::fmt::Display) all go through
+/// [`as_str`](Self::as_str) and ignore which one it is.
+#[derive(Clone, Debug)]
 pub enum JsonStr<'de> {
     Borrowed(&'de str),
     Owned(String),
@@ -1602,6 +1609,42 @@ impl<'de> JsonStr<'de> {
             JsonStr::Borrowed(s) => s.to_owned(),
             JsonStr::Owned(s) => s,
         }
+    }
+}
+
+/// The text, whichever variant carries it.
+///
+/// Deriving this would compare the variants first, so a document that wrote
+/// `"a"` and one that wrote `"\u0061"` would come out holding different
+/// strings. They wrote the same string, and spelled it differently.
+impl PartialEq for JsonStr<'_> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for JsonStr<'_> {}
+
+/// The text, for the same reason and by the same route as [`PartialEq`].
+///
+/// Hand-written rather than derived so that it agrees with that impl: a
+/// derived `Hash` folds in the discriminant, and two keys that compare equal
+/// across the variants would then hash apart and miss each other in a
+/// `HashMap`. Looking a key up in the set of names a schema knows is the
+/// obvious thing to do with what [`Error::key_in`](crate::Error::key_in) hands
+/// back, so this type is a map key whether or not it was meant to be one.
+impl core::hash::Hash for JsonStr<'_> {
+    #[inline]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl fmt::Display for JsonStr<'_> {
+    /// The string the document meant, with no quotes around it.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

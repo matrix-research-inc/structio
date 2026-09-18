@@ -45,6 +45,7 @@
 //! assert_eq!(structio::to_string(&envelope), text);
 //! ```
 
+use core::fmt;
 use std::borrow::Cow;
 
 use crate::error::{Error, PResult, Result};
@@ -74,11 +75,13 @@ const NULL: &str = "null";
 /// had a comment taken out of it and so is no longer any run of the input; see
 /// the [`Read`] impl for both, and for exactly which spans those are.
 ///
-/// The type deliberately has no `From<&str>` and no `FromStr`. Both would be a
-/// conversion that looks total and is not: [`new`](Self::new) can fail, and
-/// the unchecked way in is [`new_unchecked`](Self::new_unchecked), which is
-/// spelled that way so that a span nobody validated is visible at the call
-/// site rather than hidden behind an `into()`.
+/// The type deliberately has no `From<&str>`, no `From<String>` and no
+/// `FromStr`. Each would be a conversion that looks total and is not:
+/// [`new`](Self::new) and [`from_string`](Self::from_string) can fail, and the
+/// unchecked ways in are [`new_unchecked`](Self::new_unchecked) and
+/// [`from_string_unchecked`](Self::from_string_unchecked), spelled that way so
+/// that a span nobody validated is visible at the call site rather than hidden
+/// behind an `into()`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Raw<'de>(Cow<'de, str>);
 
@@ -113,19 +116,7 @@ impl<'de> Raw<'de> {
     /// rejection ahead of the reader that will make it anyway, and that reader
     /// is the one that knows what the value was supposed to be.
     pub fn new(s: &'de str) -> Result<Self> {
-        let mut p = Parser::new(s);
-        p.skip_ws();
-        let start = p.position();
-        if let Err(code) = p.skip_value() {
-            return Err(Error::new(code, p.position()));
-        }
-        let end = p.position();
-        if let Err(code) = p.finish() {
-            return Err(Error::new(code, p.position()));
-        }
-        // `start` follows a run of whitespace and `end` is where stepping over
-        // the value stopped, so both are token boundaries and neither can be
-        // inside a character.
+        let (start, end) = span_of(s)?;
         Ok(Raw(Cow::Borrowed(&s[start..end])))
     }
 
@@ -190,6 +181,69 @@ impl<'de> Raw<'de> {
     }
 }
 
+impl Raw<'static> {
+    /// Take the one JSON value `s` spells, checking that it really is one,
+    /// without copying it.
+    ///
+    /// The owning counterpart to [`new`](Self::new), and the way in for text
+    /// this program produced rather than read: a body assembled from parts, or
+    /// a value some other layer already rendered. The `String` becomes the
+    /// span, so nothing is reallocated and the span is never copied out of the
+    /// buffer it arrived in. Reaching for `new(&s)` and then
+    /// [`into_owned`](Self::into_owned) instead copies a buffer the caller
+    /// already owns.
+    ///
+    /// The check and the trimming are exactly [`new`](Self::new)'s, being the
+    /// same walk: one complete value, nothing after it, and no whitespace on
+    /// either side of what is kept. Trimming shifts bytes down inside `s`.
+    ///
+    /// What the `Raw` then holds is the caller's whole allocation, not just
+    /// the span: a megabyte buffer that was built up and whittled down to one
+    /// short value keeps the megabyte for as long as the `Raw` lives. Where
+    /// that matters, `new(&s)?.into_owned()` is the call that pays a copy to
+    /// allocate the span exactly.
+    ///
+    /// ```
+    /// use structio::json::Raw;
+    ///
+    /// let text = format!(r#"{{"id":{}}}"#, 7);
+    /// let raw = Raw::from_string(text).unwrap();
+    /// assert_eq!(raw.as_str(), r#"{"id":7}"#);
+    /// ```
+    ///
+    /// `s` is consumed either way: a value that fails the check is dropped
+    /// rather than handed back, because [`Error`] carries a code and a
+    /// position and is not a place to park a buffer. Where the text has to
+    /// survive its own rejection, check it with [`new`](Self::new) first.
+    pub fn from_string(mut s: String) -> Result<Self> {
+        let (start, end) = span_of(&s)?;
+        // Both move bytes within the buffer and leave its allocation where it
+        // is, so the span is never copied out of the `String` it arrived in.
+        s.truncate(end);
+        s.drain(..start);
+        Ok(Raw(Cow::Owned(s)))
+    }
+
+    /// Take `s` as one JSON value without looking at it, and without copying
+    /// it.
+    ///
+    /// [`new_unchecked`](Self::new_unchecked) for text this program owns, on
+    /// the same terms: **the validity of the output document is yours**, and
+    /// whatever `s` holds goes verbatim into whatever document this `Raw`
+    /// lands in. Like that one and unlike [`from_string`](Self::from_string)
+    /// it does not trim, so whitespace around the value is part of the span
+    /// and is written with it.
+    ///
+    /// An empty `String` is the case to watch, being the one a builder that
+    /// never got filled hands over. It writes nothing at all, which truncates
+    /// the member it stands in to `{"params":}`; see [`default`](Self::default)
+    /// for why that is the hole the defaulted value exists to close.
+    #[inline]
+    pub fn from_string_unchecked(s: String) -> Self {
+        Raw(Cow::Owned(s))
+    }
+}
+
 impl Default for Raw<'_> {
     /// The literal `null`, borrowed.
     ///
@@ -219,6 +273,32 @@ impl Default for Raw<'_> {
     #[inline]
     fn default() -> Self {
         Raw(Cow::Borrowed(NULL))
+    }
+}
+
+impl fmt::Display for Raw<'_> {
+    /// The span, exactly as [`as_str`](Raw::as_str) gives it and exactly as a
+    /// compact write emits it. Under [`PRETTY`](crate::Options::PRETTY) a
+    /// write lays the span out at the depth it sits at, which `Display` has no
+    /// enclosing document to do.
+    ///
+    /// `{:#}` is the same text rather than the laid-out one.
+    /// [`Value`](crate::Value) prettifies under the alternate flag, but it is
+    /// a tree and cannot be holding anything it could not lay out. A `Raw` can:
+    /// [`new_unchecked`](Self::new_unchecked) takes a span nobody walked, and
+    /// laying that one out fails. `Display` has nowhere to report a failure
+    /// and would have to swallow it, so laying a span out stays
+    /// [`prettify`](crate::prettify()), which is asked for by name and returns
+    /// a [`Result`].
+    ///
+    /// ```
+    /// use structio::json::Raw;
+    ///
+    /// let raw = Raw::new(r#""a\nb""#).unwrap();
+    /// assert_eq!(raw.to_string(), r#""a\nb""#);
+    /// ```
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -359,6 +439,31 @@ impl Write for Raw<'_> {
     fn is_null(&self) -> bool {
         self.as_str() == NULL
     }
+}
+
+/// The half-open span of `s` that is the value: one whole JSON value, with the
+/// whitespace on either side of it walked past.
+///
+/// The one walk behind both checked ways in, so what
+/// [`Raw::from_string`] accepts is what [`Raw::new`] accepts by construction
+/// rather than by two copies of a check staying in step.
+///
+/// `start` follows a run of whitespace and `end` is where stepping over the
+/// value stopped, so both are token boundaries and neither can be inside a
+/// character. That is what lets a caller slice on them, or move bytes between
+/// them, without checking again.
+fn span_of(s: &str) -> Result<(usize, usize)> {
+    let mut p = Parser::new(s);
+    p.skip_ws();
+    let start = p.position();
+    if let Err(code) = p.skip_value() {
+        return Err(Error::new(code, p.position()));
+    }
+    let end = p.position();
+    if let Err(code) = p.finish() {
+        return Err(Error::new(code, p.position()));
+    }
+    Ok((start, end))
 }
 
 /// Lay `span` out into `w` at the writer's current depth, or answer `false`
