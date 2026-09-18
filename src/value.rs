@@ -40,6 +40,31 @@
 //! [`Value::Null`] for one, and reading one, from a BEVE float or a JSON
 //! literal past `f64`'s range, is [`NumberOutOfRange`](ErrorCode::NumberOutOfRange).
 //!
+//! # Comparison
+//!
+//! A [`Value`] compares equal to a primitive when it holds that kind and that
+//! value, in either order and behind either reference the accessors hand back,
+//! so that `doc["port"] == 8080` and `8080 == doc.get("port").unwrap()` both
+//! say what they look like they say. A value of another kind is not equal
+//! rather than an error, the way a member no document carried reads as
+//! [`Value::Null`].
+//!
+//! A number is met at the comparand's width, so the two spellings
+//! [above](self#numbers) stay the different numbers they are: an integer widens
+//! to meet an `f64`, rounding if it is past the integers an `f64` holds
+//! exactly, and a float is not narrowed back to meet an integer. Against an
+//! `f32` the stored number rounds to that width, so that a document's `0.1`
+//! equals `0.1f32`, which widening the `f32` would not; one too large or too
+//! small to round to an `f32` matches none, being neither the infinity nor the
+//! zero a cast would clamp it to.
+//!
+//! ```
+//! # use structio::value;
+//! assert!(value!(1) == 1.0);
+//! assert!(value!(1.0) != 1);
+//! assert!(value!(0.1) == 0.1f32);
+//! ```
+//!
 //! # Keys
 //!
 //! An object's members keep the order the document listed them in, or the
@@ -323,23 +348,126 @@ impl<K: Into<String>, V: Into<Value>> FromIterator<(K, V)> for Value {
     }
 }
 
-impl PartialEq<str> for Value {
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == Some(other)
+// ---------------------------------------------------------------------------
+// Comparison
+// ---------------------------------------------------------------------------
+
+// The pairings a comparand gets are the same for every comparand, so the rule
+// in the module docs needs no list of exceptions attached to it: the value on
+// the left as a `Value`, a `&Value` or a `&mut Value`, since references are
+// what the accessors hand back, and the comparand on the left against each of
+// those three. What equal means for one kind is a `Comparand` impl; the macro
+// below only stamps the pairings out.
+
+/// What one comparand kind means by equal to a value. The value's own accessor
+/// answers, so a value of another kind is not equal rather than an error, and a
+/// number is met at the width the accessor reads.
+trait Comparand {
+    fn equals(&self, value: &Value) -> bool;
+}
+
+impl Comparand for str {
+    fn equals(&self, value: &Value) -> bool {
+        value.as_str() == Some(self)
     }
 }
 
-impl PartialEq<&str> for Value {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == Some(*other)
+impl Comparand for bool {
+    fn equals(&self, value: &Value) -> bool {
+        value.as_bool() == Some(*self)
     }
 }
 
-impl PartialEq<bool> for Value {
-    fn eq(&self, other: &bool) -> bool {
-        self.as_bool() == Some(*other)
+impl Comparand for f64 {
+    fn equals(&self, value: &Value) -> bool {
+        value.as_f64() == Some(*self)
     }
 }
+
+impl Comparand for f32 {
+    /// The stored number rounds to the comparand's width rather than the
+    /// comparand widening to the value's, so that a document's `0.1` equals
+    /// `0.1f32`, which the widening direction would not.
+    ///
+    /// A cast to `f32` clamps as well as rounds: a magnitude past `f32`'s range
+    /// becomes an infinity and one below it becomes a zero, and a stored number
+    /// is neither of those things, having been refused at the door if it were.
+    /// Only a rounding is a match.
+    fn equals(&self, value: &Value) -> bool {
+        let Some(v) = value.as_f64() else {
+            return false;
+        };
+        let rounded = v as f32;
+        rounded.is_finite() && (rounded == 0.0) == (v == 0.0) && rounded == *self
+    }
+}
+
+macro_rules! integer_comparand {
+    ($accessor:ident as $wide:ty: $($t:ty)*) => {$(
+        impl Comparand for $t {
+            fn equals(&self, value: &Value) -> bool {
+                value.$accessor() == Some(*self as $wide)
+            }
+        }
+    )*};
+}
+
+integer_comparand!(as_i64 as i64: i8 i16 i32 i64 isize);
+integer_comparand!(as_u64 as u64: u8 u16 u32 u64 usize);
+
+/// A `String` or a `&str` reaches `str`'s answer by deref, so neither needs a
+/// [`Comparand`] impl of its own.
+macro_rules! partial_eq {
+    // A comparand that is itself a reference stops at the bare value: core's
+    // `impl<A: PartialEq<B>> PartialEq<&B> for &A`, and its `&mut` siblings,
+    // already pair it with a borrowed value on either side, and a second impl
+    // of ours would overlap them.
+    (@bare $($t:ty)*) => {$(
+        impl PartialEq<$t> for Value {
+            fn eq(&self, other: &$t) -> bool {
+                other.equals(self)
+            }
+        }
+
+        impl PartialEq<Value> for $t {
+            fn eq(&self, other: &Value) -> bool {
+                self.equals(other)
+            }
+        }
+    )*};
+    // And every other comparand also meets the value behind the references the
+    // accessors hand back, from either side.
+    ($($t:ty)*) => {$(
+        partial_eq!(@bare $t);
+
+        impl PartialEq<$t> for &Value {
+            fn eq(&self, other: &$t) -> bool {
+                other.equals(self)
+            }
+        }
+
+        impl PartialEq<$t> for &mut Value {
+            fn eq(&self, other: &$t) -> bool {
+                other.equals(self)
+            }
+        }
+
+        impl PartialEq<&Value> for $t {
+            fn eq(&self, other: &&Value) -> bool {
+                self.equals(other)
+            }
+        }
+
+        impl PartialEq<&mut Value> for $t {
+            fn eq(&self, other: &&mut Value) -> bool {
+                self.equals(other)
+            }
+        }
+    )*};
+}
+
+partial_eq!(str String bool f32 f64 i8 i16 i32 i64 isize u8 u16 u32 u64 usize);
+partial_eq!(@bare &str &String);
 
 // ---------------------------------------------------------------------------
 // Accessors
