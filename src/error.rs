@@ -122,10 +122,17 @@ pub enum ErrorCode {
     ///
     /// Read with [`SkipUnknown`](crate::SkipUnknown) to step over it instead.
     ///
-    /// For a struct declared with [`object!`](crate::object) the reported
-    /// position is the key itself, so the message names what was not
-    /// recognized. A hand-written reader reports wherever it noticed, which
-    /// for [`Matrix`](crate::Matrix) is the offending member's value.
+    /// The reported position is the key itself, so the message names what was
+    /// not recognized. That holds for a struct declared with
+    /// [`object!`](crate::object) and for the readers written by hand, which
+    /// wind back to the key before refusing: a map callback runs after the
+    /// colon, and reporting from there would name the value instead. See
+    /// [`json::Parser::read_map_located`](crate::json::Parser::read_map_located).
+    ///
+    /// The name is not carried, an [`ErrorCode`] being one byte and the name
+    /// being a run of the document rather than a constant of the destination.
+    /// [`Error::key_in`](crate::Error::key_in) reads it back out of the
+    /// document, which is where it still is.
     UnknownKey,
     /// An enum's tag named no variant the destination declares.
     ///
@@ -270,7 +277,9 @@ pub struct Error {
     /// Every other code leaves it empty, [`UnknownKey`](ErrorCode::UnknownKey)
     /// and [`UnknownVariant`](ErrorCode::UnknownVariant) included: the cursor
     /// is already wound back to the offending name, so the offset points at it
-    /// and a copy here would say the same thing twice.
+    /// and a copy here would say the same thing twice. Those two are the codes
+    /// [`key_in`](Self::key_in) exists for, being the ones whose name is in
+    /// the document rather than in the schema.
     ///
     /// `&'static str`, so an `Error` still outlives the document and stays
     /// `Copy`. Everything nameable here is a constant of the destination type
@@ -347,6 +356,83 @@ impl Error {
         match self.key {
             None => Ok(()),
             Some(key) => write!(f, " {key:?}"),
+        }
+    }
+
+    /// The key this failure is about, read out of the document it came from.
+    ///
+    /// [`key`](Self::key) holds a name only when that name is a constant of
+    /// the destination type, which for [`MissingKey`](ErrorCode::MissingKey)
+    /// it is. The codes about a name the *document* chose leave it empty and
+    /// wind the cursor back instead, so what they carry is an offset. This
+    /// reads the name back from that offset, and answers for both kinds:
+    ///
+    /// ```
+    /// use structio::ErrorCode;
+    ///
+    /// #[derive(Debug, Default)]
+    /// struct OnlyA { a: u32 }
+    /// structio::object!(OnlyA { a });
+    ///
+    /// let doc = r#"{"a":1,"nope":2}"#;
+    /// let e = structio::from_str::<OnlyA>(doc).unwrap_err();
+    /// assert_eq!(e.code, ErrorCode::UnknownKey);
+    /// assert_eq!(e.key, None); // no `&'static str` could name it
+    /// assert_eq!(e.key_in(doc).unwrap().as_str(), "nope");
+    /// ```
+    ///
+    /// The lifetime is the document's, not this error's, which is what keeps
+    /// [`Error`] `Copy` and independent of the buffer it describes. A key with
+    /// escapes is unescaped, so this allocates exactly when
+    /// [`read_string_body`] would; `"no\u0070e"` comes back as `nope`.
+    ///
+    /// **The document must be the one the offset indexes.** Hand it another
+    /// and the answer is a name from that one, or nonsense, not `None`; the
+    /// offset cannot tell. This is [`display_with`](Self::display_with)'s
+    /// hazard exactly, and worth avoiding the same way, by asking at the parse
+    /// site rather than remembering an offset for later. The one check made is
+    /// that a quote precedes the offset, which every key has: enough to reject
+    /// an offset that names a *value*, as a reader refusing after the colon
+    /// would report, and not enough to tell a key from the text inside a
+    /// string value, which is locally identical to one. A sanity check on a
+    /// diagnostic, not a proof.
+    ///
+    /// JSON only. A BEVE key is not self-delimiting from the byte its offset
+    /// names, its length living in the prefix that offset is already past, so
+    /// a BEVE reader that wants a name takes it from
+    /// [`beve::Reader::read_map_located`] while it is still in hand.
+    ///
+    /// `None` for a code about no key, for an offset with no string at it, and
+    /// for text that is not a well-formed JSON string body. A key set by hand
+    /// with [`set_error_key`] wins over all of this, being the most specific
+    /// answer there is: it was named rather than located.
+    ///
+    /// [`read_string_body`]: crate::json::Parser::read_string_body
+    /// [`set_error_key`]: crate::json::Parser::set_error_key
+    /// [`beve::Reader::read_map_located`]: crate::beve::Reader::read_map_located
+    pub fn key_in<'a>(&self, doc: &'a str) -> Option<crate::json::JsonStr<'a>> {
+        if let Some(key) = self.key {
+            return Some(crate::json::JsonStr::Borrowed(key));
+        }
+        match self.code {
+            ErrorCode::UnknownKey | ErrorCode::UnknownVariant => {
+                // A key is the body of a string, so the byte before it is
+                // the opening quote. One compare, and it rejects the offset a
+                // reader that refused after the colon would carry: a value
+                // begins at its own first byte, which is not preceded by a
+                // quote unless the value is a string, and then the byte named
+                // is the quote itself rather than what follows it. No key sits
+                // at offset 0 either: the shallowest follows a quote that
+                // follows a brace, and a bare variant name follows its own
+                // quote.
+                if *doc.as_bytes().get(self.index.checked_sub(1)?)? != b'"' {
+                    return None;
+                }
+                crate::json::Parser::new(doc.get(self.index..)?)
+                    .read_string_body()
+                    .ok()
+            }
+            _ => None,
         }
     }
 

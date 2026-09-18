@@ -96,7 +96,7 @@ fn a_whole_policy_requiring_everything_names_a_field_too() {
     assert_eq!(e.key, Some("b"));
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct OnlyA {
     a: u32,
 }
@@ -457,4 +457,322 @@ fn a_second_document_does_not_inherit_the_first_s_key() {
     let second = docs.next_value::<Accessor>().unwrap().unwrap_err();
     let second = second.as_parse().unwrap();
     assert_eq!((second.code, second.key), (ErrorCode::ExpectedNumber, None));
+}
+
+// ---------------------------------------------------------------------------
+// Reading the name back out of the document
+// ---------------------------------------------------------------------------
+
+/// A key spelled with an escape, so reading it back has to unescape.
+const ESCAPED: &str = r#"{"a":1,"no\u0070e":2}"#;
+/// The same, where unescaping also has to produce multi-byte UTF-8.
+const ESCAPED_MULTIBYTE: &str = r#"{"a":1,"\u00e9t\u00e9":2}"#;
+
+#[test]
+fn key_in_reads_an_unknown_key_out_of_the_document() {
+    let doc = r#"{"a":1,"nope":2}"#;
+    let e = from_str::<OnlyA>(doc).unwrap_err();
+    assert_eq!(e.code, ErrorCode::UnknownKey);
+    assert_eq!(e.key, None);
+    assert_eq!(e.key_in(doc).unwrap().as_str(), "nope");
+}
+
+#[test]
+fn key_in_unescapes() {
+    // The offset names a JSON string body, not a run of bytes, so the answer
+    // is the key the document means rather than the text it spells it with.
+    // This is also the only path that allocates.
+    for (doc, want) in [(ESCAPED, "nope"), (ESCAPED_MULTIBYTE, "\u{e9}t\u{e9}")] {
+        let e = from_str::<OnlyA>(doc).unwrap_err();
+        assert_eq!(e.code, ErrorCode::UnknownKey, "{doc}");
+        let key = e.key_in(doc).unwrap();
+        assert_eq!(key.as_str(), want, "{doc}");
+        assert!(matches!(key, structio::json::JsonStr::Owned(_)), "{doc}");
+    }
+}
+
+#[test]
+fn key_in_hands_back_a_static_key_unread() {
+    // MissingKey names a field of the schema, and that name is not anywhere in
+    // the document to be read out of it.
+    let e = from_str::<Accessor>(r#"{"type":5}"#).unwrap_err();
+    assert_eq!(e.code, ErrorCode::MissingKey);
+    assert_eq!(e.key_in(r#"{"type":5}"#).unwrap().as_str(), "byteOffset");
+}
+
+#[test]
+fn key_in_is_empty_for_a_code_about_no_key() {
+    // Which code it is decides this, not whether a string happens to parse at
+    // the offset. Each of these three lands somewhere that does parse as one,
+    // and the name it would yield is nonsense: "" for a value's opening quote,
+    // "[" for a bracket read as a bare body. The other two are here for the
+    // shape of the contract, and reach the guard only after the code check.
+    for doc in [
+        r#"{"a":"nope"}"#,
+        r#"{"a":1} "tail""#,
+        r#"["a"]"#,
+        r#"{"a":x}"#,
+        r#"{"a":1,}"#,
+    ] {
+        let e = from_str::<OnlyA>(doc).unwrap_err();
+        assert_ne!(e.code, ErrorCode::UnknownKey, "{doc:?}");
+        assert!(e.key_in(doc).is_none(), "{doc:?} gave {e:?}");
+    }
+}
+
+#[test]
+fn key_in_survives_the_wrong_document() {
+    // A diagnostic helper handed a buffer that did not produce the error must
+    // not panic, including when the offset lands inside a character.
+    let e = from_str::<OnlyA>(r#"{"a":1,"nope":2}"#).unwrap_err();
+    assert_eq!(e.index, 8);
+    for other in [
+        "",
+        "{}",
+        "x",
+        "\u{1f600}\u{1f600}", // exactly 8 bytes: the offset is the end
+        "xxxxxx\u{1f600}",    // 8 lands inside the last character
+        "\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}", // 10 bytes, every other one a boundary
+    ] {
+        let _ = e.key_in(other);
+    }
+    // Rounding down, as display_with does, would be wrong here rather than
+    // merely imprecise: it would read a name out of a character's tail.
+    assert!(e.key_in("xxxxxx\u{1f600}").is_none());
+}
+
+#[test]
+fn read_map_located_agrees_with_the_generated_reader() {
+    use structio::json::Parser;
+
+    // The two ways to meet a key have to mean the same byte by it, or an
+    // offset minted in a hand-written reader would name something else once
+    // it reached an Error.
+    for doc in [
+        r#"{"a":1,"nope":2}"#,
+        r#"{ "a" : 1 , "nope" : 2 }"#,
+        "{\n  \"a\": 1,\n  \"nope\": 2\n}",
+        r#"{"a":1,"":2}"#,
+        "{\"a\":1,\"\u{1f600}\":2}",
+        ESCAPED,
+    ] {
+        let from_schema = from_str::<OnlyA>(doc).unwrap_err();
+        assert_eq!(from_schema.code, ErrorCode::UnknownKey);
+
+        let mut by_hand = None;
+        Parser::new(doc)
+            .read_map_located(|p, key, at| {
+                if key.as_str() != "a" {
+                    by_hand = Some((key.into_string(), at));
+                }
+                p.skip_value()
+            })
+            .unwrap();
+
+        let (name, at) = by_hand.unwrap();
+        assert_eq!(at, from_schema.index, "{doc:?}");
+        assert_eq!(name, from_schema.key_in(doc).unwrap().as_str(), "{doc:?}");
+    }
+}
+
+#[test]
+fn beve_read_map_located_agrees_with_the_generated_reader() {
+    use std::collections::BTreeMap;
+    use structio::beve::{Key, Reader};
+    use structio::{from_beve, to_beve};
+
+    #[derive(Debug, Default)]
+    struct JustA {
+        a: u32,
+    }
+    structio::object!(JustA { a });
+
+    // Written as a map so the document holds a key no schema claims.
+    let doc = to_beve(&BTreeMap::from([
+        ("a".to_string(), 1u32),
+        ("nope".to_string(), 2),
+    ]));
+
+    let from_schema = from_beve::<JustA>(&doc).unwrap_err();
+    assert_eq!(from_schema.code, ErrorCode::UnknownKey);
+
+    let mut by_hand = None;
+    Reader::new(&doc)
+        .read_map_located(|r, key, at| {
+            if let Key::Str(name) = key
+                && name != "a"
+            {
+                by_hand = Some((name.to_string(), at));
+            }
+            r.skip_value()
+        })
+        .unwrap();
+
+    let (name, at) = by_hand.unwrap();
+    assert_eq!(name, "nope");
+    // The offset names the key's text, past the length prefix, exactly as the
+    // generated reader's does.
+    assert_eq!(at, from_schema.index);
+    assert_eq!(&doc[at..at + name.len()], name.as_bytes());
+}
+
+#[test]
+fn beve_read_map_located_locates_integer_keys() {
+    use std::collections::BTreeMap;
+    use structio::beve::{Key, Reader};
+    use structio::to_beve;
+
+    // An integer key has no length prefix, so the offset is the first of its
+    // little-endian bytes. Reading them back is the check that it is.
+    let doc = to_beve(&BTreeMap::from([(7u32, 1u8), (9, 2)]));
+
+    let mut seen = Vec::new();
+    Reader::new(&doc)
+        .read_map_located(|r, key, at| {
+            if let Key::Unsigned(n) = key {
+                seen.push((n, at));
+            }
+            r.skip_value()
+        })
+        .unwrap();
+
+    assert_eq!(seen.len(), 2);
+    for (n, at) in seen {
+        let width = 4; // u32 keys
+        let mut bytes = [0u8; 16];
+        bytes[..width].copy_from_slice(&doc[at..at + width]);
+        assert_eq!(u128::from_le_bytes(bytes), n);
+    }
+}
+
+#[test]
+fn key_in_reads_an_unknown_variant_too() {
+    // The other half of what key_in promises, and the half a code-filter
+    // mutation used to get away with.
+    #[derive(Debug, Default, PartialEq)]
+    enum Shape {
+        #[default]
+        Circle,
+    }
+    structio::unit_enum!(Shape { Circle });
+
+    #[derive(Debug, Default, PartialEq)]
+    enum Payload {
+        #[default]
+        Empty,
+        Circle(u32),
+    }
+    structio::tagged_enum!(Payload { Empty, Circle(_) });
+
+    let doc = r#""Square""#;
+    let e = from_str::<Shape>(doc).unwrap_err();
+    assert_eq!(e.code, ErrorCode::UnknownVariant);
+    assert_eq!(e.key_in(doc).unwrap().as_str(), "Square");
+
+    let doc = r#"{"Square":1}"#;
+    let e = from_str::<Payload>(doc).unwrap_err();
+    assert_eq!(e.code, ErrorCode::UnknownVariant);
+    assert_eq!(e.key_in(doc).unwrap().as_str(), "Square");
+}
+
+#[test]
+fn key_in_will_not_read_a_name_off_a_value() {
+    // A reader that refuses after the colon would report the value, and the
+    // text there can parse as a string body and yield a plausible name. The
+    // quote before the offset is what rules that out.
+    let doc = r#"{"a":"nope"}"#;
+    // Offset 5 is the value's opening quote, which is what a reader refusing
+    // after the colon reports. Without the check it reads as the empty key.
+    let forged = structio::Error::new(ErrorCode::UnknownKey, 5);
+    assert!(
+        forged.key_in(doc).is_none(),
+        "read {:?} off a value",
+        forged.key_in(doc).map(|k| k.as_str().to_string())
+    );
+
+    // And offset 0 is never a key: the shallowest one follows `{"`.
+    assert!(
+        structio::Error::new(ErrorCode::UnknownKey, 0)
+            .key_in(doc)
+            .is_none()
+    );
+
+    // The limit of the check, pinned so it is not mistaken for a proof: offset
+    // 6 is the text inside the value, and a quote precedes that too. Nothing
+    // local distinguishes it from a key, so it is read as one. No reader in
+    // the crate reports there, which is why a cheap check is the right one.
+    assert_eq!(
+        structio::Error::new(ErrorCode::UnknownKey, 6)
+            .key_in(doc)
+            .unwrap()
+            .as_str(),
+        "nope"
+    );
+}
+
+#[test]
+fn matrix_names_the_key_it_refused() {
+    // Matrix reads its members by hand through a map callback, which runs
+    // after the colon. It winds back, so its UnknownKey means what every other
+    // one means and key_in can read it.
+    use structio::Matrix;
+
+    for doc in [
+        r#"{"bogus":1,"layout":"layout_right","extents":[1,1],"value":[1.0]}"#,
+        r#"{"layout":"layout_right","extents":[1,1],"value":[1.0],"bogus":"hello"}"#,
+    ] {
+        let e = from_str::<Matrix<f64>>(doc).unwrap_err();
+        assert_eq!(e.code, ErrorCode::UnknownKey, "{doc}");
+        assert_eq!(e.key_in(doc).unwrap().as_str(), "bogus", "{doc}");
+        assert!(doc[e.index..].starts_with("bogus"), "{doc}");
+    }
+}
+
+#[test]
+fn beve_matrix_names_the_key_it_refused() {
+    use std::collections::BTreeMap;
+    use structio::Matrix;
+
+    // The object form, with a member the shape does not name.
+    let doc = structio::to_beve(&BTreeMap::from([("bogus".to_string(), 1u8)]));
+
+    let e = structio::from_beve::<Matrix<f64>>(&doc).unwrap_err();
+    assert_eq!(e.code, ErrorCode::UnknownKey);
+    assert_eq!(&doc[e.index..e.index + 5], b"bogus");
+}
+
+#[test]
+fn beve_read_map_located_locates_signed_keys() {
+    use std::collections::BTreeMap;
+    use structio::beve::{Key, Reader};
+    use structio::to_beve;
+
+    // The signed arm takes its position on a different line from the unsigned
+    // one, so it needs its own check.
+    for doc in [
+        to_beve(&BTreeMap::from([(-7i8, 1u8), (9, 2)])),
+        to_beve(&BTreeMap::from([(-7i16, 1u8), (9, 2)])),
+        to_beve(&BTreeMap::from([(-7i32, 1u8), (9, 2)])),
+        to_beve(&BTreeMap::from([(-7i64, 1u8), (9, 2)])),
+    ] {
+        let mut seen = Vec::new();
+        Reader::new(&doc)
+            .read_map_located(|r, key, at| {
+                if let Key::Signed(n) = key {
+                    seen.push((n, at));
+                }
+                r.skip_value()
+            })
+            .unwrap();
+        assert_eq!(seen.len(), 2, "{doc:?}");
+        for (n, at) in seen {
+            // The width is whatever the encoder chose; reading it back at the
+            // reported offset is what proves the offset is the key's first byte.
+            let width = (doc.len() - at).min(16);
+            let mut bytes = [0u8; 16];
+            bytes[..width].copy_from_slice(&doc[at..at + width]);
+            let raw = i128::from_le_bytes(bytes);
+            assert_eq!(raw & 0xff, n & 0xff, "{n} at {at}");
+        }
+    }
 }
