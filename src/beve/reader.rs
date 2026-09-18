@@ -1051,7 +1051,11 @@ impl<'de, O: Options> Reader<'de, O> {
     /// refusing an integer-keyed object outright as an
     /// [`UnsupportedKeyType`](crate::ErrorCode::UnsupportedKeyType).
     ///
+    /// Take the name here rather than planning to recover it later: there is
+    /// no BEVE [`Error::key_in`], for the reason given there.
+    ///
     /// [`Error`]: crate::Error
+    /// [`Error::key_in`]: crate::Error::key_in
     /// [`ErrorCode::UnknownKey`]: crate::ErrorCode::UnknownKey
     pub fn read_map_located<F>(&mut self, entry: F) -> PResult<()>
     where

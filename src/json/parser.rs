@@ -883,7 +883,7 @@ impl<'de, O: Options> Parser<'de, O> {
     ///     .unwrap();
     ///
     /// let e = refused.unwrap();
-    /// assert!(doc[e.index..].starts_with("nope"));
+    /// assert_eq!(e.key_in(doc).unwrap().as_str(), "nope");
     /// ```
     ///
     /// [`Error`]: crate::Error
