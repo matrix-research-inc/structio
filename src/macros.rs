@@ -1893,6 +1893,49 @@ macro_rules! __unit_enum {
 /// assert_eq!(structio::to_string(&Span::Range((1, 5))), r#"{"Range":[1,5]}"#);
 /// ```
 ///
+/// The requirement stops at the payloads. The enum itself needs no `Default`,
+/// which is worth saying because the shape that most wants a tagged enum is
+/// the one that cannot derive it: a message union whose every variant carries
+/// something. `#[derive(Default)]` reaches an enum only through a variant
+/// marked `#[default]`, and that variant has to be a unit one, so an enum like
+/// the one below would have to nominate a message as the stand-in for no
+/// message to get the derive. It does not have to. Declaring it, writing it,
+/// and reading into a value the caller already holds ask the payloads for
+/// their `Default` and the enum for nothing.
+///
+/// ```
+/// // The payloads carry their own `Default`, which is the part that is
+/// // required. The enum below carries none, and is not asked for one.
+/// #[derive(Default, PartialEq, Debug)]
+/// struct Frame { len: u32 }
+/// #[derive(Default, PartialEq, Debug)]
+/// struct Ack { seq: u32 }
+/// # structio::object!(Frame { len });
+/// # structio::object!(Ack { seq });
+///
+/// #[derive(PartialEq, Debug)]
+/// enum Packet {
+///     Data(Frame),
+///     Ack(Ack),
+/// }
+///
+/// structio::tagged_enum!(Packet { Data(_), Ack(_) });
+///
+/// let mut packet = Packet::Data(Frame { len: 0 });
+/// structio::read_into(&mut packet, r#"{"Ack":{"seq":9}}"#).unwrap();
+/// assert_eq!(packet, Packet::Ack(Ack { seq: 9 }));
+/// ```
+///
+/// What does ask for one is a position that *constructs* the enum rather than
+/// filling one that is there: [`from_str`](crate::from_str), which is handed
+/// nothing but a document, and a growing container, whose new elements have to
+/// exist before they can be read into. A `Vec<Packet>` therefore wants
+/// `Packet: Default` and there is no spelling of the read that avoids it,
+/// while a `Box<Packet>` or a `[Packet; N]` has no element to build and holds
+/// the enum above as it stands. Where a placeholder is unavoidable, writing it
+/// as a private constructor and reading into that keeps it out of the enum's
+/// public API, which `#[derive(Default)]` would not.
+///
 /// # What is read back
 ///
 /// The two forms are not interchangeable, and the asymmetry runs one way. A
