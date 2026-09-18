@@ -390,7 +390,7 @@ Note that the second and third rows differ, and deliberately. A key you did not 
 | Numeric | `Complex<T>`, `Matrix<T>`, `MatrixRef<'a, T>` (write only) |
 | BEVE only | `&'de [u8]` |
 | JSON only | [`json::Raw<'de>`](#json-that-goes-through-untouched), one value kept as the text that spelled it |
-| Enums | Declared with `unit_enum!` or `tagged_enum!`. Each variant carries nothing or one value, and the enum and every payload type need `Default` |
+| Enums | Declared with `unit_enum!` or `tagged_enum!`. Each variant carries nothing or one value, and every payload type needs `Default` |
 
 `Complex` and `Matrix` are BEVE's two data-carrying extensions, and are stored as those; in JSON they take the encodings they would have had anyway, `[re,im]` and `{"layout":…,"extents":[…],"value":[…]}`, which both also read back from BEVE. A `Complex`'s components are the fixed-width numbers BEVE's class field can name: `f32`, `f64`, and the signed and unsigned integers from 8 through 128 bits. See [BEVE](beve.md#complex-numbers-and-matrices).
 
@@ -400,11 +400,11 @@ A type outside this table can still be a field, through an [adapter](#types-you-
 
 ### `Default` is required where values are constructed
 
-A declaration that generates no read constructs nothing, so a `write_only` type needs none of this; see [One direction only](#one-direction-only). Where a read is generated, any type that has to be *created* during it needs `Default`: an `Option`'s payload, the new tail of a growing `Vec`, a map's values, and an enum variant's payload, since reading a variant the destination is not already holding has to build one. Types that are only ever read *into* an existing slot do not.
+A declaration that generates no read constructs nothing, so a `write_only` type needs none of this; see [One direction only](#one-direction-only). Where a read is generated, any type that has to be *created* during it needs `Default`: an `Option`'s payload, the new tail of a growing `Vec`, a map's values, and an enum variant's payload, since reading a variant the destination is not already holding has to build one. Types that are only ever read *into* an existing slot do not, which is why `Box<T>` and `[T; N]` hold a type with no `Default` where `Vec<T>` cannot: neither has an element to build.
 
 This is the same requirement Glaze places on the types it deserializes, and it is what lets reading reuse the storage a value already holds instead of building a new one and assigning over the top.
 
-The entry points that *return* a value are the other place it is needed, and for the same reason: a function handed nothing but a document has to build a `T` before it can read into one. That is the constructor's arithmetic rather than a rule about taking part. [`read_into`](../README.md#json) and `read_beve_into` ask for the read impl and nothing else, so a type whose zero value would be a lie can keep one out of its API and hand the parser a value it made itself:
+The entry points that *return* a value are the other place it is needed, and for the same reason: a function handed nothing but a document has to build a `T` before it can read into one. That is the constructor's arithmetic rather than a rule about taking part. [`read_into`](../README.md#json) and `read_beve_into` ask the type they are handed for the read impl and nothing else, so a type whose zero value would be a lie can keep one out of its API and hand the parser a value it made itself:
 
 ```rust
 struct Session { token: String, expires: u64 }
@@ -420,6 +420,8 @@ structio::read_into(&mut session, doc)?;
 ```
 
 That is the same one line `#[derive(Default)]` would have been. What differs is who can see it: `Default` is public API, so every caller gets `Session::default()` and every `unwrap_or_default` elsewhere in the program will reach for it. A constructor private to the module that parses says the placeholder is a parsing detail, which is all it ever was.
+
+The reach of that is one level. `read_into` drops the `Default` for the value it is handed and not for the types underneath it, so a `Vec<Session>` still asks `Session` for one however the read is spelled, and there is no spelling that avoids it. A private constructor answers for the type at the top; below it the rule above is the rule.
 
 What this does not do on its own is check that the document supplied every field -- an absent member leaves the destination as it was, placeholder and all. [`RequireKeys`](options.md#error_on_missing_keys) is the policy that turns a missing member into a `MissingKey`, and it is what a type whose invariant is "every field was supplied" wants, with a `Default` or without one.
 

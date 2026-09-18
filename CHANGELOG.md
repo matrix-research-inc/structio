@@ -36,6 +36,7 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **A declared type does not need `Default`.** [docs/derive.md](docs/derive.md) said it did, flatly, contradicting [docs/schemas.md](docs/schemas.md). `Default` is required where a read constructs a value: the entry points that return one, an `Option`'s payload, a growing `Vec`'s tail, a map's values, an enum variant's payload. A type that is only ever written needs none, and the derive's examples no longer imply otherwise.
 - **Where an error out of a declaration lands.** The same file promised that a field whose type has no `Read` impl is reported at that field. One macro call covers every field, so it is reported at the declaration: the struct's name under the derive, the whole invocation under a hand-written one. What does land where it was written is the derive's own refusals and an adapter named by `with = ".."`.
+- **The same rule, in the README.** It read as though reaching for `read_into` lifted the `Default` requirement. It lifts it for the value handed in and for nothing beneath it, so `read_into(&mut Vec<T>, ..)` still asks `T` for one and no spelling of the read avoids it; `Box<T>` and `[T; N]` do escape it, having no element to build. And a tagged enum's payloads need `Default` where the enum itself does not, which the types table had as both. `tagged_enum!` now shows the all-payload shape that cannot derive one.
 
 ## [0.4.0] - 2026-09-04
 
