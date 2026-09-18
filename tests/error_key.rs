@@ -570,6 +570,36 @@ fn beve_read_map_located_locates_integer_keys() {
 }
 
 #[test]
+fn matrix_names_the_key_it_refused() {
+    // Matrix reads its members by hand through a map callback, which runs
+    // after the colon. It winds back, so its UnknownKey means what every other
+    // one means and key_in can read it.
+    use structio::Matrix;
+
+    for doc in [
+        r#"{"bogus":1,"layout":"layout_right","extents":[1,1],"value":[1.0]}"#,
+        r#"{"layout":"layout_right","extents":[1,1],"value":[1.0],"bogus":"hello"}"#,
+    ] {
+        let e = from_str::<Matrix<f64>>(doc).unwrap_err();
+        assert_eq!(e.code, ErrorCode::UnknownKey, "{doc}");
+        assert!(doc[e.index..].starts_with("bogus"), "{doc}");
+    }
+}
+
+#[test]
+fn beve_matrix_names_the_key_it_refused() {
+    use std::collections::BTreeMap;
+    use structio::Matrix;
+
+    // The object form, with a member the shape does not name.
+    let doc = structio::to_beve(&BTreeMap::from([("bogus".to_string(), 1u8)]));
+
+    let e = structio::from_beve::<Matrix<f64>>(&doc).unwrap_err();
+    assert_eq!(e.code, ErrorCode::UnknownKey);
+    assert_eq!(&doc[e.index..e.index + 5], b"bogus");
+}
+
+#[test]
 fn beve_read_map_located_locates_signed_keys() {
     use std::collections::BTreeMap;
     use structio::beve::{Key, Reader};

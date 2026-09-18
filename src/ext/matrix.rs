@@ -420,7 +420,7 @@ where
             // reported against the object, as a generated reader reports it.
             let open = r.position();
             let mut seen = 0u8;
-            r.read_map(|r, key| match key {
+            r.read_map_located(|r, key, at| match key {
                 beve::Key::Str(LAYOUT) => {
                     seen |= SEEN_LAYOUT;
                     m.layout = r.read_str()?.parse()?;
@@ -437,8 +437,12 @@ where
                 // A member this shape does not name. Three keys is still a
                 // schema, so this is an unknown key like any other and the
                 // policy decides, by hand here for the reason `missing_member`
+                // gives. Wound back to the key for the reason the JSON side
                 // gives.
-                _ if O::ERROR_ON_UNKNOWN_KEYS => Err(ErrorCode::UnknownKey),
+                _ if O::ERROR_ON_UNKNOWN_KEYS => {
+                    r.rewind(at);
+                    Err(ErrorCode::UnknownKey)
+                }
                 _ => r.skip_value(),
             })?;
             match missing_member::<O>(seen) {
@@ -506,7 +510,7 @@ where
     p.skip_ws();
     let open = p.position();
     let mut seen = 0u8;
-    let outcome = p.read_map(|p, key| match key.as_str() {
+    let outcome = p.read_map_located(|p, key, at| match key.as_str() {
         LAYOUT => {
             seen |= SEEN_LAYOUT;
             let name = p.read_string()?;
@@ -521,8 +525,15 @@ where
             seen |= SEEN_VALUE;
             json::Read::read(&mut m.data, p)
         }
-        // Unknown, and the policy decides, exactly as on the BEVE side.
-        _ if O::ERROR_ON_UNKNOWN_KEYS => Err(ErrorCode::UnknownKey),
+        // Unknown, and the policy decides, exactly as on the BEVE side. The
+        // cursor goes back to the key first, because a callback runs after the
+        // colon and would otherwise report the value the key introduced. Every
+        // `UnknownKey` names a key, which is what lets
+        // [`Error::key_in`](crate::Error::key_in) read one back.
+        _ if O::ERROR_ON_UNKNOWN_KEYS => {
+            p.rewind(at);
+            Err(ErrorCode::UnknownKey)
+        }
         _ => p.skip_value(),
     });
     let outcome = outcome.and_then(|()| match missing_member::<O>(seen) {
