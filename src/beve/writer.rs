@@ -800,6 +800,10 @@ impl<'a, O: Options> Writer<'a, O> {
     /// Write one `SIZE | KEY | VALUE` member. `key` is the pre-encoded key,
     /// assembled at compile time by the macro.
     ///
+    /// **The key is written as it is given**, size prefix and all. A key
+    /// computed at runtime goes to [`Self::member_key`], which encodes it and
+    /// counts the member the same way.
+    ///
     /// Under [`Options::SKIP_NULL`] a member holding nothing is not written at
     /// all. The object header has already stated a count
     /// that accounts for it, by way of [`WriteObject::count_fields`].
@@ -836,6 +840,60 @@ impl<'a, O: Options> Writer<'a, O> {
             self.members += 1;
         }
         self.raw(key);
+        A::write(value, self);
+    }
+
+    /// Write one `SIZE | KEY | VALUE` member, the key given at runtime and
+    /// encoded here.
+    ///
+    /// [`Self::member`] takes a key already carrying its size prefix, which the
+    /// macro assembles through
+    /// [`encode_key`](crate::beve::header::encode_key). A writer that discovers
+    /// its keys as it goes can lay the same bytes down with [`Self::size`] and
+    /// [`Self::raw`], and the document is correct, but the member is not
+    /// counted: the tally [`Self::write_object`] checks its header against is
+    /// kept here and in [`Self::member_with`], and nowhere else. Going around
+    /// them undercounts, and a debug build fails the assertion rather than
+    /// shipping a document whose stated member count is a lie.
+    ///
+    /// There is no escaping to do, a BEVE key being length-prefixed rather than
+    /// delimited, so the key is its own bytes under every policy. What this
+    /// closes on this side is the counting, and
+    /// [`Options::SKIP_NULL`] applies as it does to any struct member.
+    #[inline]
+    pub fn member_key<T: Write + ?Sized>(&mut self, key: &str, value: &T) {
+        if O::SKIP_NULL && value.is_null() {
+            return;
+        }
+        #[cfg(debug_assertions)]
+        {
+            self.members += 1;
+        }
+        self.size(key.len() as u64);
+        self.raw(key.as_bytes());
+        value.write(self);
+    }
+
+    /// Write one `SIZE | KEY | VALUE` member with a runtime key, the value
+    /// through an adapter.
+    ///
+    /// [`Self::member_key`] as [`Self::member_with`] is to [`Self::member`]:
+    /// the member is counted here and [`Options::SKIP_NULL`] asks
+    /// [`WriteAs::is_null`] rather than the value itself.
+    ///
+    /// `A` appears in no argument, so it is always turned up explicitly:
+    /// `w.member_key_with::<Millis, _>(key, value)`.
+    #[inline]
+    pub fn member_key_with<A: WriteAs<T>, T: ?Sized>(&mut self, key: &str, value: &T) {
+        if O::SKIP_NULL && A::is_null(value) {
+            return;
+        }
+        #[cfg(debug_assertions)]
+        {
+            self.members += 1;
+        }
+        self.size(key.len() as u64);
+        self.raw(key.as_bytes());
         A::write(value, self);
     }
 

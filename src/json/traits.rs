@@ -189,7 +189,8 @@ pub trait WriteAs<T: ?Sized> {
     /// decides what the value means on the wire. The default is `false`, for
     /// the same reason [`Write::is_null`]'s is.
     ///
-    /// [`Writer::member_with`] is the only thing that acts on it, and the
+    /// [`Writer::member_with`] and [`Writer::member_key_with`] are the only
+    /// things that act on it, and the
     /// composed adapters forward it the way the wrappers forward
     /// [`Write::is_null`]: `Option<A>` is absent when it is `None` and defers
     /// to `A` otherwise, and `Box<A>`, `Rc<A>` and `Arc<A>` pass it through.

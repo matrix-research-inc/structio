@@ -369,6 +369,88 @@ The read and write methods are both generic over the [policy](options.md), which
 
 The array forms are the same count: `ReadArray` and `WriteArray` per format, `Read` and `Write` delegating to them, and one shared `Elements` carrying the length.
 
+#### A key known only at run time
+
+`Writer::member` takes the key already prepared: quoted with its colon in JSON, length-prefixed in BEVE. That is what the macro assembles at compile time, and it is written through untouched. An impl whose keys come off a walk rather than out of a declaration has nothing to hand it, and preparing the bytes itself goes wrong in a different way in each format. In JSON there is no escaping on that path, because a key built from a Rust identifier has nothing to escape, so a computed key containing a `"` or a `\` produces a document no reader accepts. In BEVE the bytes come out right, `size` and `raw` being public, but the member is not counted, and BEVE states its member count before its members: a debug build fails the assertion in `write_object` rather than emitting a document whose header lies.
+
+`Writer::member_key` takes the key itself and closes both. It quotes and escapes in JSON, writes the length prefix in BEVE, counts the member, and applies [`SKIP_NULL`](options.md#skip_null) exactly as `member` does. `member_key_with` is the adapter form, standing to `member_key` as `member_with` stands to `member`.
+
+```rust
+use structio::{KeyMap, Keys, Options, beve, json};
+
+/// Members discovered by walking something, rather than declared.
+struct Walked<'a>(&'a [(String, Option<u32>)]);
+
+impl Keys for Walked<'_> {
+    // No declaration, so no static key set and no read half.
+    const KEYS: &'static [&'static str] = &[];
+    const MAP: &'static KeyMap = &KeyMap::build(Self::KEYS);
+}
+
+impl json::WriteObject for Walked<'_> {
+    fn write_fields<O: Options>(&self, w: &mut json::Writer<'_, O>) {
+        for (key, value) in self.0 {
+            w.member_key(key, value);
+        }
+    }
+}
+
+impl beve::WriteObject for Walked<'_> {
+    fn write_fields<O: Options>(&self, w: &mut beve::Writer<'_, O>) {
+        for (key, value) in self.0 {
+            w.member_key(key, value);
+        }
+    }
+
+    /// The count goes out before the members, so under `SKIP_NULL` it has to
+    /// be the number that will survive rather than the length of the walk.
+    fn count_fields<O: Options>(&self) -> usize {
+        if O::SKIP_NULL {
+            self.0.iter().filter(|(_, v)| v.is_some()).count()
+        } else {
+            self.0.len()
+        }
+    }
+}
+
+impl json::Write for Walked<'_> {
+    fn write<O: Options>(&self, w: &mut json::Writer<'_, O>) {
+        w.write_object(self);
+    }
+}
+
+impl beve::Write for Walked<'_> {
+    fn write<O: Options>(&self, w: &mut beve::Writer<'_, O>) {
+        w.write_object(self);
+    }
+}
+
+fn main() {
+    let walked = Walked(&[
+        // A key a declaration could not have spelled, and one JSON must escape.
+        ("say \"hi\"".to_owned(), Some(1)),
+        ("absent".to_owned(), None),
+    ]);
+
+    assert_eq!(
+        structio::to_string(&walked),
+        r#"{"say \"hi\"":1,"absent":null}"#
+    );
+
+    // `SKIP_NULL` reaches a runtime-keyed member as it reaches a declared one.
+    assert_eq!(
+        structio::to_string_with::<structio::SkipNull, _>(&walked),
+        r#"{"say \"hi\"":1}"#
+    );
+
+    // And the BEVE header agrees with the members that followed it, which a
+    // debug build asserts.
+    assert!(!structio::to_beve_with::<structio::SkipNull, _>(&walked).is_empty());
+}
+```
+
+Where a whole map goes out at once, `Writer::write_keyed` is the shorter road, and it is the one the policy [deliberately does not reach](options.md#skip_null).
+
 ## What happens on the way in
 
 | Situation | Behaviour |

@@ -498,6 +498,169 @@ fn a_struct_member_is_never_absent() {
 }
 
 // ---------------------------------------------------------------------------
+// Keys known only at run time
+// ---------------------------------------------------------------------------
+
+/// An object whose keys are discovered as it is written, which is what walking
+/// a path tree produces. There is no static key set to declare, so `KEYS` is
+/// empty and every member goes through `member_key`.
+struct Walked<'a>(&'a [(&'a str, Option<u8>)]);
+
+impl structio::Keys for Walked<'_> {
+    const KEYS: &'static [&'static str] = &[];
+    const MAP: &'static structio::KeyMap = &structio::KeyMap::build(Self::KEYS);
+}
+
+impl structio::json::WriteObject for Walked<'_> {
+    fn write_fields<O: Options>(&self, w: &mut structio::json::Writer<'_, O>) {
+        for (key, value) in self.0 {
+            w.member_key(key, value);
+        }
+    }
+}
+
+impl structio::beve::WriteObject for Walked<'_> {
+    fn count_fields<O: Options>(&self) -> usize {
+        if O::SKIP_NULL {
+            self.0.iter().filter(|(_, v)| v.is_some()).count()
+        } else {
+            self.0.len()
+        }
+    }
+
+    fn write_fields<O: Options>(&self, w: &mut structio::beve::Writer<'_, O>) {
+        for (key, value) in self.0 {
+            w.member_key(key, value);
+        }
+    }
+}
+
+impl structio::json::Write for Walked<'_> {
+    fn write<O: Options>(&self, w: &mut structio::json::Writer<'_, O>) {
+        w.write_object(self);
+    }
+}
+
+impl structio::beve::Write for Walked<'_> {
+    fn write<O: Options>(&self, w: &mut structio::beve::Writer<'_, O>) {
+        w.write_object(self);
+    }
+}
+
+/// The declared counterpart of a two-member `Walked`, for the parity checks
+/// below. A runtime key must produce the document a compile-time one produces.
+#[derive(Default)]
+struct Declared {
+    first: Option<u8>,
+    second: Option<u8>,
+}
+structio::object!(Declared { first, second });
+
+/// A key the macro path never sees, because it builds its prefix from a Rust
+/// identifier. `member` writes its prefix through verbatim, so a caller
+/// assembling one by hand around a computed key emits a document no reader
+/// takes; `member_key` is handed the key itself and escapes it.
+#[test]
+fn a_runtime_key_is_escaped() {
+    let entries = [("say \"hi\"", Some(1u8)), ("back\\slash", Some(2))];
+    let json = to_string(&Walked(&entries));
+    assert_eq!(json, r#"{"say \"hi\"":1,"back\\slash":2}"#);
+
+    // The escaping is only right if the keys come back as they went in.
+    let back: BTreeMap<String, u8> = from_str(&json).unwrap();
+    assert_eq!(
+        back,
+        BTreeMap::from([("say \"hi\"".to_owned(), 1), ("back\\slash".to_owned(), 2)])
+    );
+
+    // BEVE has nothing to escape, keys being length-prefixed rather than
+    // delimited, so the same keys survive without any of that machinery.
+    let doc = to_beve(&Walked(&entries));
+    assert_eq!(from_beve::<BTreeMap<String, u8>>(&doc).unwrap(), back);
+}
+
+/// A control character has no shorter spelling than `\u0000`, and a key is a
+/// string like any other.
+#[test]
+fn a_runtime_key_escapes_a_control_character() {
+    let entries = [("a\u{1}b", Some(1u8))];
+    assert_eq!(to_string(&Walked(&entries)), r#"{"a\u0001b":1}"#);
+    assert_eq!(
+        from_str::<BTreeMap<String, u8>>(&to_string(&Walked(&entries)))
+            .unwrap()
+            .into_keys()
+            .next()
+            .unwrap(),
+        "a\u{1}b"
+    );
+}
+
+/// Where the key came from is not something the output may depend on. The same
+/// members written through `member_key` and through `member` are the same
+/// bytes, under every policy that changes how a member is laid out.
+#[test]
+fn a_runtime_key_writes_what_a_declared_one_writes() {
+    let declared = Declared {
+        first: Some(1),
+        second: Some(2),
+    };
+    let walked = Walked(&[("first", Some(1)), ("second", Some(2))]);
+
+    assert_eq!(to_string(&walked), to_string(&declared));
+    assert_eq!(
+        to_string_with::<Pretty, _>(&walked),
+        to_string_with::<Pretty, _>(&declared)
+    );
+    assert_eq!(
+        to_string_with::<Config, _>(&walked),
+        to_string_with::<Config, _>(&declared)
+    );
+    assert_eq!(to_beve(&walked), to_beve(&declared));
+}
+
+/// `SKIP_NULL` is about a struct's member rather than about where its key came
+/// from, so it reaches a runtime-keyed member exactly as it reaches a declared
+/// one. A map's entries are the case it still leaves alone.
+#[test]
+fn skip_null_reaches_a_runtime_key() {
+    let walked = Walked(&[("first", None), ("second", Some(2))]);
+    let declared = Declared {
+        first: None,
+        second: Some(2),
+    };
+
+    assert_eq!(to_string(&walked), r#"{"first":null,"second":2}"#);
+    assert_eq!(to_string_with::<SkipNull, _>(&walked), r#"{"second":2}"#);
+    assert_eq!(
+        to_string_with::<SkipNull, _>(&walked),
+        to_string_with::<SkipNull, _>(&declared)
+    );
+
+    // On the BEVE side the dropped member has to come off the header count as
+    // well, which is what `count_fields` answered and what the debug assertion
+    // in `write_object` checks this call against.
+    let doc = to_beve_with::<SkipNull, _>(&walked);
+    assert_eq!(doc, to_beve_with::<SkipNull, _>(&declared));
+    assert_eq!(
+        from_beve::<BTreeMap<String, u8>>(&doc).unwrap(),
+        BTreeMap::from([("second".to_owned(), 2)])
+    );
+}
+
+/// An object that drops every member is still an object, and its BEVE header
+/// still has to say zero rather than the count it started with.
+#[test]
+fn a_runtime_keyed_object_can_empty_itself() {
+    let walked = Walked(&[("first", None), ("second", None)]);
+    assert_eq!(to_string_with::<SkipNull, _>(&walked), "{}");
+    assert!(
+        from_beve::<BTreeMap<String, u8>>(&to_beve_with::<SkipNull, _>(&walked))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The BEVE member count
 // ---------------------------------------------------------------------------
 

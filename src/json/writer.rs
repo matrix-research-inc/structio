@@ -720,6 +720,12 @@ impl<'a, O: Options> Writer<'a, O> {
     /// Write one `"key":value,` member. `prefix` is the pre-quoted key with its
     /// colon, built at compile time by the macro.
     ///
+    /// **The prefix is written as it is given**, quotes, colon and all, and
+    /// nothing in it is escaped: the macro builds it from a Rust identifier,
+    /// which has nothing JSON needs to escape. A key computed at runtime has no
+    /// such guarantee, so pass it to [`Self::member_key`] and let this crate
+    /// quote it rather than assembling the prefix by hand.
+    ///
     /// Under [`Options::SKIP_NULL`] a member holding nothing is not written at
     /// all, key included. The test is a constant plus a call that is `false`
     /// for all but a handful of types, so a policy that does not ask for it
@@ -750,6 +756,80 @@ impl<'a, O: Options> Writer<'a, O> {
             return;
         }
         self.key(prefix);
+        A::write(value, self);
+        self.push(b',');
+    }
+
+    /// Write one `"key":value,` member, the key given at runtime and quoted
+    /// here.
+    ///
+    /// [`Self::member`] takes a prefix already quoted and punctuated, which the
+    /// macro assembles from a Rust identifier through
+    /// [`quoted_key`]: a key with nothing in it for JSON to escape. A writer
+    /// that discovers its keys as it goes has no such guarantee, and building
+    /// the prefix itself means escaping by hand or emitting a document no
+    /// reader will take. This takes the key alone and escapes it exactly as
+    /// [`Self::write_str`] does.
+    ///
+    /// [`Options::SKIP_NULL`] applies, as it does to any struct member. Where
+    /// the key came from is not what the policy turns on: the boundary it
+    /// draws is between a struct's member and a map's entry, and
+    /// [`Self::write_keyed`] is the map.
+    ///
+    /// ```
+    /// use structio::json::{WriteObject, Writer};
+    /// use structio::{KeyMap, Keys, Options, Standard};
+    ///
+    /// struct Walked<'a>(&'a [(String, u32)]);
+    ///
+    /// impl Keys for Walked<'_> {
+    ///     // No declaration, so no static key set and no read half.
+    ///     const KEYS: &'static [&'static str] = &[];
+    ///     const MAP: &'static KeyMap = &KeyMap::build(Self::KEYS);
+    /// }
+    ///
+    /// impl WriteObject for Walked<'_> {
+    ///     fn write_fields<O: Options>(&self, w: &mut Writer<'_, O>) {
+    ///         for (key, value) in self.0 {
+    ///             w.member_key(key, value);
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let entries = [("a \"quoted\" key".to_owned(), 1)];
+    /// let mut w = Writer::<Standard>::new();
+    /// w.write_object(&Walked(&entries));
+    /// assert_eq!(w.into_string(), r#"{"a \"quoted\" key":1}"#);
+    /// ```
+    #[inline]
+    pub fn member_key<T: Write + ?Sized>(&mut self, key: &str, value: &T) {
+        if O::SKIP_NULL && value.is_null() {
+            return;
+        }
+        self.line();
+        self.write_str(key);
+        self.colon();
+        value.write(self);
+        self.push(b',');
+    }
+
+    /// Write one `"key":value,` member with a runtime key, the value through an
+    /// adapter.
+    ///
+    /// [`Self::member_key`] as [`Self::member_with`] is to [`Self::member`]:
+    /// the key is escaped here and [`Options::SKIP_NULL`] asks
+    /// [`WriteAs::is_null`] rather than the value itself.
+    ///
+    /// `A` appears in no argument, so it is always turned up explicitly:
+    /// `w.member_key_with::<Millis, _>(key, value)`.
+    #[inline]
+    pub fn member_key_with<A: WriteAs<T>, T: ?Sized>(&mut self, key: &str, value: &T) {
+        if O::SKIP_NULL && A::is_null(value) {
+            return;
+        }
+        self.line();
+        self.write_str(key);
+        self.colon();
         A::write(value, self);
         self.push(b',');
     }
