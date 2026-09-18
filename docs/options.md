@@ -168,6 +168,8 @@ Reading treats an absent member as "leave the destination alone", so a field ski
 
 **Struct members only.** A `None` inside a sequence still writes `null`: dropping it would shorten the sequence and shift every index after it, which changes the data rather than its presentation. A map's entries are also left alone, for two reasons: a null value in a map is data rather than an absent field, and a map's length is not known until it has been walked, which BEVE needs before it writes the first entry.
 
+The line is drawn between a struct's member and a map's entry, not between a key known at compile time and one computed while writing. A hand-written `WriteObject` whose keys come off a walk writes them with [`Writer::member_key`](schemas.md#a-key-known-only-at-run-time), and the policy reaches those members as it reaches any other; what it leaves alone is the map, whichever way the map is written.
+
 Both formats honour it. BEVE pays slightly more, because an object states its member count before its members and that count stops being a compile-time constant once members can drop out. See [the member count](#the-beve-member-count).
 
 ### Glaze differs here

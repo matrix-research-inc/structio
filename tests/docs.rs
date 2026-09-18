@@ -96,6 +96,14 @@ fn docs_quote_the_example_verbatim() {
         "A type nothing reads carries none:",
         "examples/derive.rs",
     );
+    // A runtime key is four impls and a member count that has to agree with
+    // what was written, none of which is obvious from the signature, so the
+    // documented version is the one that runs.
+    assert_quotes(
+        "docs/schemas.md",
+        "#### A key known only at run time",
+        "examples/runtime_keys.rs",
+    );
     // Narrowing a declaration to one direction is worth nothing unless a
     // field's type really can drop its read half, so the documented case is
     // one the compiler has accepted.
