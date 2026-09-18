@@ -3,7 +3,7 @@
 use std::io;
 use std::marker::PhantomData;
 
-use crate::beve::traits::Read;
+use crate::beve::traits::{Read, ReadOwned};
 use crate::options::{Options, Standard};
 use crate::stream::{DEFAULT_BUFFER, Split};
 
@@ -202,7 +202,7 @@ impl<R: io::Read, O: Options> Documents<R, O> {
     ///     println!("{}", value.unwrap().id);
     /// }
     /// ```
-    pub fn iter<T: for<'de> Read<'de> + Default>(&mut self) -> Iter<'_, R, T, O> {
+    pub fn iter<T: ReadOwned>(&mut self) -> Iter<'_, R, T, O> {
         Iter {
             docs: self,
             marker: PhantomData,
@@ -238,7 +238,7 @@ pub struct Iter<'d, R, T, O: Options = Standard> {
     marker: PhantomData<fn() -> T>,
 }
 
-impl<R: io::Read, T: for<'de> Read<'de> + Default, O: Options> Iterator for Iter<'_, R, T, O> {
+impl<R: io::Read, T: ReadOwned, O: Options> Iterator for Iter<'_, R, T, O> {
     type Item = StreamResult<T>;
 
     fn next(&mut self) -> Option<Self::Item> {

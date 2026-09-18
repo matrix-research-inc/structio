@@ -7,7 +7,7 @@ How structio is put together, and why. This assumes familiarity with Glaze; the 
 ```
 error.rs      ErrorCode (one byte), the located Error, and StreamError
 keymap.rs     compile-time perfect hashing of object keys
-traits.rs     Keys (the format-independent schema) and the all-formats ReadWrite bound
+traits.rs     Keys (the format-independent schema) and the all-formats ReadWrite/ReadOwned bounds
 macros.rs     object!, json_object!, beve_object!
 swar.rs       byte scanning
 num/          atoi, atof (Eisel-Lemire), itoa, zmij, and their tables

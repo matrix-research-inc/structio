@@ -170,9 +170,19 @@ impl<O: Options, T: Keys> Fields<O, T> {
 /// generic struct's type parameter needs all of them. This is the bound to
 /// write:
 ///
-/// ```ignore
-/// structio::object!([T: structio::ReadWrite] Page<T> { items, cursor });
 /// ```
+/// #[derive(Default)]
+/// struct Page<T> {
+///     items: Vec<T>,
+///     cursor: Option<String>,
+/// }
+/// structio::object!([T: structio::ReadWrite + Default] Page<T> { items, cursor });
+/// ```
+///
+/// `Default` is separate because [`ReadWrite`] does not imply it: reading
+/// *into* a `Page<T>` constructs nothing, but reading one builds a `T` per
+/// element of `items`. Where a bound has to produce the value rather than fill
+/// it, [`ReadOwned`] folds the two together.
 ///
 /// Types that borrow from the input do not satisfy this, exactly as they do
 /// not satisfy an "owned" bound elsewhere in the ecosystem. For a struct that
@@ -200,7 +210,10 @@ impl<T> ReadWrite for T where T: crate::json::ReadWrite + crate::beve::ReadWrite
 /// parameters by this instead, and a type parameter of such a declaration
 /// needs no `Default` either: nothing constructs a value it would have to fill.
 ///
-/// ```ignore
+/// ```
+/// struct Sample<T> {
+///     value: T,
+/// }
 /// structio::object!(write_only [T: structio::Write] Sample<T> { value });
 /// ```
 ///
@@ -210,8 +223,10 @@ impl<T> ReadWrite for T where T: crate::json::ReadWrite + crate::beve::ReadWrite
 /// Unlike [`ReadWrite`] this does not require `Sized`: `str` and `[u8]` are
 /// writable, and it is reading that has to have somewhere to put the value.
 ///
-/// There is no `Read` counterpart at this level. The direction axis narrows
-/// only to the write half, so nothing would spell one.
+/// There is no bare `Read` counterpart at this level. The direction axis
+/// narrows only to the write half, because a read bound has to say which
+/// lifetime it reads at; [`ReadOwned`] is the read-side bound, for the case
+/// where the answer is "any".
 ///
 /// [`json::Write`]: crate::json::Write
 /// [`beve::Write`]: crate::beve::Write
@@ -223,6 +238,42 @@ impl<T> ReadWrite for T where T: crate::json::ReadWrite + crate::beve::ReadWrite
 )]
 pub trait Write: crate::json::Write + crate::beve::Write {}
 impl<T: ?Sized> Write for T where T: crate::json::Write + crate::beve::Write {}
+
+/// Convenience bound for a function that parses a `T` out of a document it
+/// owns: readable in every format this crate supports, from any input, and
+/// constructible.
+///
+/// The read-side counterpart of [`ReadWrite`], and the bound for a generic that
+/// does not learn until run time which format it was handed:
+///
+/// ```
+/// fn decode<T: structio::ReadOwned>(json: bool, body: &[u8]) -> structio::Result<T> {
+///     if json {
+///         structio::json::from_slice(body)
+///     } else {
+///         structio::beve::from_slice(body)
+///     }
+/// }
+/// ```
+///
+/// That is the shape worth spending both halves on. A generic that reads one
+/// format should take the narrower [`json::ReadOwned`] or [`beve::ReadOwned`]
+/// rather than demand an impl it never uses.
+///
+/// [`json::ReadOwned`] carries the full account of why the read half is
+/// higher-ranked and why [`Default`] is part of the bound.
+///
+/// [`json::ReadOwned`]: crate::json::ReadOwned
+/// [`beve::ReadOwned`]: crate::beve::ReadOwned
+#[diagnostic::on_unimplemented(
+    note = "this is `Read` in both formats from a document of any lifetime, \
+            plus `Default`: the bound for a function that hands back a value \
+            parsed out of a buffer it owns",
+    note = "for one format only, `structio::json::ReadOwned` or \
+            `structio::beve::ReadOwned` is the narrower bound"
+)]
+pub trait ReadOwned: crate::json::ReadOwned + crate::beve::ReadOwned {}
+impl<T> ReadOwned for T where T: crate::json::ReadOwned + crate::beve::ReadOwned {}
 
 /// The length of a struct encoded as a positional array.
 ///

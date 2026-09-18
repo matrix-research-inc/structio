@@ -857,7 +857,7 @@ pub fn to_value<T: json::Write + ?Sized>(value: &T) -> Result<Value> {
 /// file. [`from_value_with`] takes another policy.
 pub fn from_value<T>(doc: &Value) -> Result<T>
 where
-    T: for<'de> json::Read<'de> + Default,
+    T: json::ReadOwned,
 {
     from_value_with::<Standard, T>(doc)
 }
@@ -866,7 +866,7 @@ where
 pub fn from_value_with<O, T>(doc: &Value) -> Result<T>
 where
     O: Options,
-    T: for<'de> json::Read<'de> + Default,
+    T: json::ReadOwned,
 {
     json::from_str_with::<O, T>(&json::to_string(doc))
 }

@@ -8,11 +8,17 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 ### Added
 
+- **`ReadOwned`, the bound for parsing a value out of a buffer you own.** At the crate root and per format, as `ReadWrite`'s read-side counterpart. A function that holds the document and hands a `T` back needs `for<'de> Read<'de> + Default`: higher-ranked because a type may borrow out of the input and a caller owning the buffer cannot allow that, and `Default` because reading fills a value rather than constructing one. The crate spelled that pair out in ten of its own signatures, and a downstream extractor had to work it out from scratch; `ReadOwned` is the name for it. `from_str` still takes `Read<'de>`, tied to the input's lifetime so a borrowing type can be read, exactly as serde keeps `DeserializeOwned` to `from_reader`. [docs/schemas.md](docs/schemas.md#default-is-required-where-values-are-constructed) has the rest.
+
 - **`json::Raw::from_string` and `from_string_unchecked`, the way in from a `String`.** Text this program produced rather than read had no entry point: `Raw::new_unchecked(&text).into_owned()` copied a buffer the caller already owned, there being no way to hand the `String` over. These take it, so the buffer becomes the span with nothing reallocated and the span never copied out of it, `from_string` trimming by shifting bytes inside it. The check and the trimming are `new`'s, being the same walk. The `Raw` then holds the caller's whole allocation rather than just the span, so `new(&s)?.into_owned()` is still the call for a long-lived value whittled out of a much larger buffer. A rejected value is dropped rather than handed back, so check with `new` first where the text has to survive its own rejection. There is still no `From<String>`, for the reason there is no `From<&str>`.
 
 - **`Display` for `json::Raw` and `json::JsonStr`.** `Raw` displays its span, which is what `as_str` gives and what a compact write emits, escapes and quotes included, since the type is about the spelling. `{:#}` is that same text rather than a laid-out one: a span `new_unchecked` accepted may have no layout, and `Display` has nowhere to report that, so `prettify` stays the named way to ask. `JsonStr` displays the string the document meant, with its escapes already resolved.
 
 - **`Debug`, `Clone`, `PartialEq`, `Eq` and `Hash` for `json::JsonStr`.** It had none, so a test could not `assert_eq!` on one or print one, and the key `Error::key_in` hands back could not be looked up in a set of the names a schema knows. Equality and hashing are the text rather than the variant: a key written `"a"` and one written `"\u0061"` are the same key, which deriving either would have denied.
+
+### Fixed
+
+- **`ReadWrite`'s doc example was missing `+ Default` and could not compile.** It was marked `ignore`, so nothing caught it. Now compiled, and the same example in the `object!` docs already had the bound. `Write`'s example, the crate's only other `ignore`, is compiled too.
 
 ## [0.5.0] - 2026-09-18
 

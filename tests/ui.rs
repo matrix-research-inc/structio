@@ -12,9 +12,9 @@
 //!
 //! `structio-derive` has its own suite for attributes the derive refuses
 //! before it expands anything. This one is the layer below, where a
-//! declaration has reached the macros. Eight of the fixtures' notes are the
-//! `#[diagnostic::on_unimplemented]` text on `Read`, `ReadAs`, `Write` and
-//! `WriteAs`, which nothing else asserts.
+//! declaration has reached the macros. Nine of the fixtures' notes are the
+//! `#[diagnostic::on_unimplemented]` text on `Read`, `ReadAs`, `ReadOwned`,
+//! `Write` and `WriteAs`, which nothing else asserts.
 //!
 //! Some goldens name an internal macro, in the `this error originates in`
 //! line rustc appends. That couples them to names beginning `__`, which is

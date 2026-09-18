@@ -80,6 +80,13 @@ struct Page<T> { items: Vec<T>, cursor: Option<String> }
 object!([T: structio::ReadWrite + Default] Page<T> { items, cursor });
 ```
 
+`ReadWrite` does not imply `Default`, which is why the two appear together
+above: reading *into* a `Page<T>` constructs nothing, but reading one builds a
+`T` for every element of `items`.
+
+[Schemas and types](schemas.md#default-is-required-where-values-are-constructed)
+has the bound a generic *function* takes, which is a different one.
+
 ### What it expands to
 
 Five small impls. Abbreviated, and with the paths shortened:

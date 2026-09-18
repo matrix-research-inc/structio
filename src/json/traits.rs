@@ -376,3 +376,53 @@ pub trait ReadInternallyTagged<'de>: Variants + Sized {
 )]
 pub trait ReadWrite: for<'de> Read<'de> + Write {}
 impl<T> ReadWrite for T where T: for<'de> Read<'de> + Write {}
+
+/// Convenience bound for a function that parses a `T` out of a document it
+/// owns: readable from any JSON input, and constructible.
+///
+/// The read half is higher-ranked. [`Read`] is parameterised by the document's
+/// lifetime because a type is allowed to borrow out of the input, and a caller
+/// that holds the buffer itself cannot allow that. Reading from a document of
+/// *any* lifetime is how "borrows from no input" is spelled. That excludes `&'de str`,
+/// [`Cow`](std::borrow::Cow) and [`Raw`](crate::json::Raw), and any type holding
+/// one of them.
+///
+/// The [`Default`] half is not decoration, and it is why this is two bounds
+/// where other libraries have one. [`Read::read`] fills a value that already
+/// exists, so anything that hands a `T` back has to build one first. That is
+/// also the difference from [`ReadWrite`], which omits `Default` on purpose:
+/// reading *into* a value constructs nothing, while producing one does.
+///
+/// This is the bound to write on a generic that owns its input, which is what
+/// a web framework's extractor is:
+///
+/// ```
+/// # struct Body(Vec<u8>);
+/// fn parse<T: structio::json::ReadOwned>(body: Body) -> structio::Result<T> {
+///     structio::json::from_slice(&body.0)
+/// }
+/// ```
+///
+/// [`from_str`](crate::json::from_str()) deliberately does not take this bound.
+/// Its `T: Read<'de>` is tied to the input's lifetime so that a borrowing type
+/// can be read from text the caller keeps. The owned bound belongs where the
+/// buffer does not outlive the call, which is why [`from_reader`] carries it
+/// and `from_str` does not.
+///
+/// One thing to expect from the compiler: a borrowing type is rejected during
+/// region inference rather than trait solving, so the error reads
+/// "implementation of `json::Read` is not general enough" and names neither
+/// this trait nor the type parameter's bound. [`ReadWrite`] has the same edge
+/// for the same reason. A missing [`Default`] is an ordinary unsatisfied
+/// bound and does name this trait.
+///
+/// Prefer [`crate::ReadOwned`], which also covers BEVE, unless the type is
+/// deliberately JSON only.
+///
+/// [`from_reader`]: crate::json::from_reader()
+#[diagnostic::on_unimplemented(note = "this is `json::Read` from a document of any lifetime plus \
+            `Default`, the bound for a function that hands back a value parsed \
+            out of a buffer it owns; `Default` is there because \
+            `json::Read::read` fills a value that already exists")]
+pub trait ReadOwned: Default + for<'de> Read<'de> {}
+impl<T> ReadOwned for T where T: Default + for<'de> Read<'de> {}
