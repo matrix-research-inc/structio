@@ -71,10 +71,12 @@ pub(crate) type Result<T> = std::result::Result<T, Error>;
 ///
 /// See [structio's documentation](https://docs.rs/structio) for the attributes.
 /// In short: `#[structio(rename_all = "camelCase")]`, `#[structio(tag =
-/// "kind")]`, `#[structio(array)]`, `#[structio(json)]`,
-/// `#[structio(beve)]` or `#[structio(write_only)]` on the type; `#[structio(rename = "key")]`, `#[structio(skip)]`,
-/// `#[structio(required)]` and `#[structio(with = "Adapter")]` on a field;
-/// `#[structio(rename = "name")]` on a variant.
+/// "kind")]`, `#[structio(array)]`, `#[structio(transparent)]`,
+/// `#[structio(json)]`, `#[structio(beve)]` or `#[structio(write_only)]` on
+/// the type; `#[structio(rename = "key")]`, `#[structio(alias = "key")]`,
+/// `#[structio(skip)]`, `#[structio(required)]` and `#[structio(with =
+/// "Adapter")]` on a field; `#[structio(rename = "name")]` and
+/// `#[structio(alias = "name")]` on a variant.
 #[proc_macro_derive(Structio, attributes(structio))]
 pub fn derive_structio(input: TokenStream) -> TokenStream {
     match parse::parse(input).and_then(|input| emit::expand(&input)) {

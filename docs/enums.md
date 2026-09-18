@@ -73,6 +73,20 @@ structio::unit_enum!(Mode as "kebab-case" { ReadOnly, ReadWrite, HTTPProxy });
 
 writes `"read-only"`, `"read-write"` and `"http-proxy"`.
 
+### More than one name for a variant
+
+A variant may answer to several names, written after it and separated by `|`, exactly as an [object field's aliases](schemas.md#more-than-one-key-for-a-field) are. The declared name is the one written; any of them is accepted on read.
+
+```rust
+structio::tagged_enum!(Event {
+    "connected" => Connected | "connect" | "CONNECTED",
+    "log" => Log(_),
+    "shape" => Shape(_),
+});
+```
+
+That is what renames a variant without breaking the documents already written under the old name, and it holds for every shape a name reaches: a bare name, the key of an externally tagged object, and the tag value of an [internally tagged](#internal-tagging) one. A case rule leaves an alias alone, an alias is never written, and `write_only` refuses one, all for the reasons the field half gives.
+
 ### Generics and borrowing
 
 Both macros take a generics list in brackets, exactly as `object!` does:

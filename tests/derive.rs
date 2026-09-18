@@ -30,6 +30,7 @@ where
 
 fn same_keys<M: Keys, D: Keys>() {
     assert_eq!(M::KEYS, D::KEYS);
+    assert_eq!(M::ALIASES, D::ALIASES);
     assert_eq!(M::REQUIRED, D::REQUIRED);
 }
 
@@ -608,4 +609,139 @@ fn a_rule_and_a_rename_both_see_the_unprefixed_name() {
         r#"{"byteOffset":3}"#
     );
     assert_eq!(to_string(&DeriveRawRenamed { r#type: 4 }), r#"{"kind":4}"#);
+}
+
+// ---------------------------------------------------------------------------
+// Aliases
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Debug, PartialEq)]
+struct MacroAlias {
+    read_timeout: u64,
+    name: String,
+}
+structio::object!(MacroAlias as "camelCase" {
+    #[required] read_timeout | "timeout_ms" | "timeout",
+    name | "nm",
+});
+
+#[derive(Default, Debug, PartialEq, Structio)]
+#[structio(rename_all = "camelCase")]
+struct DeriveAlias {
+    #[structio(required, alias = "timeout_ms", alias = "timeout")]
+    read_timeout: u64,
+    #[structio(alias = "nm")]
+    name: String,
+}
+
+#[test]
+fn a_field_alias_translates_to_the_declaration() {
+    let m = MacroAlias {
+        read_timeout: 1,
+        name: "a".into(),
+    };
+    let d = DeriveAlias {
+        read_timeout: 1,
+        name: "a".into(),
+    };
+    same_wire(&m, &d);
+    same_keys::<MacroAlias, DeriveAlias>();
+    assert_eq!(
+        DeriveAlias::KEYS,
+        ["readTimeout", "name", "timeout_ms", "timeout", "nm"]
+    );
+    assert_eq!(
+        from_str::<DeriveAlias>(r#"{"timeout":1,"nm":"a"}"#).unwrap(),
+        d
+    );
+    same_error::<MacroAlias, DeriveAlias>(r#"{"nm":"a"}"#, ErrorCode::MissingKey);
+}
+
+#[derive(Default, Debug, PartialEq)]
+struct Pay {
+    n: u32,
+}
+structio::object!(Pay { n });
+
+#[derive(Default, Debug, PartialEq, Structio)]
+struct DerivePay {
+    n: u32,
+}
+
+#[derive(Default, Debug, PartialEq)]
+enum MacroVariantAlias {
+    #[default]
+    Idle,
+    Busy(Pay),
+}
+structio::tagged_enum!(MacroVariantAlias {
+    Idle | "idle",
+    "busy" => Busy(_) | "working",
+});
+
+#[derive(Default, Debug, PartialEq, Structio)]
+enum DeriveVariantAlias {
+    #[default]
+    #[structio(alias = "idle")]
+    Idle,
+    #[structio(rename = "busy", alias = "working")]
+    Busy(DerivePay),
+}
+
+#[test]
+fn a_variant_alias_translates_to_the_declaration() {
+    same_wire(&MacroVariantAlias::Idle, &DeriveVariantAlias::Idle);
+    assert_eq!(MacroVariantAlias::VARIANTS, DeriveVariantAlias::VARIANTS);
+    assert_eq!(MacroVariantAlias::ALIASES, DeriveVariantAlias::ALIASES);
+    assert_eq!(
+        from_str::<DeriveVariantAlias>(r#"{"working":{"n":2}}"#).unwrap(),
+        DeriveVariantAlias::Busy(DerivePay { n: 2 }),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Transparent
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Debug, PartialEq)]
+struct MacroNewtype(u64);
+structio::transparent!(MacroNewtype { 0 });
+
+#[derive(Default, Debug, PartialEq, Structio)]
+#[structio(transparent)]
+struct DeriveNewtype(u64);
+
+#[derive(Default, Debug, PartialEq)]
+struct MacroNamedOne {
+    value: f64,
+}
+structio::transparent!(MacroNamedOne { value });
+
+#[derive(Default, Debug, PartialEq, Structio)]
+#[structio(transparent)]
+struct DeriveNamedOne {
+    value: f64,
+}
+
+#[derive(Default, Debug, PartialEq)]
+struct MacroWrapped(Duration);
+structio::json_transparent!(MacroWrapped { 0 as Millis });
+
+#[derive(Default, Debug, PartialEq, Structio)]
+#[structio(transparent, json)]
+struct DeriveWrapped(#[structio(with = "Millis")] Duration);
+
+#[test]
+fn transparent_translates_to_the_declaration() {
+    same_wire(&MacroNewtype(7), &DeriveNewtype(7));
+    same_wire(
+        &MacroNamedOne { value: 1.5 },
+        &DeriveNamedOne { value: 1.5 },
+    );
+    assert_eq!(to_string(&DeriveNewtype(7)), "7");
+    assert_eq!(
+        to_string(&MacroWrapped(Duration::from_millis(90))),
+        to_string(&DeriveWrapped(Duration::from_millis(90))),
+    );
+    assert_eq!(to_string(&DeriveWrapped(Duration::from_millis(90))), "90");
 }

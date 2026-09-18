@@ -1,0 +1,23 @@
+error: `transparent` writes a struct as the one field it holds, and this one has 2. Declare it as an object, or positionally with `#[structio(array)]`
+ --> tests/ui/transparent_misuse.rs:2:12
+  |
+2 | #[structio(transparent)]
+  |            ^^^^^^^^^^^
+
+error: a transparent struct is written as its one field, with no object and no array around it, so `rename_all` has nothing to apply to
+ --> tests/ui/transparent_misuse.rs:9:12
+  |
+9 | #[structio(transparent, rename_all = "camelCase")]
+  |            ^^^^^^^^^^^
+
+error: a transparent struct is written as this field and nothing else: it has no key, it is never a member that could be absent, and skipping it would leave nothing to write. `rename` has nothing to apply to
+  --> tests/ui/transparent_misuse.rs:14:34
+   |
+14 | struct Keyed(#[structio(rename = "value")] u32);
+   |                                  ^^^^^^^
+
+error: `transparent` writes a struct as the one field it holds; an enum is written as its variant's name, and a variant that carries a value already writes that value and nothing around it but the tag
+  --> tests/ui/transparent_misuse.rs:17:12
+   |
+17 | #[structio(transparent)]
+   |            ^^^^^^^^^^^

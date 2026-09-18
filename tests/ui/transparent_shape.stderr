@@ -1,0 +1,15 @@
+error: structio: the field goes in braces, not in the parentheses the struct is written with: `transparent!(UserId { 0 })`. A tuple struct's field is named by its position here, as it is in `array!`
+ --> tests/ui/transparent_shape.rs:4:1
+  |
+4 | structio::transparent!(UserId(0));
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__declare_transparent` which comes from the expansion of the macro `structio::transparent` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: structio: a transparent declaration is a type and the one field it is written as, in braces: `transparent!(UserId { 0 })` for a tuple struct, `transparent!(Meters { value })` for a named one, with an adapter as `{ 0 as Millis }` and generics in a leading bracketed list
+  --> tests/ui/transparent_shape.rs:12:1
+   |
+12 | structio::transparent!(Pair { a, b });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__declare_transparent` which comes from the expansion of the macro `structio::transparent` (in Nightly builds, run with -Z macro-backtrace for more info)

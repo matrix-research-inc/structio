@@ -21,7 +21,7 @@ use crate::num::atof::{parse_float, scan_number};
 use crate::num::atoi::{parse_i64, parse_u64, reject_float_tail};
 use crate::options::{Options, Standard};
 use crate::swar::{escape_mask, find_byte, first_match, load_u64, needs_escape};
-use crate::traits::{Fields, Keys, Variants};
+use crate::traits::{Fields, Keys, Variants, resolve_key, resolve_variant};
 
 /// Nesting limit, so a hostile document cannot exhaust the stack.
 pub const MAX_DEPTH: u32 = 256;
@@ -535,8 +535,11 @@ impl<'de, O: Options> Parser<'de, O> {
         let n = map.n as usize;
         self.expect(b'"', ErrorCode::ExpectedQuote)?;
 
-        let index = map.lookup(T::KEYS, self.rest());
+        // The hash indexes every key, aliases included; the dispatch has an
+        // arm per field, so an alias goes back to the field it fills first.
+        let mut index = map.lookup(T::KEYS, self.rest());
         let matched = if index < n {
+            index = resolve_key::<T>(index);
             T::read_field(value, index, self)?
         } else {
             false
@@ -717,7 +720,7 @@ impl<'de, O: Options> Parser<'de, O> {
         // obliges them to, so the position is restored rather than assumed.
         let at = self.idx;
         let index = map.lookup(T::VARIANTS, self.rest());
-        if index < map.n as usize && take(value, index, self)? {
+        if index < map.n as usize && take(value, resolve_variant::<T>(index), self)? {
             return Ok(());
         }
         // `match_key` fails identically for a name that differs and for one

@@ -11,9 +11,9 @@ enum Fix {
     Valid,
 }
 
-#[derive(structio::Structio)]
-#[structio(transparent)]
+#[derive(Default, structio::Structio)]
 struct Meter {
+    #[structio(skip_read)]
     reading: f64,
 }
 

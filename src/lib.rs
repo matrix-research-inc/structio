@@ -64,6 +64,18 @@
 //! object can be read with a policy that steps over a field it does not
 //! recognize.
 //!
+//! [`transparent!`] is the third reading of a struct: a one-field wrapper
+//! written as that field alone, for the newtype that exists to keep two
+//! `u64`s apart in Rust and means nothing to either format.
+//!
+//! ```
+//! #[derive(Default, PartialEq, Debug)]
+//! struct UserId(u64);
+//! structio::transparent!(UserId { 0 });
+//!
+//! assert_eq!(structio::to_string(&UserId(7)), "7");
+//! ```
+//!
 //! # Enums
 //!
 //! An enum's schema is its variant names, and they go on the wire as names
@@ -327,7 +339,8 @@ pub use value::{Number, Object, Value, from_value, from_value_with, to_value};
 /// Declare a type's schema from its definition: `#[derive(Structio)]`.
 ///
 /// Available behind the `derive` feature. The derive is a front end to
-/// [`object!`], [`array!`], [`unit_enum!`] and [`tagged_enum!`]: it reads the
+/// [`object!`], [`array!`], [`transparent!`], [`unit_enum!`] and
+/// [`tagged_enum!`]: it reads the
 /// struct or enum and emits the declaration you would have written, with the
 /// attributes translated to the macro's syntax, so a derived type and a
 /// declared type are the same impls. Generics and their bounds are read off
@@ -358,13 +371,16 @@ pub use value::{Number, Object, Value, from_value, from_value_with, to_value};
 /// | the type | `rename_all = "camelCase"` | `as "camelCase"` |
 /// | the type | `tag = "kind"` | `as tag "kind"`, an internally tagged enum |
 /// | the type | `array`, `element = "u8"` | [`array!`], with its element type |
+/// | the type | `transparent` | [`transparent!`]: a one-field struct as that field |
 /// | the type | `json`, `beve` | the one-format macro |
 /// | the type | `crate = "path"` | the path to this crate where it is re-exported |
 /// | a field | `rename = "key"` | `"key" => field` |
+/// | a field | `alias = "key"` | <code>field &#124; "key"</code>, a further key read and never written |
 /// | a field | `skip` | left out, and `..` at the end |
 /// | a field | `required` | `#[required]` |
 /// | a field | `with = "Adapter"` | `field as Adapter` |
 /// | a variant | `rename = "name"` | `"name" => Variant` |
+/// | a variant | `alias = "name"` | <code>Variant &#124; "name"</code> |
 ///
 /// [docs/derive.md](https://github.com/stephenberry/structio/blob/main/docs/derive.md)
 /// has each attribute in full, what the derive refuses and why, and the
