@@ -356,8 +356,20 @@ impl<K: Into<String>, V: Into<Value>> FromIterator<(K, V)> for Value {
 // in the module docs needs no list of exceptions attached to it: the value on
 // the left as a `Value`, a `&Value` or a `&mut Value`, since references are
 // what the accessors hand back, and the comparand on the left against each of
-// those three. What equal means for one kind is a `Comparand` impl; the macro
-// below only stamps the pairings out.
+// those three.
+//
+// Both lists below are longer than they look like they need to be, and both are
+// the shortest that leave no edge to learn. Every integer width is named
+// because a trait lookup does not coerce one width to another: drop `u16` and
+// `doc["port"] == 8080u16` is refused while `8080u32` is taken, which is the
+// complaint this block exists to answer, only moved. The comparand meets a
+// borrowed value, which `serde_json` does not provide, because without it the
+// edge lands wherever core's blanket impls happen to reach: `"a" ==
+// doc.get("host").unwrap()` would compile and `8080 == doc.get("port").unwrap()`
+// would not, for a reason belonging to core rather than to anything here.
+//
+// What equal means for one kind is a `Comparand` impl; the macro below only
+// stamps the pairings out.
 
 /// What one comparand kind means by equal to a value. The value's own accessor
 /// answers, so a value of another kind is not equal rather than an error, and a
