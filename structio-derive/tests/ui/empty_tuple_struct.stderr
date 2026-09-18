@@ -1,0 +1,5 @@
+error: a tuple struct with no fields has nothing to put on the wire
+ --> tests/ui/empty_tuple_struct.rs:2:15
+  |
+2 | struct Nothing();
+  |               ^^

@@ -294,6 +294,17 @@ structio::array!(Vec3 [x, y, z]);
 
 It is cheaper than an object in every respect. Nothing is hashed, nothing is compared, no `KeyMap` is built or stored, and the keys are off the wire entirely. A tuple is the same encoding without the names, and goes through the same code, so `(f64, f64, f64)` and the `Vec3` above produce identical bytes in both formats.
 
+A tuple struct is declared the same way, by the names its fields have, which are their positions:
+
+```rust
+#[derive(Default)]
+struct Entry(String, f32);
+
+structio::array!(Entry [0, 1]);
+```
+
+This is the one shape `object!` cannot take, since there is nothing for the keys to be, and the one shape that loses nothing by being positional. Everything above holds for it: the order is yours to choose, `..` says an omission is deliberate, and the bytes are the tuple's, as does the element type below. What a tuple struct does not get is a shorthand for the list, because writing `[0, 1]` is also what says how many fields the declaration meant: leave one out without `..` and the declaration is refused, the same as for a name.
+
 #### Homogeneous structs
 
 When every field is the same type, name it in front of the field list, the way an array type names its element:

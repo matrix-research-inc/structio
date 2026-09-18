@@ -441,14 +441,41 @@ macro_rules! __both_write_impls {
 /// mistake whenever the names are the wire names. This is the half it cannot
 /// see: two spellings of one member, `"x" => f` beside `"z" => f`, which reads
 /// under either name and writes the member twice. A positional struct has no
-/// keys at all, so this is the only thing standing between `[x, y, x]` and an
-/// array of three elements, two of them the same field.
+/// keys at all, so nothing else is looking.
+///
+/// [`__declares_every_field!`](crate::__declares_every_field) catches a repeat
+/// too, a field given twice in a struct literal being an error, and it names
+/// the field better than this does. It is not a substitute: it expands to
+/// nothing for a declaration ending in `..`, which is exactly where a repeat is
+/// otherwise silent. A declaration with both mistakes gets both messages, which
+/// has always been so for names and is now so for positions.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __each_name_once {
     ($($name:ident),* $(,)?) => {
         const _: () = {
             $( #[allow(dead_code, non_upper_case_globals)] const $name: () = (); )*
+        };
+    };
+    // A tuple struct's fields are `0` and `1`, and `const 0: ()` is not a
+    // declaration. They are numbers, though, which is the easier thing to
+    // compare: the list goes into a slice and the check is arithmetic.
+    ($($index:tt),* $(,)?) => {
+        const _: () = {
+            const AT: &[usize] = &[$($index),*];
+            let mut i = 0;
+            while i < AT.len() {
+                let mut j = i + 1;
+                while j < AT.len() {
+                    ::core::assert!(
+                        AT[i] != AT[j],
+                        "structio: this positional declaration names the same field twice, \
+                         so one field would go out in two places and another not at all."
+                    );
+                    j += 1;
+                }
+                i += 1;
+            }
         };
     };
 }
@@ -482,8 +509,8 @@ macro_rules! __each_name_once {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __declares_every_field {
-    ([$($wgen:tt)*] [partial] $ty:ty { $($field:ident),* }) => {};
-    ([$($wgen:tt)*] [all] $ty:ty { $($field:ident),* }) => {
+    ([$($wgen:tt)*] [partial] $ty:ty { $($field:tt),* }) => {};
+    ([$($wgen:tt)*] [all] $ty:ty { $($field:tt),* }) => {
         const _: () = {
             #[allow(dead_code)]
             trait DeclaresEveryField: ::core::marker::Sized {
@@ -1164,6 +1191,28 @@ macro_rules! __beve_is_null_as {
 /// assert_eq!(structio::to_string(&c), "[1,2,3]");
 /// ```
 ///
+/// # Tuple structs
+///
+/// A tuple struct is the one shape [`object!`] cannot take, having nothing for
+/// the keys to be, and the one that loses nothing by being positional. Its
+/// fields are named here by the names they have, which are their positions:
+///
+/// ```
+/// #[derive(Default, PartialEq, Debug)]
+/// struct Entry(String, f32);
+/// structio::array!(Entry [0, 1]);
+///
+/// let e = Entry("load".into(), 1.5);
+/// assert_eq!(structio::to_string(&e), r#"["load",1.5]"#);
+/// assert_eq!(structio::from_str::<Entry>(r#"["load",1.5]"#).unwrap(), e);
+/// ```
+///
+/// Everything above holds for it. The order is yours, `..` says an omission is
+/// deliberate, and an element type packs the fields into a typed array. The
+/// list is written out rather than implied because it is also what says how
+/// many fields the declaration meant: leave one out without `..` and the
+/// declaration is refused, exactly as for a name.
+///
 /// # When to reach for it
 ///
 /// Position is cheaper than a key in every respect: nothing is hashed, nothing
@@ -1317,6 +1366,15 @@ macro_rules! __both_write_array_impls {
 /// first token begins a type or is already a field. Spelling both shapes out is
 /// what [`__elements_impl!`](crate::__elements_impl) and each format's array
 /// macro already do, for the same reason.
+///
+/// Those four take field *names*. A tuple struct's fields are `0` and `1`,
+/// which no `ident` matcher reaches, and widening these arms to `tt` is not
+/// open either: a `tt` repetition in front of `..` is a local ambiguity, since
+/// the matcher cannot tell a field from the marker that ends the list. An
+/// index list therefore falls past all four into the two arms below them, which
+/// normalize the element type and hand the rest to
+/// [`__array_positions!`](crate::__array_positions), where the list is walked
+/// one token at a time and `..` is looked for before a field.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __declared_array {
@@ -1336,6 +1394,76 @@ macro_rules! __declared_array {
         $crate::__elements_impl!([$($wgen)*] [all] $ty [ $($field),* ]);
         $crate::$m!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ]);
     };
+    // A list the four arms above did not take, which is an index list or a
+    // mistake. The element type is normalized into a group here so that the
+    // walk carries one shape rather than two.
+    ($m:ident [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($body:tt)* ]) => {
+        $crate::__array_positions!($m [$($rgen)*] [$($wgen)*] $ty [$elem ;] [] $($body)*);
+    };
+    ($m:ident [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($body:tt)* ]) => {
+        $crate::__array_positions!($m [$($rgen)*] [$($wgen)*] $ty [] [] $($body)*);
+    };
+}
+
+/// A positional field list walked one token at a time, for the index form.
+///
+/// [`__declared_array!`](crate::__declared_array) says why this exists rather
+/// than one more arm up there. The list is moved into the accumulator a field
+/// at a time, and `..` is matched ahead of a field because `..` is one token
+/// tree: a `tt` field matcher takes it whole, and the marker that ends the list
+/// vanishes into the list as a field. What comes out is what the name arms
+/// produce: the mode, the element type where there is one, and the fields.
+///
+/// The walk is one recursion per field, which the name arms do not pay, so the
+/// index form alone is bounded by the recursion limit: around 127 fields under
+/// the default, against no limit at all for names. A positional struct is a
+/// handful of fields by the nature of the thing, and `recursion_limit` raises
+/// it for anything that is not.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __array_positions {
+    ($m:ident [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [$($elem:tt)*] [$($acc:tt)*] ..) => {
+        $crate::__elements_impl!([$($wgen)*] [partial] $ty [ $($elem)* $($acc)* ]);
+        $crate::$m!([$($rgen)*] [$($wgen)*] $ty [ $($elem)* $($acc)* ]);
+    };
+    ($m:ident [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [$($elem:tt)*] [$($acc:tt)*]) => {
+        $crate::__elements_impl!([$($wgen)*] [all] $ty [ $($elem)* $($acc)* ]);
+        $crate::$m!([$($rgen)*] [$($wgen)*] $ty [ $($elem)* $($acc)* ]);
+    };
+    (
+        $m:ident [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [$($elem:tt)*] [$($acc:tt)*]
+        $field:tt , $($rest:tt)*
+    ) => {
+        $crate::__array_positions!(
+            $m [$($rgen)*] [$($wgen)*] $ty [$($elem)*] [$($acc)* $field ,] $($rest)*
+        );
+    };
+    // The last field, which carries no comma. It is pushed and handed back
+    // rather than emitted here, so that one arm above emits `[all]`, one emits
+    // `[partial]`, and neither is written out twice.
+    (
+        $m:ident [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [$($elem:tt)*] [$($acc:tt)*]
+        $field:tt
+    ) => {
+        $crate::__array_positions!(
+            $m [$($rgen)*] [$($wgen)*] $ty [$($elem)*] [$($acc)* $field]
+        );
+    };
+    // Every well-formed list is taken above, so this is the one message a
+    // malformed one gets. Without it the error is `no rules expected this
+    // token`, pointing into this crate rather than at the declaration.
+    (
+        $m:ident [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [$($elem:tt)*] [$($acc:tt)*]
+        $($rest:tt)*
+    ) => {
+        ::core::compile_error!(::core::concat!(
+            "structio: `",
+            ::core::stringify!($($rest)*),
+            "` is not a positional field list. A list is a comma-separated run of field \
+             names, or of tuple indices for a tuple struct, ending in `..` where leaving \
+             a field out is deliberate."
+        ));
+    };
 }
 
 /// The format-independent half: how many elements the array has.
@@ -1345,7 +1473,7 @@ macro_rules! __elements_impl {
     // With an element type: the fields have to be it, and saying so is the
     // whole difference, so it is checked here rather than left to whichever
     // format happens to use it.
-    ([$($wgen:tt)*] [$mode:ident] $ty:ty [ $elem:ty ; $($field:ident),* $(,)? ]) => {
+    ([$($wgen:tt)*] [$mode:ident] $ty:ty [ $elem:ty ; $($field:tt),* $(,)? ]) => {
         $crate::__elements_impl!([$($wgen)*] [$mode] $ty [ $($field),* ]);
 
         const _: () = {
@@ -1355,7 +1483,7 @@ macro_rules! __elements_impl {
             }
         };
     };
-    ([$($wgen:tt)*] [$mode:ident] $ty:ty [ $($field:ident),* $(,)? ]) => {
+    ([$($wgen:tt)*] [$mode:ident] $ty:ty [ $($field:tt),* $(,)? ]) => {
         $crate::__each_name_once!($($field),*);
         $crate::__declares_every_field!([$($wgen)*] [$mode] $ty { $($field),* });
 
@@ -1373,10 +1501,10 @@ macro_rules! __elements_impl {
 #[macro_export]
 macro_rules! __json_array_impls {
     // JSON has one array syntax, so the element type changes nothing here.
-    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:ident),* $(,)? ]) => {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:tt),* $(,)? ]) => {
         $crate::__json_array_impls!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ]);
     };
-    ([$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* $(,)? ]) => {
+    ([$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:tt),* $(,)? ]) => {
         $crate::__json_read_array_impls!([$de $($rgen)*] [$($wgen)*] $ty [ $($field),* ]);
         $crate::__json_write_array_impls!([$de $($rgen)*] [$($wgen)*] $ty [ $($field),* ]);
     };
@@ -1386,7 +1514,7 @@ macro_rules! __json_array_impls {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __json_read_array_impls {
-    ([$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* $(,)? ]) => {
+    ([$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:tt),* $(,)? ]) => {
         impl<$de $($rgen)*> $crate::json::ReadArray<$de> for $ty {
             // Deliberately not `inline(always)`, for `read_field`'s reason:
             // this body holds the parser for every element.
@@ -1431,10 +1559,10 @@ macro_rules! __json_read_array_impls {
 #[macro_export]
 macro_rules! __json_write_array_impls {
     // JSON has one array syntax, so the element type changes nothing here.
-    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:ident),* $(,)? ]) => {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:tt),* $(,)? ]) => {
         $crate::__json_write_array_impls!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ]);
     };
-    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* $(,)? ]) => {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:tt),* $(,)? ]) => {
         impl<$($wgen)*> $crate::json::WriteArray for $ty {
             #[inline]
             fn write_elements<O: $crate::Options>(
@@ -1475,10 +1603,10 @@ macro_rules! __beve_array_impls {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __beve_read_array_impls {
-    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:ident),* $(,)? ]) => {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:tt),* $(,)? ]) => {
         $crate::__beve_read_array_impls!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ]);
     };
-    ([$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* $(,)? ]) => {
+    ([$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:tt),* $(,)? ]) => {
         impl<$de $($rgen)*> $crate::beve::ReadArray<$de> for $ty {
             #[inline]
             #[allow(unused_assignments, unused_variables, unused_mut)]
@@ -1519,7 +1647,7 @@ macro_rules! __beve_read_array_impls {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __beve_write_array_impls {
-    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:ident),* $(,)? ]) => {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $elem:ty ; $($field:tt),* $(,)? ]) => {
         $crate::__beve_write_array_body!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ] {
             const ARRAY: ::core::option::Option<&'static [u8]> =
                 <$elem as $crate::beve::Write>::ARRAY;
@@ -1539,7 +1667,7 @@ macro_rules! __beve_write_array_impls {
             }
         });
     };
-    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* $(,)? ]) => {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:tt),* $(,)? ]) => {
         $crate::__beve_write_array_body!([$($rgen)*] [$($wgen)*] $ty [ $($field),* ] {});
     };
 }
@@ -1549,7 +1677,7 @@ macro_rules! __beve_write_array_impls {
 #[macro_export]
 macro_rules! __beve_write_array_body {
     (
-        [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:ident),* ] { $($typed:tt)* }
+        [$($rgen:tt)*] [$($wgen:tt)*] $ty:ty [ $($field:tt),* ] { $($typed:tt)* }
     ) => {
         impl<$($wgen)*> $crate::beve::WriteArray for $ty {
             #[inline]

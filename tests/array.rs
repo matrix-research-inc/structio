@@ -518,3 +518,112 @@ fn the_element_type_is_accepted_by_the_single_format_macros() {
         JsonTyped { a: 1, b: 2 }
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tuple structs
+// ---------------------------------------------------------------------------
+
+/// A tuple struct has no field names, which is the one thing an object cannot
+/// do without and the one thing a positional declaration does not want. Its
+/// fields are named by their positions, and `self.0` reaches one exactly as
+/// `self.x` reaches a named field, so the same declaration takes both.
+#[derive(Default, Debug, PartialEq)]
+struct Entry(String, f32);
+structio::array!(Entry [0, 1]);
+
+/// An element type reaches a tuple struct the way it reaches a named one, and
+/// buys the same typed array.
+#[derive(Default, Debug, PartialEq)]
+struct Colour(u8, u8, u8);
+structio::array!(Colour [u8; 0, 1, 2]);
+
+#[test]
+fn a_tuple_struct_is_declared_by_position() {
+    let e = Entry("load".into(), 1.5);
+    assert_eq!(to_string(&e), r#"["load",1.5]"#);
+    assert_eq!(from_str::<Entry>(r#"["load",1.5]"#).unwrap(), e);
+    assert_eq!(from_beve::<Entry>(&to_beve(&e)).unwrap(), e);
+    assert_eq!(
+        from_str::<Entry>(r#"["load"]"#).unwrap_err().code,
+        ErrorCode::ArrayLengthMismatch
+    );
+}
+
+#[test]
+fn a_tuple_struct_writes_what_its_fields_would_have() {
+    // The point of the shape: nothing about the bytes depends on whether the
+    // fields were named. Each is the tuple of the same field types, and the
+    // colour is the named struct beside it.
+    let e = Entry("load".into(), 1.5);
+    assert_eq!(to_string(&e), to_string(&(String::from("load"), 1.5f32)));
+    assert_eq!(to_beve(&e), to_beve(&(String::from("load"), 1.5f32)));
+
+    let named = Rgb { r: 1, g: 2, b: 3 };
+    assert_eq!(to_string(&Colour(1, 2, 3)), to_string(&named));
+    assert_eq!(to_beve(&Colour(1, 2, 3)), to_beve(&named));
+}
+
+/// A multi-token element type is the case that needs `$elem:ty` captured as a
+/// unit, which is why the positional walk normalizes it rather than taking it
+/// a token at a time with the fields.
+#[derive(Default, Debug, PartialEq)]
+struct Optional(Option<u8>, Option<u8>);
+structio::array!(Optional [Option<u8>; 0, 1]);
+
+#[test]
+fn an_element_type_of_several_tokens_reaches_a_position_list() {
+    let o = Optional(Some(1), None);
+    assert_eq!(to_string(&o), "[1,null]");
+    assert_eq!(from_beve::<Optional>(&to_beve(&o)).unwrap(), o);
+}
+
+#[test]
+fn a_tuple_struct_takes_an_element_type() {
+    // Which is the whole reason to name one: the typed array a `[u8; 3]` gets.
+    assert_eq!(to_beve(&Colour(1, 2, 3)), to_beve(&[1u8, 2, 3]));
+    assert_eq!(
+        from_beve::<Colour>(&to_beve(&Colour(1, 2, 3))).unwrap(),
+        Colour(1, 2, 3)
+    );
+}
+
+/// Positions may be declared in an order of their own, and `..` says an
+/// omission is deliberate, both as they do for names.
+#[derive(Default, Debug, PartialEq)]
+struct Reversed(u32, u32, String);
+structio::array!(Reversed [1, 0, ..]);
+
+#[test]
+fn a_position_list_reorders_and_omits_like_a_name_list() {
+    let mut r = Reversed(1, 2, "note".into());
+    assert_eq!(to_string(&r), "[2,1]");
+
+    // The omitted field keeps what it held, which is what an omission means
+    // everywhere else in the crate.
+    structio::read_into(&mut r, "[20,10]").unwrap();
+    assert_eq!(r, Reversed(10, 20, "note".into()));
+}
+
+#[derive(Default, Debug, PartialEq)]
+struct JsonPair(u32, u32);
+structio::json_array!(JsonPair [0, 1]);
+
+#[derive(Default, Debug, PartialEq)]
+struct BevePair(u32, u32);
+structio::beve_array!(BevePair [0, 1]);
+
+#[test]
+fn the_single_format_macros_take_positions_too() {
+    assert_eq!(to_string(&JsonPair(1, 2)), "[1,2]");
+    assert_eq!(to_beve(&BevePair(1, 2)), to_beve(&(1u32, 2u32)));
+}
+
+#[derive(Default, Debug, PartialEq)]
+struct Held<T>(T, T);
+structio::array!([T: structio::ReadWrite + Default] Held<T> [0, 1]);
+
+#[test]
+fn a_generic_tuple_struct_is_declared_by_position() {
+    assert_eq!(to_string(&Held(1u8, 2u8)), "[1,2]");
+    assert_eq!(from_str::<Held<u8>>("[1,2]").unwrap(), Held(1, 2));
+}

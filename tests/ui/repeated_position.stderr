@@ -1,0 +1,7 @@
+error[E0080]: evaluation panicked: structio: this positional declaration names the same field twice, so one field would go out in two places and another not at all.
+ --> tests/ui/repeated_position.rs:7:1
+  |
+7 | structio::array!(Sample [0, 0, ..]);
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed here
+  |
+  = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `structio::array` (in Nightly builds, run with -Z macro-backtrace for more info)

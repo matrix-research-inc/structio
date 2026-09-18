@@ -13,7 +13,7 @@
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
 use crate::attr::{self, Format};
-use crate::parse::{Input, Param, Payload, Shape};
+use crate::parse::{Field, FieldName, Input, Param, Payload, Shape};
 use crate::{Error, Result};
 
 pub(crate) fn expand(input: &Input) -> Result<TokenStream> {
@@ -231,11 +231,15 @@ fn type_tokens(input: &Input) -> Vec<TokenTree> {
 }
 
 /// `{ #[required] "key" => field as With, .., }`
-fn object_body(
-    fields: &[crate::parse::Field],
-    write_only: bool,
-    at: Span,
-) -> Result<Vec<TokenTree>> {
+fn object_body(fields: &[Field], write_only: bool, at: Span) -> Result<Vec<TokenTree>> {
+    if let Some(Field {
+        name: FieldName::Index(index),
+        ..
+    }) = fields.first()
+    {
+        return Err(Error::new(index.span(), no_keys(fields.len())));
+    }
+
     let mut body = Out::new(at);
     let mut skipped = false;
     for field in fields {
@@ -264,7 +268,7 @@ fn object_body(
             body.punct('=', Spacing::Joint);
             body.punct('>', Spacing::Alone);
         }
-        body.tokens.push(TokenTree::Ident(field.name.clone()));
+        body.tokens.push(field.name.token());
         if let Some(with) = opts.with {
             body.ident("as");
             body.extend(adapter(&with)?);
@@ -280,11 +284,7 @@ fn object_body(
 }
 
 /// `[ Elem ; a, b, c, .. ]`
-fn array_body(
-    fields: &[crate::parse::Field],
-    element: Option<&Literal>,
-    at: Span,
-) -> Result<Vec<TokenTree>> {
+fn array_body(fields: &[Field], element: Option<&Literal>, at: Span) -> Result<Vec<TokenTree>> {
     let mut body = Out::new(at);
     if let Some(element) = element {
         body.extend(adapter(element)?);
@@ -297,7 +297,7 @@ fn array_body(
             skipped = true;
             continue;
         }
-        body.tokens.push(TokenTree::Ident(field.name.clone()));
+        body.tokens.push(field.name.token());
         body.punct(',', Spacing::Alone);
     }
     if skipped {
@@ -306,6 +306,27 @@ fn array_body(
     let mut out = Out::new(at);
     out.group(Delimiter::Bracket, body.tokens);
     Ok(out.tokens)
+}
+
+/// What to say to a tuple struct declared as an object.
+///
+/// An object is not one of its options: its fields have no names, so there is
+/// nothing for the keys to be. The positional declaration is, and it wants no
+/// names, which is why the derive takes a tuple struct there and only there.
+/// A one-field struct is the exception worth naming separately: what its
+/// author almost always wants is the field's own value, not a one-element
+/// array around it.
+fn no_keys(count: usize) -> &'static str {
+    if count == 1 {
+        "a tuple struct has no field names to be keys. `#[structio(array)]` \
+         declares it positional, which writes this field as a one-element \
+         array; writing it as the field's own value is `transparent`, a stage \
+         2 shape; see docs/derive.md"
+    } else {
+        "a tuple struct has no field names to be keys. Declare it positional \
+         with `#[structio(array)]`, which writes the fields in order and asks \
+         for no names, or give the fields names"
+    }
 }
 
 /// `{ "name" => Variant(_), Unit, }`
