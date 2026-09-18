@@ -252,7 +252,8 @@ pub trait WriteAs<T: ?Sized> {
     /// [`Options::SKIP_NULL`].
     ///
     /// The adapter's answer rather than the value's. On this side it is load
-    /// bearing twice over: [`Writer::member_with`] drops the member, and the
+    /// bearing twice over: [`Writer::member_with`] and
+    /// [`Writer::member_key_with`] drop the member, and the
     /// generated [`WriteObject::count_fields`] subtracts it from the count the
     /// object header already stated. Both ask this one function about the same
     /// value, so an implementation that answers the same way twice cannot make
@@ -379,14 +380,20 @@ pub trait WriteObject: Keys {
     /// `Self::KEYS.len()`.
     ///
     /// The count is checked against what was written in a debug build, and the
-    /// check counts members that went through [`Writer::member`] or
-    /// [`Writer::member_with`]. Unlike the JSON side, where writing a member
-    /// some other way is allowed and occasionally wanted, a BEVE member has to
-    /// go through one of those two for the count to be checkable at all: an
-    /// implementation that writes the key bytes itself will trip the assertion
-    /// even on a correct document.
+    /// check counts members that went through [`Writer::member`],
+    /// [`Writer::member_with`], [`Writer::member_key`] or
+    /// [`Writer::member_key_with`]. Unlike the JSON side, where writing a
+    /// member some other way is allowed and occasionally wanted, a BEVE member
+    /// has to go through one of those four for the count to be checkable at
+    /// all: an implementation that lays the key bytes down itself, with
+    /// [`Writer::size`] and [`Writer::raw`], writes a correct document and
+    /// still trips the assertion. A key known only at run time is what that
+    /// used to mean in practice, and [`Writer::member_key`] is the way to write
+    /// one that counts.
     ///
     /// [`Writer::member`]: crate::beve::Writer::member
+    /// [`Writer::size`]: crate::beve::Writer::size
+    /// [`Writer::raw`]: crate::beve::Writer::raw
     fn count_fields<O: Options>(&self) -> usize;
 }
 
