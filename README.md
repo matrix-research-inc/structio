@@ -152,8 +152,8 @@ The crate root carries the JSON entry points unqualified and the BEVE ones with 
 
 | | |
 |---|---|
-| [Schemas and types](docs/schemas.md) | Renaming keys, required fields, positional structs, generics and borrowing, the supported type set, writing impls by hand. |
-| [Enums](docs/enums.md) | The two wire forms and which of them reading accepts, renaming variants, what is refused and with which error, the policies, and the BEVE string-array form. |
+| [Schemas and types](docs/schemas.md) | Renaming keys, aliasing them, required fields, positional and transparent structs, generics and borrowing, the supported type set, writing impls by hand. |
+| [Enums](docs/enums.md) | The two wire forms and which of them reading accepts, renaming and aliasing variants, what is refused and with which error, the policies, and the BEVE string-array form. |
 | [BEVE](docs/beve.md) | What the binary format buys you, pointers and validation, turning a document you have no type for into JSON, and what is not implemented yet. |
 | [Options](docs/options.md) | Indenting JSON, keeping arrays on one line, leaving null members out, refusing unknown keys, requiring declared ones, reading comments, prettifying and minifying text that is already JSON, and writing your own policy. |
 | [Streaming](docs/streaming.md) | Documents too large to hold, or not yet fully arrived, in either format. |

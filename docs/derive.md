@@ -75,6 +75,7 @@ Every attribute maps onto one piece of the macro syntax. Nothing here is a secon
 | `tag = "kind"` | `as tag "kind"`, an [internally tagged enum](enums.md#internal-tagging). Enums only. |
 | `array` | `array!` rather than `object!`: the struct is written as a positional array. |
 | `array, element = "u8"` | `array!(T [u8; ..])`, the [homogeneous form](schemas.md#homogeneous-structs) that BEVE writes as one typed array. |
+| `transparent` | `transparent!` rather than `object!`: a one-field struct is written as [that field alone](schemas.md#a-wrapper-that-is-not-on-the-wire), with no object and no array around it. Structs only, and the struct must have exactly one field. |
 | `json` / `beve` | `json_object!`, `json_array!`, `json_tagged_enum!` or the `beve_` counterpart: impls for one format only. |
 | `write_only` | `write_only` in front of the declaration: the write impls alone and no read, so no field's type needs a read impl or a `Default`. Every shape takes it, and it composes with `json` / `beve`. See [One direction only](schemas.md#one-direction-only). |
 | `crate = "path"` | The path to structio where it is re-exported under another name. The default is `::structio`. |
@@ -84,17 +85,19 @@ Every attribute maps onto one piece of the macro syntax. Nothing here is a secon
 | Attribute | Expands to |
 |---|---|
 | `rename = "key"` | `"key" => field` |
+| `alias = "key"` | `field \| "key"`: a [further key](schemas.md#more-than-one-key-for-a-field) accepted on read, never written. Repeatable, and the only attribute that is. |
 | `skip` | The field is left out of the declaration, and the declaration ends in `..`. Not on the wire in either direction. |
 | `required` | `#[required] field`: absence is `MissingKey` under every policy. |
 | `with = "Adapter"` | `field as Adapter`, an [adapter](schemas.md#types-you-do-not-own) for a type this crate does not describe. Composes as a type does: `with = "Vec<Millis>"`. |
 
-On a positional struct only `skip` applies. A key, a required marker or an adapter on an element is refused, because `array!` takes none of them: an element is found by position and required by the array's length.
+On a positional struct only `skip` applies. A key, an alias, a required marker or an adapter on an element is refused, because `array!` takes none of them: an element is found by position and required by the array's length. On a `transparent` struct only `with` applies, the one field being the whole declaration: there is no key to rename or alias, no member that could be absent, and nothing left to write if it is skipped.
 
 ### On a variant
 
 | Attribute | Expands to |
 |---|---|
 | `rename = "name"` | `"name" => Variant` |
+| `alias = "name"` | `Variant \| "name"`: a further name accepted on read, never written. Repeatable, as it is on a field. |
 
 ## Generics
 
@@ -158,24 +161,23 @@ An error out of the expansion lands on the declaration as a whole: a field whose
 
 ## What it refuses
 
-- **A tuple struct declared as an object.** Its fields have no names, so there is nothing for the keys to be. `#[structio(array)]` declares it [positional](schemas.md#positional-structs), which is the shape it already has; a one-field struct written as that field alone is `transparent`, a stage 2 shape.
+- **A tuple struct declared as an object.** Its fields have no names, so there is nothing for the keys to be. `#[structio(array)]` declares it [positional](schemas.md#positional-structs), which is the shape it already has, and `#[structio(transparent)]` writes a one-field one as that field's own value.
 - **A unit struct**, and a tuple struct with no fields. Neither has anything to put on the wire.
 - **A union.** Which field holds the value is not something the bytes can say.
 - **A variant with several values, or with named fields.** See [Enums](#enums).
 - **A `where` predicate on anything but the type's own parameters.** See [Generics](#generics).
-- **`required` on a `write_only` type.** Absence is a rule about reading, and such a type is never read.
+- **`required` or `alias` on a `write_only` type.** Both are rules about reading, and such a type is never read.
+- **`transparent` on an enum, or on a struct with anything but one field.** There is nothing for the wrapper to be.
 - **An attribute from a later stage.** Named as such, with the stage, rather than as an unknown attribute.
 
 ## Later stages
 
-The derive ships in three stages. This is stage 1, which covers everything the macros can express. Each later stage is a minor release, and an attribute from it on an earlier build is a compile error naming the stage.
+The derive ships in three stages, and each is a minor release. An attribute from a stage the build does not implement is a compile error naming the stage rather than an unknown attribute.
 
-**Stage 2** adds the shapes the macros have no syntax for. Most are generated directly through the `ReadObject`, `WriteObject` and `Keys` traits; `transparent` has no object around it and delegates instead:
+**Stage 2** adds the shapes the macros had no syntax for. `alias` and `transparent` have landed: both are declaration syntax now, so the derive translates them the way it translates everything else and a declared type and a derived one are still the same impls. What is left is generated directly through the `ReadObject`, `WriteObject` and `Keys` traits:
 
 - **Named-field variants**, `Window { size: u32, guard: u32 }`, written as `{"kind":"window","size":8,"guard":2}`. Reading goes through a hidden payload struct per variant; writing borrows the fields in place.
 - **`tag = "kind", content = "data"`**, adjacent tagging: `{"kind":"NotTracking","data":{"mode":2}}`, with the two members accepted in either order.
-- **`alias = "key"`** on a field or variant: one more key accepted on read, pointing at the same field.
-- **`transparent`**, a one-field struct written as that field: `Read` and `Write` delegate, with no object and no keys around it.
 
 **Stage 3** adds per-field policy:
 
@@ -195,11 +197,11 @@ Not planned: `flatten`, which changes the shape of the object the reader sees an
 | `#[serde(tag = "..")]` | `#[structio(tag = "..")]` | |
 | `#[serde(with = "..")]` | `#[structio(with = "..")]` | An adapter type rather than a module of two functions. |
 | `#[serde(crate = "..")]` | `#[structio(crate = "..")]` | |
-| `#[serde(alias = "..")]` | stage 2 | |
+| `#[serde(alias = "..")]` | `#[structio(alias = "..")]` | On a variant too, and repeatable in both places. |
 | `#[serde(tag = "..", content = "..")]` | stage 2 | |
 | `#[serde(skip_serializing_if = "..")]` | `skip_if`, stage 3 | Omits under every policy. |
 | `#[serde(default = "..")]` | `default`, stage 3 | Generates `Default`; the reader is unchanged. |
-| `#[serde(transparent)]` | stage 2 | |
+| `#[serde(transparent)]` | `#[structio(transparent)]` | Exactly one field, rather than one non-skipped field: there is no `skip` on a transparent struct to make the difference. |
 | `#[serde(skip_serializing)]` / `skip_deserializing` | `skip_write` / `skip_read`, stage 3 | |
 | `#[serde(deny_unknown_fields)]` | none | The default policy already refuses unknown keys; `SkipUnknown` steps over them. A per-type override is not planned. |
 | `#[serde(flatten)]` | none | Not planned. |

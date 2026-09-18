@@ -25,6 +25,12 @@ pub(crate) fn expand(input: &Input) -> Result<TokenStream> {
     let root = root_path(container.krate.as_ref(), at)?;
 
     let (macro_name, header_case, header_tag, body) = match &input.shape {
+        Shape::Struct(fields) if let Some(marker) = container.transparent => (
+            per_format(container.format, "transparent"),
+            None,
+            None,
+            transparent_body(fields, marker, at)?,
+        ),
         Shape::Struct(fields) if container.array.is_some() => (
             per_format(container.format, "array"),
             None,
@@ -58,7 +64,7 @@ pub(crate) fn expand(input: &Input) -> Result<TokenStream> {
                 name,
                 container.rename_all.clone(),
                 container.tag.clone(),
-                enum_body(variants, at)?,
+                enum_body(variants, container.write_only.is_some(), at)?,
             )
         }
     };
@@ -133,9 +139,11 @@ fn per_format(format: Format, base: &'static str) -> &'static str {
         (Format::Both, b) => b,
         (Format::Json, "object") => "json_object",
         (Format::Json, "array") => "json_array",
+        (Format::Json, "transparent") => "json_transparent",
         (Format::Json, _) => "json_tagged_enum",
         (Format::Beve, "object") => "beve_object",
         (Format::Beve, "array") => "beve_array",
+        (Format::Beve, "transparent") => "beve_transparent",
         (Format::Beve, _) => "beve_tagged_enum",
     }
 }
@@ -263,6 +271,16 @@ fn object_body(fields: &[Field], write_only: bool, at: Span) -> Result<Vec<Token
             marker.ident("required");
             body.group(Delimiter::Bracket, marker.tokens);
         }
+        if !opts.aliases.is_empty() && write_only {
+            return Err(Error::new(
+                opts.aliases[0].span(),
+                "an alias is a rule about reading: it is a further key a \
+                 document may use for this field, and the key the field is \
+                 written under is the declared one. A type declared \
+                 `write_only` is never read, so nothing would ever look this \
+                 one up",
+            ));
+        }
         if let Some(key) = opts.rename {
             body.lit(key);
             body.punct('=', Spacing::Joint);
@@ -273,10 +291,67 @@ fn object_body(fields: &[Field], write_only: bool, at: Span) -> Result<Vec<Token
             body.ident("as");
             body.extend(adapter(&with)?);
         }
+        for alias in opts.aliases {
+            body.punct('|', Spacing::Alone);
+            body.lit(alias);
+        }
         body.punct(',', Spacing::Alone);
     }
     if skipped {
         body.rest();
+    }
+    let mut out = Out::new(at);
+    out.group(Delimiter::Brace, body.tokens);
+    Ok(out.tokens)
+}
+
+/// `{ field }`, or `{ field as With }`
+///
+/// The one field is the whole declaration: a transparent struct is written as
+/// that field, so there is no key to rename or alias, no absence to require
+/// and nothing left over to skip. `with` is the one field attribute that
+/// survives, and it earns its place: a newtype around a type from another
+/// crate is much of what a transparent declaration wraps, and the adapter is
+/// how that type is described at all.
+fn transparent_body(fields: &[Field], marker: Span, at: Span) -> Result<Vec<TokenTree>> {
+    let [field] = fields else {
+        return Err(Error::new(
+            marker,
+            format!(
+                "`transparent` writes a struct as the one field it holds, and \
+                 this one has {}. Declare it as an object, or positionally \
+                 with `#[structio(array)]`",
+                fields.len()
+            ),
+        ));
+    };
+    let opts = attr::field(&field.attrs, false)?;
+    let other = [
+        opts.rename.as_ref().map(|lit| ("rename", lit.span())),
+        opts.aliases.first().map(|lit| ("alias", lit.span())),
+        opts.required.map(|at| ("required", at)),
+        opts.skip.map(|at| ("skip", at)),
+    ]
+    .into_iter()
+    .flatten()
+    .next();
+    if let Some((name, span)) = other {
+        return Err(Error::new(
+            span,
+            format!(
+                "a transparent struct is written as this field and nothing \
+                 else: it has no key, it is never a member that could be \
+                 absent, and skipping it would leave nothing to write. \
+                 `{name}` has nothing to apply to"
+            ),
+        ));
+    }
+
+    let mut body = Out::new(at);
+    body.tokens.push(field.name.token());
+    if let Some(with) = opts.with {
+        body.ident("as");
+        body.extend(adapter(&with)?);
     }
     let mut out = Out::new(at);
     out.group(Delimiter::Brace, body.tokens);
@@ -320,8 +395,7 @@ fn no_keys(count: usize) -> &'static str {
     if count == 1 {
         "a tuple struct has no field names to be keys. `#[structio(array)]` \
          declares it positional, which writes this field as a one-element \
-         array; writing it as the field's own value is `transparent`, a stage \
-         2 shape; see docs/derive.md"
+         array; `#[structio(transparent)]` writes it as the field's own value"
     } else {
         "a tuple struct has no field names to be keys. Declare it positional \
          with `#[structio(array)]`, which writes the fields in order and asks \
@@ -330,7 +404,11 @@ fn no_keys(count: usize) -> &'static str {
 }
 
 /// `{ "name" => Variant(_), Unit, }`
-fn enum_body(variants: &[crate::parse::Variant], at: Span) -> Result<Vec<TokenTree>> {
+fn enum_body(
+    variants: &[crate::parse::Variant],
+    write_only: bool,
+    at: Span,
+) -> Result<Vec<TokenTree>> {
     let mut body = Out::new(at);
     for variant in variants {
         let opts = attr::variant(&variant.attrs)?;
@@ -348,10 +426,20 @@ fn enum_body(variants: &[crate::parse::Variant], at: Span) -> Result<Vec<TokenTr
                 return Err(Error::new(
                     span,
                     "a variant with named fields is a stage 2 shape and this \
-                     derive implements stage 1; give the fields a struct \
+                     derive does not generate it yet; give the fields a struct \
                      declared on its own, and see docs/derive.md",
                 ));
             }
+        }
+        if !opts.aliases.is_empty() && write_only {
+            return Err(Error::new(
+                opts.aliases[0].span(),
+                "an alias is a rule about reading: it is a further name a \
+                 document may use for this variant, and the name the variant \
+                 is written under is the declared one. A type declared \
+                 `write_only` is never read, so nothing would ever look this \
+                 one up",
+            ));
         }
         if let Some(name) = opts.rename {
             body.lit(name);
@@ -363,6 +451,10 @@ fn enum_body(variants: &[crate::parse::Variant], at: Span) -> Result<Vec<TokenTr
             let mut hole = Out::new(variant.name.span());
             hole.ident("_");
             body.group(Delimiter::Parenthesis, hole.tokens);
+        }
+        for alias in opts.aliases {
+            body.punct('|', Spacing::Alone);
+            body.lit(alias);
         }
         body.punct(',', Spacing::Alone);
     }

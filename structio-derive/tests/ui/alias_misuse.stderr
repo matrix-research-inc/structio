@@ -1,0 +1,17 @@
+error: an alias is a rule about reading: it is a further key a document may use for this field, and the key the field is written under is the declared one. A type declared `write_only` is never read, so nothing would ever look this one up
+ --> tests/ui/alias_misuse.rs:4:24
+  |
+4 |     #[structio(alias = "name")]
+  |                        ^^^^^^
+
+error: `alias` has no meaning on a field of a positional struct: an element is found by its position, has no key, and is required by the array's length. Only `skip` applies
+  --> tests/ui/alias_misuse.rs:10:25
+   |
+10 | struct Point(#[structio(alias = "x")] f64, f64);
+   |                         ^^^^^
+
+error: a skipped field is not on the wire, so `alias` has nothing to apply to
+  --> tests/ui/alias_misuse.rs:14:16
+   |
+14 |     #[structio(skip, alias = "n")]
+   |                ^^^^

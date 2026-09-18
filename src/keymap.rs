@@ -302,7 +302,9 @@ impl KeyMap {
     /// # Panics
     ///
     /// At compile time, if two keys are equal. A duplicate key is always a bug
-    /// in the schema and would make one field permanently unreachable.
+    /// in the schema and would make one field permanently unreachable. The
+    /// list holds a schema's aliases as well as its own names, so an alias
+    /// that repeats one of them is caught here too.
     pub const fn build(keys: &[&str]) -> KeyMap {
         let n = keys.len();
 
@@ -329,7 +331,11 @@ impl KeyMap {
             let mut j = i + 1;
             while j < n {
                 if const_str_eq(keys[i], keys[j]) {
-                    panic!("structio: a declaration named the same key or variant twice");
+                    panic!(
+                        "structio: a declaration named the same key or variant twice, \
+                         counting the aliases, which share the table with the names \
+                         they stand in for"
+                    );
                 }
                 j += 1;
             }

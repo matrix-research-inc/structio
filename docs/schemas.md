@@ -35,6 +35,30 @@ The key is a string literal, so it can hold anything the format can carry, inclu
 
 Field order in the declaration is the order members are **written**. Reading does not care about order.
 
+### More than one key for a field
+
+A field may answer to several keys. Write the extra ones after it, separated by `|`. The declared key is the one written; any of them is accepted on read.
+
+```rust
+structio::object!(Settings {
+    timeout | "timeout_ms" | "timeoutMs",
+    "nm" => name | "name",
+});
+```
+
+That is how a key is renamed without breaking the documents already written under the old spelling: move the old one to an alias, and both are read. It also takes a schema that arrives spelled two ways by two producers and reads both into one field.
+
+Four things follow from an alias being a name and nothing more:
+
+- **Nothing about the output changes.** Adding an alias cannot alter a byte the program writes, so it is safe to add to a schema other people already read.
+- **A [case rule](#case-rules) leaves it alone**, the way an explicit `"key" =>` is left alone. An alias is spelled out, so it is taken as spelled.
+- **A [required](#required-fields) member is satisfied by any of its names.** The mask that tracks which members arrived has a bit per field, and an alias resolves to that field before the bit is set.
+- **`write_only` refuses it**, because such a declaration never reads and nothing would ever look the name up.
+
+Aliases go after an adapter where a field has one, `elapsed as Millis | "elapsed_ms"`. They cost one more entry in the [key hash](design.md#compile-time-key-hashing) and one more comparison on the field that declared them, and nothing at all to a field that declares none.
+
+A variant takes aliases the same way; see [Enums](enums.md#more-than-one-name-for-a-variant).
+
 ### Case rules
 
 A schema whose keys differ from the Rust names by a *rule* rather than one at a time names the rule once, after the type. Every key the declaration does not spell out is then converted during compilation. `object!`, `unit_enum!` and `tagged_enum!` take one, as do their `json_` and `beve_` variants:
@@ -678,6 +702,24 @@ struct Timestamp(other_crate::DateTime);
 **When the type appears in many structs.** `at as Rfc3339` is per field. A newtype is written once and then *is* the type everywhere, at the cost of `.0` at every use.
 
 The two combine: a newtype is a type you own, so it can carry ordinary impls, and an adapter can target it like anything else.
+
+#### A wrapper that is not on the wire
+
+A newtype is a distinction Rust makes and the document does not. `transparent!` says so: the struct is written as the one field it holds, with no object and no array around it.
+
+```rust
+#[derive(Default)]
+struct UserId(u64);
+structio::transparent!(UserId { 0 });
+
+assert_eq!(structio::to_string(&UserId(7)), "7");
+```
+
+The field is named the way the struct names it, so a tuple struct's is its position and a named struct's is its name, `transparent!(Meters { value })`. Declaring a struct that has a second field is a build error naming the field left out, as it is for [`object!`](#a-declaration-is-checked-against-its-type). The alternative readings are both worse for this shape: an object would need a key that means nothing, and [`array!`](#positional-structs) writes `[7]`, which is right where the shape really is a one-element sequence and wrong where it is a name for a number.
+
+It takes an adapter, `transparent!(Timeout { 0 as Millis })`, which is the combination above written once: a newtype around a foreign type, adapted, and invisible in the document. `write_only` narrows it as it narrows an object, and there is no case rule, no key and no `#[required]`, there being no member for any of them to describe.
+
+Two things it deliberately does not forward. BEVE's typed-array path stays off, so a `Vec<UserId>` is written as a generic array of values rather than as one block of `u64` payload: the bulk path is a copy between a run of payload and a `[Self]`, which is sound only if the wrapper is laid out exactly as what it wraps, and a declaration cannot see whether `#[repr(transparent)]` is there to say so. What a reader sees is a valid document either way. `is_null` *is* forwarded, in both formats, so a wrapper around an `Option` is absent under [`SkipNull`](options.md) for the reason the bare `Option` is.
 
 ### What an adapter costs in BEVE
 

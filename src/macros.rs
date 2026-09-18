@@ -106,6 +106,32 @@ macro_rules! __write_only_is_the_marker {
 /// spellings are `serde`'s but the rule is not, so a schema being ported
 /// should check [the differences](crate::case#coming-from-serde) first.
 ///
+/// A field may answer to more than one key. Write the extra ones after it,
+/// separated by `|`: the declared key is the one written, and any of them is
+/// accepted on read.
+///
+/// ```
+/// # use structio::{from_str, to_string};
+/// #[derive(Debug, Default, PartialEq)]
+/// struct Settings { timeout: u64 }
+///
+/// structio::object!(Settings { timeout | "timeout_ms" | "timeoutMs" });
+///
+/// let want = Settings { timeout: 30 };
+/// assert_eq!(from_str::<Settings>(r#"{"timeout":30}"#).unwrap(), want);
+/// assert_eq!(from_str::<Settings>(r#"{"timeout_ms":30}"#).unwrap(), want);
+/// assert_eq!(to_string(&want), r#"{"timeout":30}"#);
+/// ```
+///
+/// That is what renames a key without breaking the documents already written
+/// under the old one: move the old spelling to an alias and both are read.
+/// An alias is spelled out, so a [case rule](crate::case) leaves it alone, the
+/// way an explicit `"key" =>` is left alone; it costs one more entry in the
+/// key hash and one more comparison on the field it belongs to, and nothing
+/// at all to a field that declares none. Aliases go after an adapter where
+/// there is one, `elapsed as Millis | "elapsed_ms"`. There is no alias on a
+/// `write_only` declaration, which never reads.
+///
 /// A member a document has to carry is marked `#[required]`. Absence is
 /// otherwise no error: an unmarked field the document leaves out keeps
 /// whatever the destination already held.
@@ -381,26 +407,26 @@ macro_rules! __declared {
     // adapter. `..` is not in the follow set of a `ty` fragment and `,` is, so
     // `$(as $with:ty)?),* ..` would not compile as a matcher at all.
     ([$dir:tt] $m:ident [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-        $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)? ,)* ..
+        $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)? $(| $alias:literal)* ,)* ..
     }) => {
         $crate::__case_check!($case);
         $crate::__keys_impl!([$($wgen)*] [$case] [partial] [$dir] $ty {
-            $($(#[$req])? $($key =>)? $field $(as $with)?),*
+            $($(#[$req])? $($key =>)? $field $(as $with)? $(| $alias)*),*
         });
         $crate::$m!([$($rgen)*] [$($wgen)*] [$case] $ty {
-            $($(#[$req])? $($key =>)? $field $(as $with)?),*
+            $($(#[$req])? $($key =>)? $field $(as $with)? $(| $alias)*),*
         });
     };
     // Every field named, so the declaration is checked against the type.
     ([$dir:tt] $m:ident [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-        $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)?),* $(,)?
+        $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)? $(| $alias:literal)*),* $(,)?
     }) => {
         $crate::__case_check!($case);
         $crate::__keys_impl!([$($wgen)*] [$case] [all] [$dir] $ty {
-            $($(#[$req])? $($key =>)? $field $(as $with)?),*
+            $($(#[$req])? $($key =>)? $field $(as $with)? $(| $alias)*),*
         });
         $crate::$m!([$($rgen)*] [$($wgen)*] [$case] $ty {
-            $($(#[$req])? $($key =>)? $field $(as $with)?),*
+            $($(#[$req])? $($key =>)? $field $(as $with)? $(| $alias)*),*
         });
     };
 }
@@ -550,24 +576,109 @@ macro_rules! __is_required {
     };
 }
 
+/// One, for a token a `macro_rules!` repetition has to count.
+///
+/// The alias counter in [`__keys_impl!`](crate::__keys_impl) and
+/// [`__variants_impl!`](crate::__variants_impl) runs during const evaluation
+/// and cannot size the array it writes into, an array length being needed
+/// before the block that fills it runs. A repetition summing this over the
+/// aliases is that length, and the argument is there only to give the
+/// repetition a variable to expand.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __counts_one {
+    ($t:tt) => {
+        1usize
+    };
+}
+
+/// Refuse an alias on a declaration that generates no read.
+///
+/// An alias is a rule about reading: it is a further name a document may use,
+/// and the name a field or a variant is *written* under is the declared one
+/// whatever aliases stand beside it. A `write_only` declaration never reads,
+/// so an alias on one is a name nothing would ever look up, which is worth a
+/// message rather than silence.
+/// [`__required_direction!`](crate::__required_direction) refuses
+/// `#[required]` there for the same reason.
+///
+/// The noun says which of the two is being declared, because a message that
+/// called a variant a field would send the reader looking for one.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __alias_direction {
+    ([write] key $alias:literal) => {
+        ::core::compile_error!(
+            "an alias is a rule about reading: it is a further key a document \
+             may use for this field, and the key the field is written under is \
+             the declared one. A type declared `write_only` is never read, so \
+             nothing would ever look this one up"
+        )
+    };
+    ([write] name $alias:literal) => {
+        ::core::compile_error!(
+            "an alias is a rule about reading: it is a further name a document \
+             may use for this variant, and the name the variant is written \
+             under is the declared one. A type declared `write_only` is never \
+             read, so nothing would ever look this one up"
+        )
+    };
+    ([$dir:tt] $what:ident $alias:literal) => {};
+}
+
 /// The format-independent half: the key list and its compile-time hash.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __keys_impl {
     (
         [$($wgen:tt)*] [$case:tt] [$mode:ident] [$dir:tt] $ty:ty {
-            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)?),* $(,)?
+            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)? $(| $alias:literal)*),* $(,)?
         }
     ) => {
         $crate::__each_name_once!($($field),*);
         $crate::__declares_every_field!([$($wgen)*] [$mode] $ty { $($field),* });
 
         impl<$($wgen)*> $crate::Keys for $ty {
+            // The fields first, in declaration order, then every alias, which
+            // is the order `ALIASES` below is indexed against. Each entry
+            // carries its own trailing comma, the two runs being separate
+            // repetitions with no separator to put between them. An alias is
+            // spelled out, so no case rule touches it, exactly as an explicit
+            // `"key" =>` is left alone.
             const KEYS: &'static [&'static str] = &[
-                $( $crate::__json_key!([$case] $($key)? [$field]) ),*
+                $( $crate::__json_key!([$case] $($key)? [$field]), )*
+                $( $( $alias, )* )*
             ];
+
+            // Which field each of those aliases fills. `macro_rules!` cannot
+            // count, so it is a const-evaluated counter, as `REQUIRED`'s is.
+            // The whole block is empty for a declaration with no aliases, and
+            // the width assertion with it.
+            #[allow(unused_assignments, unused_mut)]
+            const ALIASES: &'static [u8] = &{
+                let mut of = [0u8; 0 $( $( + $crate::__counts_one!($alias) )* )*];
+                let mut j = 0usize;
+                let mut f = 0usize;
+                $(
+                    $(
+                        assert!(
+                            f <= u8::MAX as usize,
+                            "an aliased field must be one of the first 256 \
+                             declared: the field an alias fills is a u8"
+                        );
+                        of[j] = f as u8;
+                        j += 1;
+                        $crate::__alias_direction!([$dir] key $alias);
+                    )*
+                    f += 1;
+                )*
+                of
+            };
+
             // Built from `Self::KEYS` rather than a second copy of the key
-            // list, so the two cannot drift apart.
+            // list, so the two cannot drift apart. It covers the aliases too,
+            // which is what makes one lookup enough to find a field under any
+            // of its names.
             //
             // `&` on a const expression promotes to an anonymous static, so the
             // table lives in read-only memory and is never copied onto the
@@ -630,14 +741,14 @@ macro_rules! __required_direction {
 macro_rules! __json_impls {
     (
         [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)?),* $(,)?
+            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)? $(| $alias:literal)*),* $(,)?
         }
     ) => {
         $crate::__json_read_impls!([$de $($rgen)*] [$($wgen)*] [$case] $ty {
-            $($(#[$req])? $($key =>)? $field $(as $with)?),*
+            $($(#[$req])? $($key =>)? $field $(as $with)? $(| $alias)*),*
         });
         $crate::__json_write_impls!([$de $($rgen)*] [$($wgen)*] [$case] $ty {
-            $($(#[$req])? $($key =>)? $field $(as $with)?),*
+            $($(#[$req])? $($key =>)? $field $(as $with)? $(| $alias)*),*
         });
     };
 }
@@ -657,7 +768,7 @@ macro_rules! __json_impls {
 macro_rules! __json_read_impls {
     (
         [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)?),* $(,)?
+            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)? $(| $alias:literal)*),* $(,)?
         }
     ) => {
         impl<$de $($rgen)*> $crate::json::ReadObject<$de> for $ty {
@@ -679,8 +790,13 @@ macro_rules! __json_read_impls {
                 $(
                     if index == i {
                         // The hash only proposed this field; confirm the key
-                        // before touching the value.
-                        if !p.match_key($crate::__json_key!([$case] $($key)? [$field])) {
+                        // before touching the value. A field that declared
+                        // aliases answers to any of them, and the caller has
+                        // already put whichever one the hash found back on the
+                        // field, so there is one arm either way.
+                        if !(p.match_key($crate::__json_key!([$case] $($key)? [$field]))
+                            $( || p.match_key($alias) )*)
+                        {
                             return ::core::result::Result::Ok(false);
                         }
                         p.colon()?;
@@ -715,7 +831,7 @@ macro_rules! __json_read_impls {
 macro_rules! __json_write_impls {
     (
         [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)?),* $(,)?
+            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)? $(| $alias:literal)*),* $(,)?
         }
     ) => {
         impl<$($wgen)*> $crate::json::WriteObject for $ty {
@@ -761,14 +877,14 @@ macro_rules! __json_write_impls {
 macro_rules! __beve_impls {
     (
         [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)?),* $(,)?
+            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)? $(| $alias:literal)*),* $(,)?
         }
     ) => {
         $crate::__beve_read_impls!([$de $($rgen)*] [$($wgen)*] [$case] $ty {
-            $($(#[$req])? $($key =>)? $field $(as $with)?),*
+            $($(#[$req])? $($key =>)? $field $(as $with)? $(| $alias)*),*
         });
         $crate::__beve_write_impls!([$de $($rgen)*] [$($wgen)*] [$case] $ty {
-            $($(#[$req])? $($key =>)? $field $(as $with)?),*
+            $($(#[$req])? $($key =>)? $field $(as $with)? $(| $alias)*),*
         });
     };
 }
@@ -788,7 +904,7 @@ macro_rules! __beve_impls {
 macro_rules! __beve_read_impls {
     (
         [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)?),* $(,)?
+            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)? $(| $alias:literal)*),* $(,)?
         }
     ) => {
         impl<$de $($rgen)*> $crate::beve::ReadObject<$de> for $ty {
@@ -805,8 +921,11 @@ macro_rules! __beve_read_impls {
                     if index == i {
                         // The key arrived already delimited by its length
                         // prefix, so confirming the hash's candidate is one
-                        // slice comparison against a constant.
-                        if key != $crate::__json_key!([$case] $($key)? [$field]).as_bytes() {
+                        // slice comparison against a constant, and one more
+                        // per alias the field declared.
+                        if !(key == $crate::__json_key!([$case] $($key)? [$field]).as_bytes()
+                            $( || key == $alias.as_bytes() )*)
+                        {
                             return ::core::result::Result::Ok(false);
                         }
                         $crate::__beve_read_as!(&mut self.$field, r $(, $with)?)?;
@@ -840,7 +959,7 @@ macro_rules! __beve_read_impls {
 macro_rules! __beve_write_impls {
     (
         [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)?),* $(,)?
+            $($(#[$req:ident])? $($key:literal =>)? $field:ident $(as $with:ty)? $(| $alias:literal)*),* $(,)?
         }
     ) => {
         impl<$($wgen)*> $crate::beve::WriteObject for $ty {
@@ -1074,6 +1193,42 @@ macro_rules! __write_member {
     };
 }
 
+/// Write a field, through its adapter if it named one.
+///
+/// [`__json_read_as!`](crate::__json_read_as)'s other half, and needed where a
+/// value is written on its own rather than as a member:
+/// [`__write_member!`](crate::__write_member) covers the member case, key
+/// included, and a [`transparent!`](crate::transparent) declaration has no
+/// member to write.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __json_write_as {
+    ($place:expr, $w:ident, $with:ty) => {
+        <$with as $crate::json::WriteAs<_>>::write($place, $w)
+    };
+    ($place:expr, $w:ident) => {
+        $crate::json::Write::write($place, $w)
+    };
+}
+
+/// Ask whether a value is absent, of its adapter if one was named.
+///
+/// [`__beve_is_null_as!`](crate::__beve_is_null_as)'s JSON counterpart. A
+/// declaration that writes members reaches the adapter's answer through
+/// [`Writer::member_with`](crate::json::Writer::member_with); a
+/// [`transparent!`](crate::transparent) one forwards `is_null` itself and so
+/// has to ask here.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __json_is_null_as {
+    ($place:expr, $with:ty) => {
+        <$with as $crate::json::WriteAs<_>>::is_null($place)
+    };
+    ($place:expr) => {
+        $crate::json::Write::is_null($place)
+    };
+}
+
 /// [`__json_read_as!`](crate::__json_read_as) for BEVE.
 #[doc(hidden)]
 #[macro_export]
@@ -1083,6 +1238,18 @@ macro_rules! __beve_read_as {
     };
     ($place:expr, $r:ident) => {
         $crate::beve::Read::read($place, $r)
+    };
+}
+
+/// [`__json_write_as!`](crate::__json_write_as) for BEVE.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __beve_write_as {
+    ($place:expr, $w:ident, $with:ty) => {
+        <$with as $crate::beve::WriteAs<_>>::write($place, $w)
+    };
+    ($place:expr, $w:ident) => {
+        $crate::beve::Write::write($place, $w)
     };
 }
 
@@ -1276,6 +1443,316 @@ macro_rules! beve_array {
     (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
     (write_only $($t:tt)*) => { $crate::__declare_array!(__beve_write_array_impls $($t)*); };
     ($($t:tt)*) => { $crate::__declare_array!(__beve_array_impls $($t)*); };
+}
+
+/// Declare a one-field struct as that field alone.
+///
+/// The wrapper leaves no trace in the document: `UserId(7)` is `7`, not `[7]`
+/// and not `{"0":7}`. Reading and writing delegate to the field, with no
+/// object, no keys and no array around it.
+///
+/// ```
+/// #[derive(Default, Debug, PartialEq)]
+/// struct UserId(u64);
+/// structio::transparent!(UserId { 0 });
+///
+/// assert_eq!(structio::to_string(&UserId(7)), "7");
+/// assert_eq!(structio::from_str::<UserId>("7").unwrap(), UserId(7));
+/// ```
+///
+/// This is the declaration for the newtype that exists to stop you passing an
+/// order id where a user id belongs. That distinction is Rust's and means
+/// nothing to either format, so the wrapper should not show up in the bytes.
+/// [`array!`](crate::array) is the other reading of a one-field tuple struct,
+/// and writes `[7]`: right where the shape really is a one-element sequence,
+/// wrong where it is a name for a number.
+///
+/// The field is named the way the struct names it, so a tuple struct's is its
+/// position and a named struct's is its name:
+///
+/// ```
+/// # #[derive(Default)]
+/// struct Meters { value: f64 }
+/// structio::transparent!(Meters { value });
+/// ```
+///
+/// Declaring a struct that has a second field is a build error naming the
+/// field left out, exactly as [`object!`](crate::object) is: what it would
+/// otherwise generate is a document that silently drops it.
+///
+/// A field whose type this crate does not describe names an adapter, as an
+/// [`object!`](crate::object) field does:
+///
+/// ```
+/// # use std::time::Duration;
+/// # use structio::{ErrorCode, Options, json, beve};
+/// # struct Millis;
+/// # impl<'de> json::ReadAs<'de, Duration> for Millis {
+/// #     fn read<O: Options>(v: &mut Duration, p: &mut json::Parser<'de, O>)
+/// #         -> Result<(), ErrorCode> { let mut ms = 0u64; json::Read::read(&mut ms, p)?; *v = Duration::from_millis(ms); Ok(()) }
+/// # }
+/// # impl json::WriteAs<Duration> for Millis {
+/// #     fn write<O: Options>(v: &Duration, w: &mut json::Writer<'_, O>) { json::Write::write(&(v.as_millis() as u64), w) }
+/// # }
+/// # impl<'de> beve::ReadAs<'de, Duration> for Millis {
+/// #     fn read<O: Options>(v: &mut Duration, r: &mut beve::Reader<'de, O>)
+/// #         -> Result<(), ErrorCode> { let mut ms = 0u64; beve::Read::read(&mut ms, r)?; *v = Duration::from_millis(ms); Ok(()) }
+/// # }
+/// # impl beve::WriteAs<Duration> for Millis {
+/// #     fn write<O: Options>(v: &Duration, w: &mut beve::Writer<'_, O>) { beve::Write::write(&(v.as_millis() as u64), w) }
+/// # }
+/// #[derive(Default)]
+/// struct Timeout(Duration);
+/// structio::transparent!(Timeout { 0 as Millis });
+///
+/// assert_eq!(structio::to_string(&Timeout(Duration::from_secs(3))), "3000");
+/// ```
+///
+/// Generics are declared as they are elsewhere, in a leading bracketed list:
+/// `transparent!([T: structio::ReadWrite + Default] Wrapper<T> { 0 })`.
+///
+/// # What it does not forward
+///
+/// BEVE's typed-array path stays off. [`beve::Write::ARRAY`] and
+/// [`beve::Read::read_bulk`] keep their defaults, so a `Vec<UserId>` is
+/// written as a generic array of values rather than as one block of `u64`
+/// payload, and is read back element by element. The bulk path is a copy
+/// between `[Self]` and a run of the payload, which is sound only if the
+/// wrapper is laid out exactly as what it wraps, and a declaration cannot see
+/// whether `#[repr(transparent)]` is there to say so. What a reader sees is a
+/// valid document either way; what it costs is the one-copy path.
+///
+/// [`Write::is_null`](crate::json::Write::is_null) *is* forwarded, in both
+/// formats, so a transparent wrapper around an `Option` is absent under
+/// [`SkipNull`](crate::SkipNull) for the same reason the bare `Option` is.
+///
+/// There is no `read_only`, for [`object!`](crate::object)'s reason, and
+/// `write_only` narrows this the same way it narrows one.
+///
+/// [`beve::Write::ARRAY`]: crate::beve::Write::ARRAY
+/// [`beve::Read::read_bulk`]: crate::beve::Read::read_bulk
+#[macro_export]
+macro_rules! transparent {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
+    (write_only $($t:tt)*) => {
+        $crate::__declare_transparent!([write] __both_write_transparent_impls $($t)*);
+    };
+    ($($t:tt)*) => {
+        $crate::__declare_transparent!([both] __both_transparent_impls $($t)*);
+    };
+}
+
+/// Declare a one-field struct as that field alone, for JSON only.
+///
+/// The same syntax as [`transparent!`], generating only the JSON impls, and
+/// wanted for [`json_object!`](crate::json_object)'s reasons: a field of a
+/// type only one format can carry, such as a [`json::Raw`](crate::json::Raw).
+#[macro_export]
+macro_rules! json_transparent {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
+    (write_only $($t:tt)*) => {
+        $crate::__declare_transparent!([write] __json_write_transparent_impls $($t)*);
+    };
+    ($($t:tt)*) => {
+        $crate::__declare_transparent!([both] __json_transparent_impls $($t)*);
+    };
+}
+
+/// Declare a one-field struct as that field alone, for BEVE only.
+///
+/// The counterpart of [`json_transparent!`], and what a wrapper around a
+/// borrowed `&[u8]` needs.
+#[macro_export]
+macro_rules! beve_transparent {
+    (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
+    (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
+    (write_only $($t:tt)*) => {
+        $crate::__declare_transparent!([write] __beve_write_transparent_impls $($t)*);
+    };
+    ($($t:tt)*) => {
+        $crate::__declare_transparent!([both] __beve_transparent_impls $($t)*);
+    };
+}
+
+/// [`__declare!`](crate::__declare) for the transparent form.
+///
+/// The same normalization of the input lifetime and the same two lists handed
+/// on, with no case rule and no [`Keys`](crate::Keys) impl: there is no key to
+/// convert and no object for one to sit in. The completeness check is here
+/// rather than in the impls, being the one thing the two directions share.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __declare_transparent {
+    // The type's own spelling, `transparent!(UserId(0))`, which is what
+    // anyone writes first. It has to be caught in front of the rules that
+    // follow rather than left to fall through them: `$ty:ty` handed
+    // `UserId(0)` fails inside the type parser, and that is a hard error
+    // pointed into this crate rather than a rule that did not match.
+    ([$dir:tt] $m:ident $name:ident ( $($rest:tt)* )) => {
+        ::core::compile_error!(
+            "structio: the field goes in braces, not in the parentheses the \
+             struct is written with: `transparent!(UserId { 0 })`. A tuple \
+             struct's field is named by its position here, as it is in \
+             `array!`"
+        );
+    };
+    ([$dir:tt] $m:ident [ $de:lifetime $($gen:tt)* ] $ty:ty { $field:tt $(as $with:ty)? }) => {
+        $crate::__declares_every_field!([$de $($gen)*] [all] $ty { $field });
+        $crate::$m!([$de $($gen)*] [$de $($gen)*] $ty { $field $(as $with)? });
+    };
+    ([$dir:tt] $m:ident [ $($gen:tt)* ] $ty:ty { $field:tt $(as $with:ty)? }) => {
+        $crate::__declares_every_field!([$($gen)*] [all] $ty { $field });
+        $crate::$m!(['de, $($gen)*] [$($gen)*] $ty { $field $(as $with)? });
+    };
+    ([$dir:tt] $m:ident $ty:ty { $field:tt $(as $with:ty)? }) => {
+        $crate::__declares_every_field!([] [all] $ty { $field });
+        $crate::$m!(['de] [] $ty { $field $(as $with)? });
+    };
+    // Every well-formed declaration is taken above, so this is the message a
+    // malformed one gets rather than `no rules expected this token` pointed
+    // into this crate. The shape people reach for first is the type's own
+    // spelling, `transparent!(UserId(0))`, which cannot parse: a `ty` fragment
+    // may not be followed by `(`.
+    ([$dir:tt] $m:ident $($rest:tt)*) => {
+        ::core::compile_error!(
+            "structio: a transparent declaration is a type and the one field \
+             it is written as, in braces: `transparent!(UserId { 0 })` for a \
+             tuple struct, `transparent!(Meters { value })` for a named one, \
+             with an adapter as `{ 0 as Millis }` and generics in a leading \
+             bracketed list"
+        );
+    };
+}
+
+/// Both formats, for [`transparent!`](crate::transparent).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __both_transparent_impls {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty { $($body:tt)* }) => {
+        $crate::__json_transparent_impls!([$($rgen)*] [$($wgen)*] $ty { $($body)* });
+        $crate::__beve_transparent_impls!([$($rgen)*] [$($wgen)*] $ty { $($body)* });
+    };
+}
+
+/// Both formats, one direction, for `transparent!(write_only ..)`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __both_write_transparent_impls {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty { $($body:tt)* }) => {
+        $crate::__json_write_transparent_impls!([$($rgen)*] [$($wgen)*] $ty { $($body)* });
+        $crate::__beve_write_transparent_impls!([$($rgen)*] [$($wgen)*] $ty { $($body)* });
+    };
+}
+
+/// Both directions, for a transparent declaration that narrowed neither.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __json_transparent_impls {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty { $($body:tt)* }) => {
+        $crate::__json_read_transparent_impls!([$($rgen)*] [$($wgen)*] $ty { $($body)* });
+        $crate::__json_write_transparent_impls!([$($rgen)*] [$($wgen)*] $ty { $($body)* });
+    };
+}
+
+/// The read half of a transparent declaration, which is the field's own read.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __json_read_transparent_impls {
+    ([$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty { $field:tt $(as $with:ty)? }) => {
+        impl<$de $($rgen)*> $crate::json::Read<$de> for $ty {
+            // Small enough to be worth forcing into the caller, unlike a
+            // struct's read: the body is one call.
+            #[inline(always)]
+            fn read<O: $crate::Options>(
+                &mut self,
+                p: &mut $crate::json::Parser<$de, O>,
+            ) -> ::core::result::Result<(), $crate::ErrorCode> {
+                $crate::__json_read_as!(&mut self.$field, p $(, $with)?)
+            }
+        }
+    };
+}
+
+/// The write half, which `transparent!(write_only ..)` emits by itself.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __json_write_transparent_impls {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty { $field:tt $(as $with:ty)? }) => {
+        impl<$($wgen)*> $crate::json::Write for $ty {
+            #[inline(always)]
+            fn write<O: $crate::Options>(&self, w: &mut $crate::json::Writer<'_, O>) {
+                $crate::__json_write_as!(&self.$field, w $(, $with)?);
+            }
+
+            // Forwarded, so a wrapper around an `Option` is absent under
+            // `SkipNull` for the reason the bare `Option` is: on the wire the
+            // wrapper is its field and nothing else.
+            #[inline(always)]
+            fn is_null(&self) -> bool {
+                $crate::__json_is_null_as!(&self.$field $(, $with)?)
+            }
+        }
+    };
+}
+
+/// [`__json_transparent_impls!`](crate::__json_transparent_impls) for BEVE.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __beve_transparent_impls {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty { $($body:tt)* }) => {
+        $crate::__beve_read_transparent_impls!([$($rgen)*] [$($wgen)*] $ty { $($body)* });
+        $crate::__beve_write_transparent_impls!([$($rgen)*] [$($wgen)*] $ty { $($body)* });
+    };
+}
+
+/// The read half of a transparent BEVE declaration.
+///
+/// [`read_bulk`](crate::beve::Read::read_bulk) is deliberately left at its
+/// default, which declines: it copies a run of payload straight into a
+/// `[Self]`, and that is sound only where the wrapper is laid out exactly as
+/// what it wraps. A declaration cannot see whether `#[repr(transparent)]` says
+/// so, and declining costs a `Vec` of them the one-copy path and nothing else.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __beve_read_transparent_impls {
+    ([$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] $ty:ty { $field:tt $(as $with:ty)? }) => {
+        impl<$de $($rgen)*> $crate::beve::Read<$de> for $ty {
+            #[inline(always)]
+            fn read<O: $crate::Options>(
+                &mut self,
+                r: &mut $crate::beve::Reader<$de, O>,
+            ) -> ::core::result::Result<(), $crate::ErrorCode> {
+                $crate::__beve_read_as!(&mut self.$field, r $(, $with)?)
+            }
+        }
+    };
+}
+
+/// The write half, which `beve_transparent!(write_only ..)` emits by itself.
+///
+/// [`ARRAY`](crate::beve::Write::ARRAY) stays `None` for
+/// [`__beve_read_transparent_impls!`](crate::__beve_read_transparent_impls)'s
+/// reason: naming an array obliges `write_payload` to emit that array's
+/// payload out of a `[Self]`, which is the same layout assumption from the
+/// other side.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __beve_write_transparent_impls {
+    ([$($rgen:tt)*] [$($wgen:tt)*] $ty:ty { $field:tt $(as $with:ty)? }) => {
+        impl<$($wgen)*> $crate::beve::Write for $ty {
+            #[inline(always)]
+            fn write<O: $crate::Options>(&self, w: &mut $crate::beve::Writer<'_, O>) {
+                $crate::__beve_write_as!(&self.$field, w $(, $with)?);
+            }
+
+            #[inline(always)]
+            fn is_null(&self) -> bool {
+                $crate::__beve_is_null_as!(&self.$field $(, $with)?)
+            }
+        }
+    };
 }
 
 /// [`__declare!`](crate::__declare) for the array forms.
@@ -1739,7 +2216,24 @@ macro_rules! __beve_write_array_body {
 /// # assert_eq!(structio::to_string(&Level::Info), "\"info\"");
 /// ```
 ///
-/// A [case rule](crate::case) renames the lot at once, and reads a variant
+/// A variant may answer to more than one name, written after it and separated
+/// by `|`, exactly as an [`object!`] field's aliases are. The declared name is
+/// the one written, and any of them is accepted on read, which is what renames
+/// a variant without breaking the documents already written under the old
+/// name.
+///
+/// ```
+/// # #[derive(Default, PartialEq, Debug)]
+/// # enum Level { #[default] Info, Warning }
+/// structio::unit_enum!(Level {
+///     "info" => Info | "INFO",
+///     "warning" => Warning | "warn",
+/// });
+/// # assert_eq!(structio::from_str::<Level>("\"warn\"").unwrap(), Level::Warning);
+/// # assert_eq!(structio::to_string(&Level::Warning), "\"warning\"");
+/// ```
+///
+/// /// A [case rule](crate::case) renames the lot at once, and reads a variant
 /// name as words rather than as a snake_case string, so the capitals a Rust
 /// variant is spelled with are where it splits.
 ///
@@ -1887,8 +2381,8 @@ macro_rules! __beve_write_array_body {
 macro_rules! unit_enum {
     (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
     (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
-    (write_only $($t:tt)*) => { $crate::__unit_enum!(__both_write_unit_enum_impls $($t)*); };
-    ($($t:tt)*) => { $crate::__unit_enum!(__both_unit_enum_impls $($t)*); };
+    (write_only $($t:tt)*) => { $crate::__unit_enum!([write] __both_write_unit_enum_impls $($t)*); };
+    ($($t:tt)*) => { $crate::__unit_enum!([both] __both_unit_enum_impls $($t)*); };
 }
 
 /// The arms of [`unit_enum!`](crate::unit_enum), with the impls it asked for
@@ -1904,37 +2398,38 @@ macro_rules! __unit_enum {
     // Generics take a rule of their own rather than an optional group, because
     // a type may itself begin with `[` and the parser cannot tell which is
     // meant until it has committed.
-    ($m:ident [$($gen:tt)*] $ty:ty as $case:tt { $($($name:literal =>)? $variant:ident),* $(,)? }) => {
+    ([$dir:tt] $m:ident [$($gen:tt)*] $ty:ty as $case:tt { $($($name:literal =>)? $variant:ident $(| $valias:literal)*),* $(,)? }) => {
         $crate::__declare_enum!(
-            $m [$($gen)*] $ty as $case { $($($name =>)? $variant),* }
+            [$dir] $m [$($gen)*] $ty as $case { $($($name =>)? $variant $(| $valias)*),* }
         );
     };
-    ($m:ident [$($gen:tt)*] $ty:ty { $($($name:literal =>)? $variant:ident),* $(,)? }) => {
+    ([$dir:tt] $m:ident [$($gen:tt)*] $ty:ty { $($($name:literal =>)? $variant:ident $(| $valias:literal)*),* $(,)? }) => {
         $crate::__declare_enum!(
-            $m [$($gen)*] $ty { $($($name =>)? $variant),* }
+            [$dir] $m [$($gen)*] $ty { $($($name =>)? $variant $(| $valias)*),* }
         );
     };
-    ($m:ident $ty:ty as $case:tt { $($($name:literal =>)? $variant:ident),* $(,)? }) => {
+    ([$dir:tt] $m:ident $ty:ty as $case:tt { $($($name:literal =>)? $variant:ident $(| $valias:literal)*),* $(,)? }) => {
         $crate::__declare_enum!(
-            $m $ty as $case { $($($name =>)? $variant),* }
+            [$dir] $m $ty as $case { $($($name =>)? $variant $(| $valias)*),* }
         );
     };
-    ($m:ident $ty:ty { $($($name:literal =>)? $variant:ident),* $(,)? }) => {
+    ([$dir:tt] $m:ident $ty:ty { $($($name:literal =>)? $variant:ident $(| $valias:literal)*),* $(,)? }) => {
         $crate::__declare_enum!(
-            $m $ty { $($($name =>)? $variant),* }
+            [$dir] $m $ty { $($($name =>)? $variant $(| $valias)*),* }
         );
     };
     // Anything else, which is overwhelmingly a variant written `Name(_)`, and
     // after that a tag clause. Without this the failure is `no rules expected
     // `(`` pointed at a matcher inside this crate, which tells the reader
     // nothing about what to do.
-    ($m:ident $($rest:tt)*) => {
+    ([$dir:tt] $m:ident $($rest:tt)*) => {
         ::core::compile_error!(
             "`unit_enum!` takes a type and a brace-delimited list of variant \
-             names, each optionally renamed with `\"name\" => Variant`. A \
-             variant that carries a value, written `Variant(_)`, belongs to \
-             `tagged_enum!` instead, and so does a tag clause: a unit enum's \
-             value is a bare name, with no object for a tag to go in."
+             names, each optionally renamed with `\"name\" => Variant` and \
+             aliased with `Variant | \"other\"`. A variant that carries a \
+             value, written `Variant(_)`, belongs to `tagged_enum!` instead, \
+             and so does a tag clause: a unit enum's value is a bare name, \
+             with no object for a tag to go in."
         );
     };
 }
@@ -1985,9 +2480,10 @@ macro_rules! __unit_enum {
 /// );
 /// ```
 ///
-/// Names are renamed the same way a field is, they take a
-/// [case rule](crate::case) the same way, and generics go in brackets before
-/// the type, exactly as for [`object!`]:
+/// Names are renamed the same way a field is, they take aliases the same way
+/// with `Variant | "other_name"`, they take a [case rule](crate::case) the
+/// same way, and generics go in brackets before the type, exactly as for
+/// [`object!`]:
 ///
 /// ```
 /// # #[derive(Default, PartialEq, Debug)]
@@ -2137,8 +2633,8 @@ macro_rules! __unit_enum {
 macro_rules! tagged_enum {
     (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
     (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
-    (write_only $($t:tt)*) => { $crate::__declare_enum!(__both_write_enum_impls $($t)*); };
-    ($($t:tt)*) => { $crate::__declare_enum!(__both_enum_impls $($t)*); };
+    (write_only $($t:tt)*) => { $crate::__declare_enum!([write] __both_write_enum_impls $($t)*); };
+    ($($t:tt)*) => { $crate::__declare_enum!([both] __both_enum_impls $($t)*); };
 }
 
 /// Declare an enum for JSON alone.
@@ -2149,8 +2645,8 @@ macro_rules! tagged_enum {
 macro_rules! json_tagged_enum {
     (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
     (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
-    (write_only $($t:tt)*) => { $crate::__declare_enum!(__json_write_enum_impls $($t)*); };
-    ($($t:tt)*) => { $crate::__declare_enum!(__json_enum_impls $($t)*); };
+    (write_only $($t:tt)*) => { $crate::__declare_enum!([write] __json_write_enum_impls $($t)*); };
+    ($($t:tt)*) => { $crate::__declare_enum!([both] __json_enum_impls $($t)*); };
 }
 
 /// Declare an enum for BEVE alone.
@@ -2161,8 +2657,8 @@ macro_rules! json_tagged_enum {
 macro_rules! beve_tagged_enum {
     (write_only :: $($t:tt)*) => { $crate::__write_only_is_the_marker!(); };
     (read_only $($t:tt)*) => { $crate::__no_read_only!(); };
-    (write_only $($t:tt)*) => { $crate::__declare_enum!(__beve_write_enum_impls $($t)*); };
-    ($($t:tt)*) => { $crate::__declare_enum!(__beve_enum_impls $($t)*); };
+    (write_only $($t:tt)*) => { $crate::__declare_enum!([write] __beve_write_enum_impls $($t)*); };
+    ($($t:tt)*) => { $crate::__declare_enum!([both] __beve_enum_impls $($t)*); };
 }
 
 /// [`__declare!`](crate::__declare) for the enum forms.
@@ -2186,44 +2682,44 @@ macro_rules! beve_tagged_enum {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __declare_enum {
-    ($m:ident [ $de:lifetime $($gen:tt)* ] $ty:ty as tag $tag:literal { $($body:tt)* }) => {
+    ([$dir:tt] $m:ident [ $de:lifetime $($gen:tt)* ] $ty:ty as tag $tag:literal { $($body:tt)* }) => {
         $crate::__declared_enum!(
-            $m [$de $($gen)*] [$de $($gen)*] [_] [$tag] $ty { $($body)* });
+            [$dir] $m [$de $($gen)*] [$de $($gen)*] [_] [$tag] $ty { $($body)* });
     };
-    ($m:ident [ $de:lifetime $($gen:tt)* ] $ty:ty as $case:tt tag $tag:literal { $($body:tt)* }) => {
+    ([$dir:tt] $m:ident [ $de:lifetime $($gen:tt)* ] $ty:ty as $case:tt tag $tag:literal { $($body:tt)* }) => {
         $crate::__declared_enum!(
-            $m [$de $($gen)*] [$de $($gen)*] [$case] [$tag] $ty { $($body)* });
+            [$dir] $m [$de $($gen)*] [$de $($gen)*] [$case] [$tag] $ty { $($body)* });
     };
-    ($m:ident [ $de:lifetime $($gen:tt)* ] $ty:ty as $case:tt { $($body:tt)* }) => {
-        $crate::__declared_enum!($m [$de $($gen)*] [$de $($gen)*] [$case] [] $ty { $($body)* });
+    ([$dir:tt] $m:ident [ $de:lifetime $($gen:tt)* ] $ty:ty as $case:tt { $($body:tt)* }) => {
+        $crate::__declared_enum!([$dir] $m [$de $($gen)*] [$de $($gen)*] [$case] [] $ty { $($body)* });
     };
-    ($m:ident [ $de:lifetime $($gen:tt)* ] $ty:ty { $($body:tt)* }) => {
-        $crate::__declared_enum!($m [$de $($gen)*] [$de $($gen)*] [_] [] $ty { $($body)* });
+    ([$dir:tt] $m:ident [ $de:lifetime $($gen:tt)* ] $ty:ty { $($body:tt)* }) => {
+        $crate::__declared_enum!([$dir] $m [$de $($gen)*] [$de $($gen)*] [_] [] $ty { $($body)* });
     };
-    ($m:ident [ $($gen:tt)* ] $ty:ty as tag $tag:literal { $($body:tt)* }) => {
-        $crate::__declared_enum!($m ['de, $($gen)*] [$($gen)*] [_] [$tag] $ty { $($body)* });
+    ([$dir:tt] $m:ident [ $($gen:tt)* ] $ty:ty as tag $tag:literal { $($body:tt)* }) => {
+        $crate::__declared_enum!([$dir] $m ['de, $($gen)*] [$($gen)*] [_] [$tag] $ty { $($body)* });
     };
-    ($m:ident [ $($gen:tt)* ] $ty:ty as $case:tt tag $tag:literal { $($body:tt)* }) => {
+    ([$dir:tt] $m:ident [ $($gen:tt)* ] $ty:ty as $case:tt tag $tag:literal { $($body:tt)* }) => {
         $crate::__declared_enum!(
-            $m ['de, $($gen)*] [$($gen)*] [$case] [$tag] $ty { $($body)* });
+            [$dir] $m ['de, $($gen)*] [$($gen)*] [$case] [$tag] $ty { $($body)* });
     };
-    ($m:ident [ $($gen:tt)* ] $ty:ty as $case:tt { $($body:tt)* }) => {
-        $crate::__declared_enum!($m ['de, $($gen)*] [$($gen)*] [$case] [] $ty { $($body)* });
+    ([$dir:tt] $m:ident [ $($gen:tt)* ] $ty:ty as $case:tt { $($body:tt)* }) => {
+        $crate::__declared_enum!([$dir] $m ['de, $($gen)*] [$($gen)*] [$case] [] $ty { $($body)* });
     };
-    ($m:ident [ $($gen:tt)* ] $ty:ty { $($body:tt)* }) => {
-        $crate::__declared_enum!($m ['de, $($gen)*] [$($gen)*] [_] [] $ty { $($body)* });
+    ([$dir:tt] $m:ident [ $($gen:tt)* ] $ty:ty { $($body:tt)* }) => {
+        $crate::__declared_enum!([$dir] $m ['de, $($gen)*] [$($gen)*] [_] [] $ty { $($body)* });
     };
-    ($m:ident $ty:ty as tag $tag:literal { $($body:tt)* }) => {
-        $crate::__declared_enum!($m ['de] [] [_] [$tag] $ty { $($body)* });
+    ([$dir:tt] $m:ident $ty:ty as tag $tag:literal { $($body:tt)* }) => {
+        $crate::__declared_enum!([$dir] $m ['de] [] [_] [$tag] $ty { $($body)* });
     };
-    ($m:ident $ty:ty as $case:tt tag $tag:literal { $($body:tt)* }) => {
-        $crate::__declared_enum!($m ['de] [] [$case] [$tag] $ty { $($body)* });
+    ([$dir:tt] $m:ident $ty:ty as $case:tt tag $tag:literal { $($body:tt)* }) => {
+        $crate::__declared_enum!([$dir] $m ['de] [] [$case] [$tag] $ty { $($body)* });
     };
-    ($m:ident $ty:ty as $case:tt { $($body:tt)* }) => {
-        $crate::__declared_enum!($m ['de] [] [$case] [] $ty { $($body)* });
+    ([$dir:tt] $m:ident $ty:ty as $case:tt { $($body:tt)* }) => {
+        $crate::__declared_enum!([$dir] $m ['de] [] [$case] [] $ty { $($body)* });
     };
-    ($m:ident $ty:ty { $($body:tt)* }) => {
-        $crate::__declared_enum!($m ['de] [] [_] [] $ty { $($body)* });
+    ([$dir:tt] $m:ident $ty:ty { $($body:tt)* }) => {
+        $crate::__declared_enum!([$dir] $m ['de] [] [_] [] $ty { $($body)* });
     };
 }
 
@@ -2236,18 +2732,22 @@ macro_rules! __declare_enum {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __declared_enum {
-    ($m:ident [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty { $($body:tt)* }) => {
-        $crate::__case_check!($case);
-        $crate::__variants_impl!([$($wgen)*] [$case] $ty { $($body)* });
-        $crate::$m!([$($rgen)*] [$($wgen)*] [$case] [] $ty { $($body)* });
-    };
     (
-        $m:ident [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty {
+        [$dir:tt] $m:ident [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
             $($body:tt)*
         }
     ) => {
         $crate::__case_check!($case);
-        $crate::__variants_impl!([$($wgen)*] [$case] $ty { $($body)* });
+        $crate::__variants_impl!([$($wgen)*] [$case] [$dir] $ty { $($body)* });
+        $crate::$m!([$($rgen)*] [$($wgen)*] [$case] [] $ty { $($body)* });
+    };
+    (
+        [$dir:tt] $m:ident [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty {
+            $($body:tt)*
+        }
+    ) => {
+        $crate::__case_check!($case);
+        $crate::__variants_impl!([$($wgen)*] [$case] [$dir] $ty { $($body)* });
         $crate::__tag_check!([$($wgen)*] [$tag] $ty { $($body)* });
         $crate::$m!([$($rgen)*] [$($wgen)*] [$case] [$tag] $ty { $($body)* });
     };
@@ -2314,7 +2814,7 @@ macro_rules! __both_write_enum_impls {
 macro_rules! __tag_check {
     (
         [] [$tag:literal] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         $( $crate::__tag_check_one!([$tag] $ty, $variant $(($($payload)*))?); )*
@@ -2349,7 +2849,7 @@ macro_rules! __tag_check_generic {
     ([] [$tag:literal] { $($body:tt)* }) => {};
     (
         [$($wgen:tt)+] [$tag:literal] {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         $( $crate::__tag_check_generic_one!([$tag] $variant $(($($payload)*))?); )*
@@ -2397,17 +2897,46 @@ macro_rules! __payload_is_wildcard {
 #[macro_export]
 macro_rules! __variants_impl {
     (
-        [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+        [$($wgen:tt)*] [$case:tt] [$dir:tt] $ty:ty {
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         $crate::__each_name_once!($($variant),*);
         $( $crate::__payload_is_wildcard!($($($payload)*)?); )*
 
         impl<$($wgen)*> $crate::Variants for $ty {
+            // The variants first, in declaration order, then every alias,
+            // which is the layout `Keys::KEYS` has and the order
+            // [`Variants::ALIASES`](crate::Variants::ALIASES) is indexed
+            // against.
             const VARIANTS: &'static [&'static str] = &[
-                $( $crate::__json_key!([$case] $($name)? [$variant]) ),*
+                $( $crate::__json_key!([$case] $($name)? [$variant]), )*
+                $( $( $valias, )* )*
             ];
+
+            // `Keys::ALIASES`'s counterpart, built the same way and for the
+            // same reason; an alias is spelled out, so no case rule touches it.
+            #[allow(unused_assignments, unused_mut)]
+            const ALIASES: &'static [u8] = &{
+                let mut of = [0u8; 0 $( $( + $crate::__counts_one!($valias) )* )*];
+                let mut j = 0usize;
+                let mut v = 0usize;
+                $(
+                    $(
+                        assert!(
+                            v <= u8::MAX as usize,
+                            "an aliased variant must be one of the first 256 \
+                             declared: the variant an alias names is a u8"
+                        );
+                        of[j] = v as u8;
+                        j += 1;
+                        $crate::__alias_direction!([$dir] name $valias);
+                    )*
+                    v += 1;
+                )*
+                of
+            };
+
             // Built from `Self::VARIANTS`, and promoted to an anonymous static,
             // for the reasons `Keys::MAP` is.
             const MAP: &'static $crate::KeyMap = &$crate::KeyMap::build(Self::VARIANTS);
@@ -2439,7 +2968,7 @@ macro_rules! __json_read_enum_impls {
     };
     (
         [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         impl<$de $($rgen)*> $crate::json::ReadEnum<$de> for $ty {
@@ -2459,7 +2988,7 @@ macro_rules! __json_read_enum_impls {
                     if index == i {
                         return $crate::__json_read_name!(
                             self, p,
-                            $crate::__json_key!([$case] $($name)? [$variant]),
+                            [$crate::__json_key!([$case] $($name)? [$variant]) $(, $valias)*],
                             $variant $(($($payload)*))?
                         );
                     }
@@ -2480,7 +3009,7 @@ macro_rules! __json_read_enum_impls {
                     if index == i {
                         return $crate::__json_read_payload!(
                             self, p,
-                            $crate::__json_key!([$case] $($name)? [$variant]),
+                            [$crate::__json_key!([$case] $($name)? [$variant]) $(, $valias)*],
                             $variant $(($($payload)*))?
                         );
                     }
@@ -2516,7 +3045,7 @@ macro_rules! __json_write_enum_impls {
     };
     (
         [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         impl<$($wgen)*> $crate::json::Write for $ty {
@@ -2560,8 +3089,8 @@ macro_rules! __json_write_enum_impls {
 #[macro_export]
 macro_rules! __json_read_name {
     // Carries nothing, so the name is the whole value.
-    ($self:ident, $p:ident, $name:expr, $variant:ident) => {
-        if $p.match_key($name) {
+    ($self:ident, $p:ident, [$($name:expr),+], $variant:ident) => {
+        if $( $p.match_key($name) )||+ {
             *$self = Self::$variant;
             ::core::result::Result::Ok(true)
         } else {
@@ -2571,8 +3100,8 @@ macro_rules! __json_read_name {
     // Carries a value, which the bare form has nowhere to put. The name was
     // recognized, so this is not an unknown variant: what is missing is the
     // object that would have held the value.
-    ($self:ident, $p:ident, $name:expr, $variant:ident ($($payload:tt)*)) => {
-        if $p.match_key($name) {
+    ($self:ident, $p:ident, [$($name:expr),+], $variant:ident ($($payload:tt)*)) => {
+        if $( $p.match_key($name) )||+ {
             ::core::result::Result::Err($crate::ErrorCode::ExpectedBrace)
         } else {
             ::core::result::Result::Ok(false)
@@ -2586,8 +3115,8 @@ macro_rules! __json_read_name {
 macro_rules! __json_read_payload {
     // Carries nothing. Written as a bare name, but accepted here as well, so a
     // producer that always writes the object form round-trips.
-    ($self:ident, $p:ident, $name:expr, $variant:ident) => {
-        if $p.match_key($name) {
+    ($self:ident, $p:ident, [$($name:expr),+], $variant:ident) => {
+        if $( $p.match_key($name) )||+ {
             $p.colon()?;
             if $p.try_null()? {
                 *$self = Self::$variant;
@@ -2602,8 +3131,8 @@ macro_rules! __json_read_payload {
             ::core::result::Result::Ok(false)
         }
     };
-    ($self:ident, $p:ident, $name:expr, $variant:ident ($($payload:tt)*)) => {
-        if $p.match_key($name) {
+    ($self:ident, $p:ident, [$($name:expr),+], $variant:ident ($($payload:tt)*)) => {
+        if $( $p.match_key($name) )||+ {
             $p.colon()?;
             // Read into what is already there when it is already this variant,
             // so a payload's buffers survive the read the way a struct field's
@@ -2632,7 +3161,7 @@ macro_rules! __json_read_payload {
 macro_rules! __json_read_internal_enum_impls {
     (
         [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         impl<$de $($rgen)*> $crate::json::ReadInternallyTagged<$de> for $ty {
@@ -2655,7 +3184,7 @@ macro_rules! __json_read_internal_enum_impls {
                     if index == i {
                         return $crate::__json_read_internal!(
                             self, p, open,
-                            $crate::__json_key!([$case] $($name)? [$variant]),
+                            [$crate::__json_key!([$case] $($name)? [$variant]) $(, $valias)*],
                             $variant $(($($payload)*))?
                         );
                     }
@@ -2685,7 +3214,7 @@ macro_rules! __json_read_internal_enum_impls {
 macro_rules! __json_write_internal_enum_impls {
     (
         [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         impl<$($wgen)*> $crate::json::Write for $ty {
@@ -2700,7 +3229,7 @@ macro_rules! __json_write_internal_enum_impls {
                 const {
                     let _ = <Self as $crate::Variants>::MAP;
                     $crate::__tag_check_generic!([$($wgen)*] [$tag] {
-                        $($($name =>)? $variant $(($($payload)*))?),*
+                        $($($name =>)? $variant $(($($payload)*))? $(| $valias)*),*
                     });
                 };
                 $(
@@ -2735,8 +3264,8 @@ macro_rules! __json_write_internal_enum_impls {
 macro_rules! __json_read_internal {
     // Carries nothing, so the tag was the object's whole content. Members
     // beside it are unknown ones and meet the policy that governs those.
-    ($self:ident, $p:ident, $open:ident, $name:expr, $variant:ident) => {
-        if $p.match_key($name) {
+    ($self:ident, $p:ident, $open:ident, [$($name:expr),+], $variant:ident) => {
+        if $( $p.match_key($name) )||+ {
             // Assigned after the object is consumed, not before, so a read
             // that fails on a member beside the tag leaves the destination
             // holding what it held.
@@ -2748,8 +3277,8 @@ macro_rules! __json_read_internal {
         }
     };
     // Carries a value, whose members share the object with the tag.
-    ($self:ident, $p:ident, $open:ident, $name:expr, $variant:ident ($($payload:tt)*)) => {
-        if $p.match_key($name) {
+    ($self:ident, $p:ident, $open:ident, [$($name:expr),+], $variant:ident ($($payload:tt)*)) => {
+        if $( $p.match_key($name) )||+ {
             // Reading into what is already there, for
             // `__json_read_payload!`'s reason.
             match $self {
@@ -2775,7 +3304,7 @@ macro_rules! __json_read_internal {
 macro_rules! __beve_read_internal_enum_impls {
     (
         [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         impl<$de $($rgen)*> $crate::beve::ReadInternallyTagged<$de> for $ty {
@@ -2796,7 +3325,7 @@ macro_rules! __beve_read_internal_enum_impls {
                     if index == i {
                         return $crate::__beve_read_internal!(
                             self, name, r, remaining, open,
-                            $crate::__json_key!([$case] $($name)? [$variant]),
+                            [$crate::__json_key!([$case] $($name)? [$variant]) $(, $valias)*],
                             $variant $(($($payload)*))?
                         );
                     }
@@ -2825,7 +3354,7 @@ macro_rules! __beve_read_internal_enum_impls {
 macro_rules! __beve_write_internal_enum_impls {
     (
         [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [$tag:literal] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         impl<$($wgen)*> $crate::beve::Write for $ty {
@@ -2835,7 +3364,7 @@ macro_rules! __beve_write_internal_enum_impls {
                 const {
                     let _ = <Self as $crate::Variants>::MAP;
                     $crate::__tag_check_generic!([$($wgen)*] [$tag] {
-                        $($($name =>)? $variant $(($($payload)*))?),*
+                        $($($name =>)? $variant $(($($payload)*))? $(| $valias)*),*
                     });
                 };
                 $(
@@ -2856,8 +3385,8 @@ macro_rules! __beve_write_internal_enum_impls {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __beve_read_internal {
-    ($self:ident, $key:ident, $r:ident, $remaining:ident, $open:ident, $name:expr, $variant:ident) => {
-        if $key == $name.as_bytes() {
+    ($self:ident, $key:ident, $r:ident, $remaining:ident, $open:ident, [$($name:expr),+], $variant:ident) => {
+        if $( $key == $name.as_bytes() )||+ {
             // Assigned after the object is consumed, for the JSON arm's reason.
             $r.finish_internally_tagged($remaining)?;
             *$self = Self::$variant;
@@ -2867,10 +3396,10 @@ macro_rules! __beve_read_internal {
         }
     };
     (
-        $self:ident, $key:ident, $r:ident, $remaining:ident, $open:ident, $name:expr,
-        $variant:ident ($($payload:tt)*)
+        $self:ident, $key:ident, $r:ident, $remaining:ident, $open:ident,
+        [$($name:expr),+], $variant:ident ($($payload:tt)*)
     ) => {
-        if $key == $name.as_bytes() {
+        if $( $key == $name.as_bytes() )||+ {
             match $self {
                 Self::$variant(v) => {
                     $r.read_object_rest(v, $remaining, $open)?;
@@ -2961,7 +3490,7 @@ macro_rules! __beve_read_enum_impls {
     };
     (
         [$de:lifetime $($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         impl<$de $($rgen)*> $crate::beve::ReadEnum<$de> for $ty {
@@ -2977,7 +3506,7 @@ macro_rules! __beve_read_enum_impls {
                     if index == i {
                         return $crate::__beve_read_name!(
                             self, name,
-                            $crate::__json_key!([$case] $($name)? [$variant]),
+                            [$crate::__json_key!([$case] $($name)? [$variant]) $(, $valias)*],
                             $variant $(($($payload)*))?
                         );
                     }
@@ -2999,7 +3528,7 @@ macro_rules! __beve_read_enum_impls {
                     if index == i {
                         return $crate::__beve_read_payload!(
                             self, name, r,
-                            $crate::__json_key!([$case] $($name)? [$variant]),
+                            [$crate::__json_key!([$case] $($name)? [$variant]) $(, $valias)*],
                             $variant $(($($payload)*))?
                         );
                     }
@@ -3034,11 +3563,11 @@ macro_rules! __beve_write_enum_impls {
     };
     (
         [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] [] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         }
     ) => {
         $crate::__beve_write_enum_body!([$($rgen)*] [$($wgen)*] [$case] $ty {
-            $($($name =>)? $variant $(($($payload)*))?),*
+            $($($name =>)? $variant $(($($payload)*))? $(| $valias)*),*
         } {});
     };
 }
@@ -3061,14 +3590,14 @@ macro_rules! __beve_write_enum_impls {
 macro_rules! __beve_unit_enum_impls {
     (
         [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($($name:literal =>)? $variant:ident),* $(,)?
+            $($($name:literal =>)? $variant:ident $(| $valias:literal)*),* $(,)?
         }
     ) => {
         $crate::__beve_read_enum_impls!([$($rgen)*] [$($wgen)*] [$case] [] $ty {
-            $($($name =>)? $variant),*
+            $($($name =>)? $variant $(| $valias)*),*
         });
         $crate::__beve_write_unit_enum_impls!([$($rgen)*] [$($wgen)*] [$case] $ty {
-            $($($name =>)? $variant),*
+            $($($name =>)? $variant $(| $valias)*),*
         });
     };
 }
@@ -3079,11 +3608,11 @@ macro_rules! __beve_unit_enum_impls {
 macro_rules! __beve_write_unit_enum_impls {
     (
         [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($($name:literal =>)? $variant:ident),* $(,)?
+            $($($name:literal =>)? $variant:ident $(| $valias:literal)*),* $(,)?
         }
     ) => {
         $crate::__beve_write_enum_body!([$($rgen)*] [$($wgen)*] [$case] $ty {
-            $($($name =>)? $variant),*
+            $($($name =>)? $variant $(| $valias)*),*
         } {
             const ARRAY: ::core::option::Option<&'static [u8]> =
                 ::core::option::Option::Some(&[$crate::beve::header::STRING_ARRAY]);
@@ -3117,7 +3646,7 @@ macro_rules! __beve_write_unit_enum_impls {
 macro_rules! __beve_write_enum_body {
     (
         [$($rgen:tt)*] [$($wgen:tt)*] [$case:tt] $ty:ty {
-            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))?),* $(,)?
+            $($($name:literal =>)? $variant:ident $(($($payload:tt)*))? $(| $valias:literal)*),* $(,)?
         } { $($typed:tt)* }
     ) => {
         impl<$($wgen)*> $crate::beve::Write for $ty {
@@ -3156,16 +3685,16 @@ macro_rules! __beve_write_enum_body {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __beve_read_name {
-    ($self:ident, $key:ident, $name:expr, $variant:ident) => {
-        if $key == $name.as_bytes() {
+    ($self:ident, $key:ident, [$($name:expr),+], $variant:ident) => {
+        if $( $key == $name.as_bytes() )||+ {
             *$self = Self::$variant;
             ::core::result::Result::Ok(true)
         } else {
             ::core::result::Result::Ok(false)
         }
     };
-    ($self:ident, $key:ident, $name:expr, $variant:ident ($($payload:tt)*)) => {
-        if $key == $name.as_bytes() {
+    ($self:ident, $key:ident, [$($name:expr),+], $variant:ident ($($payload:tt)*)) => {
+        if $( $key == $name.as_bytes() )||+ {
             ::core::result::Result::Err($crate::ErrorCode::ExpectedObject)
         } else {
             ::core::result::Result::Ok(false)
@@ -3177,8 +3706,8 @@ macro_rules! __beve_read_name {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __beve_read_payload {
-    ($self:ident, $key:ident, $r:ident, $name:expr, $variant:ident) => {
-        if $key == $name.as_bytes() {
+    ($self:ident, $key:ident, $r:ident, [$($name:expr),+], $variant:ident) => {
+        if $( $key == $name.as_bytes() )||+ {
             if $r.try_null()? {
                 *$self = Self::$variant;
                 ::core::result::Result::Ok(true)
@@ -3189,8 +3718,8 @@ macro_rules! __beve_read_payload {
             ::core::result::Result::Ok(false)
         }
     };
-    ($self:ident, $key:ident, $r:ident, $name:expr, $variant:ident ($($payload:tt)*)) => {
-        if $key == $name.as_bytes() {
+    ($self:ident, $key:ident, $r:ident, [$($name:expr),+], $variant:ident ($($payload:tt)*)) => {
+        if $( $key == $name.as_bytes() )||+ {
             match $self {
                 Self::$variant(v) => {
                     $crate::beve::Read::read(v, $r)?;

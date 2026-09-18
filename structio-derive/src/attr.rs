@@ -23,6 +23,7 @@ pub(crate) struct Container {
     pub(crate) tag: Option<Literal>,
     pub(crate) array: Option<Span>,
     pub(crate) element: Option<Literal>,
+    pub(crate) transparent: Option<Span>,
     pub(crate) format: Format,
     pub(crate) write_only: Option<Span>,
     pub(crate) krate: Option<Literal>,
@@ -30,6 +31,7 @@ pub(crate) struct Container {
 
 pub(crate) struct FieldOpts {
     pub(crate) rename: Option<Literal>,
+    pub(crate) aliases: Vec<Literal>,
     pub(crate) skip: Option<Span>,
     pub(crate) required: Option<Span>,
     pub(crate) with: Option<Literal>,
@@ -37,6 +39,7 @@ pub(crate) struct FieldOpts {
 
 pub(crate) struct VariantOpts {
     pub(crate) rename: Option<Literal>,
+    pub(crate) aliases: Vec<Literal>,
 }
 
 /// The case rules `structio::case` accepts, spelled as the macros spell them.
@@ -58,7 +61,7 @@ const CASES: &[&str] = &[
 /// hunting for a typo.
 fn stage_of(name: &str) -> Option<u8> {
     match name {
-        "content" | "alias" | "transparent" => Some(2),
+        "content" => Some(2),
         "default" | "skip_if" | "skip_read" | "skip_write" => Some(3),
         _ => None,
     }
@@ -68,8 +71,8 @@ fn unknown(meta: &Meta, place: &str, accepted: &str) -> Error {
     let name = meta.name.to_string();
     let message = match stage_of(&name) {
         Some(stage) => format!(
-            "`{name}` is a stage {stage} attribute and this derive implements \
-             stage 1; see docs/derive.md for what each stage adds"
+            "`{name}` is a stage {stage} attribute and this derive does not \
+             implement it yet; see docs/derive.md for what each stage adds"
         ),
         None => {
             format!("unknown attribute `{name}` on {place}; the attributes here are {accepted}")
@@ -142,6 +145,7 @@ pub(crate) fn container(metas: &[Meta], is_enum: bool) -> Result<Container> {
         tag: None,
         array: None,
         element: None,
+        transparent: None,
         format: Format::Both,
         write_only: None,
         krate: None,
@@ -155,8 +159,8 @@ pub(crate) fn container(metas: &[Meta], is_enum: bool) -> Result<Container> {
     } else {
         (
             "a struct",
-            "`rename_all`, `array`, `element`, `json`, `beve`, `write_only` \
-             and `crate`",
+            "`rename_all`, `array`, `element`, `transparent`, `json`, `beve`, \
+             `write_only` and `crate`",
         )
     };
     for meta in metas {
@@ -189,11 +193,21 @@ pub(crate) fn container(metas: &[Meta], is_enum: bool) -> Result<Container> {
             }
             "array" if !is_enum => once(&mut out.array, meta, flag(meta)?)?,
             "element" if !is_enum => once(&mut out.element, meta, string(meta)?)?,
+            "transparent" if !is_enum => once(&mut out.transparent, meta, flag(meta)?)?,
             "array" | "element" => {
                 return Err(Error::new(
                     meta.name.span(),
                     "`array` declares a struct's fields by position; an enum \
                      is written as its variant's name",
+                ));
+            }
+            "transparent" => {
+                return Err(Error::new(
+                    meta.name.span(),
+                    "`transparent` writes a struct as the one field it holds; \
+                     an enum is written as its variant's name, and a variant \
+                     that carries a value already writes that value and \
+                     nothing around it but the tag",
                 ));
             }
             "json" | "beve" => {
@@ -233,12 +247,36 @@ pub(crate) fn container(metas: &[Meta], is_enum: bool) -> Result<Container> {
              to convert",
         ));
     }
+    if let Some(at) = out.transparent {
+        // Each of these describes the container a transparent struct does not
+        // have. Reported at `transparent` rather than at the other attribute,
+        // since it is the one that decided there is no container.
+        let other = [
+            out.array.map(|_| "array"),
+            out.element.as_ref().map(|_| "element"),
+            out.rename_all.as_ref().map(|_| "rename_all"),
+        ]
+        .into_iter()
+        .flatten()
+        .next();
+        if let Some(other) = other {
+            return Err(Error::new(
+                at,
+                format!(
+                    "a transparent struct is written as its one field, with no \
+                     object and no array around it, so `{other}` has nothing to \
+                     apply to"
+                ),
+            ));
+        }
+    }
     Ok(out)
 }
 
 pub(crate) fn field(metas: &[Meta], positional: bool) -> Result<FieldOpts> {
     let mut out = FieldOpts {
         rename: None,
+        aliases: Vec::new(),
         skip: None,
         required: None,
         with: None,
@@ -257,6 +295,10 @@ pub(crate) fn field(metas: &[Meta], positional: bool) -> Result<FieldOpts> {
         }
         match name.as_str() {
             "rename" => once(&mut out.rename, meta, string(meta)?)?,
+            // Repeatable, unlike every other setting: each one is a further
+            // key the document may use, so a second is another name rather
+            // than a second opinion about the same thing.
+            "alias" => out.aliases.push(string(meta)?),
             "skip" => once(&mut out.skip, meta, flag(meta)?)?,
             "required" => once(&mut out.required, meta, flag(meta)?)?,
             "with" => once(&mut out.with, meta, string(meta)?)?,
@@ -273,7 +315,7 @@ pub(crate) fn field(metas: &[Meta], positional: bool) -> Result<FieldOpts> {
                 return Err(unknown(
                     meta,
                     "a field",
-                    "`rename`, `skip`, `required` and `with`",
+                    "`rename`, `alias`, `skip`, `required` and `with`",
                 ));
             }
         }
@@ -281,6 +323,7 @@ pub(crate) fn field(metas: &[Meta], positional: bool) -> Result<FieldOpts> {
     if let Some(skip) = out.skip {
         let other = [
             out.rename.as_ref().map(|_| "rename"),
+            out.aliases.first().map(|_| "alias"),
             out.required.as_ref().map(|_| "required"),
             out.with.as_ref().map(|_| "with"),
         ]
@@ -298,10 +341,14 @@ pub(crate) fn field(metas: &[Meta], positional: bool) -> Result<FieldOpts> {
 }
 
 pub(crate) fn variant(metas: &[Meta]) -> Result<VariantOpts> {
-    let mut out = VariantOpts { rename: None };
+    let mut out = VariantOpts {
+        rename: None,
+        aliases: Vec::new(),
+    };
     for meta in metas {
         match meta.name.to_string().as_str() {
             "rename" => once(&mut out.rename, meta, string(meta)?)?,
+            "alias" => out.aliases.push(string(meta)?),
             "skip" => {
                 return Err(Error::new(
                     meta.name.span(),
@@ -310,7 +357,7 @@ pub(crate) fn variant(metas: &[Meta]) -> Result<VariantOpts> {
                      every variant the enum has",
                 ));
             }
-            _ => return Err(unknown(meta, "a variant", "`rename`")),
+            _ => return Err(unknown(meta, "a variant", "`rename` and `alias`")),
         }
     }
     Ok(out)

@@ -1,0 +1,15 @@
+error: an alias is a rule about reading: it is a further key a document may use for this field, and the key the field is written under is the declared one. A type declared `write_only` is never read, so nothing would ever look this one up
+ --> tests/ui/alias_when_write_only.rs:5:1
+  |
+5 | structio::object!(write_only Gauge { label | "name" });
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__alias_direction` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: an alias is a rule about reading: it is a further name a document may use for this variant, and the name the variant is written under is the declared one. A type declared `write_only` is never read, so nothing would ever look this one up
+  --> tests/ui/alias_when_write_only.rs:11:1
+   |
+11 | structio::unit_enum!(write_only Level { Low | "low" });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__alias_direction` which comes from the expansion of the macro `structio::unit_enum` (in Nightly builds, run with -Z macro-backtrace for more info)

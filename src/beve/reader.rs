@@ -47,7 +47,7 @@ use crate::beve::impls::{Block, NumericBytes};
 use crate::beve::traits::{Read, ReadArray, ReadAs, ReadEnum, ReadInternallyTagged, ReadObject};
 use crate::error::{ErrorCode, PResult};
 use crate::options::{Options, Standard};
-use crate::traits::Fields;
+use crate::traits::{Fields, resolve_key, resolve_variant};
 
 /// Deepest nesting accepted, so a hostile document cannot exhaust the stack.
 pub const MAX_DEPTH: u32 = 256;
@@ -812,15 +812,20 @@ impl<'de, O: Options> Reader<'de, O> {
     #[inline]
     fn object_member<T: ReadObject<'de>>(&mut self, value: &mut T, seen: &mut u64) -> PResult<()> {
         let map = T::MAP;
-        let fields = map.n as usize;
+        let keys = map.n as usize;
         let n = self.count()?;
         // Where the key's bytes begin, so a refusal can point at them rather
         // than at the value they introduced. Dead, and gone, under a policy
         // that cannot refuse.
         let at = self.pos;
         let key = self.take(n)?;
-        let index = map.lookup_sized(T::KEYS, key);
-        let matched = index < fields && T::read_field(value, index, key, self)?;
+        // The hash indexes every key, aliases included; the dispatch has an
+        // arm per field, so an alias goes back to the field it fills first.
+        let mut index = map.lookup_sized(T::KEYS, key);
+        let matched = index < keys && {
+            index = resolve_key::<T>(index);
+            T::read_field(value, index, key, self)?
+        };
         if Fields::<O, T>::TRACK && matched {
             *seen |= Fields::<O, T>::seen(index);
         }
@@ -904,7 +909,9 @@ impl<'de, O: Options> Reader<'de, O> {
                 // The hash only proposes a variant; `read_name` confirms the
                 // name itself and may still decline.
                 let index = T::MAP.lookup_sized(T::VARIANTS, name);
-                if index >= T::MAP.n as usize || !T::read_name(value, index, name)? {
+                if index >= T::MAP.n as usize
+                    || !T::read_name(value, resolve_variant::<T>(index), name)?
+                {
                     self.pos = open;
                     return Err(ErrorCode::UnknownVariant);
                 }
@@ -928,7 +935,9 @@ impl<'de, O: Options> Reader<'de, O> {
                 let at = self.pos;
                 let name = self.take(n)?;
                 let index = T::MAP.lookup_sized(T::VARIANTS, name);
-                if index >= T::MAP.n as usize || !T::read_payload(value, index, name, self)? {
+                if index >= T::MAP.n as usize
+                    || !T::read_payload(value, resolve_variant::<T>(index), name, self)?
+                {
                     self.pos = at;
                     return Err(ErrorCode::UnknownVariant);
                 }
@@ -1023,7 +1032,9 @@ impl<'de, O: Options> Reader<'de, O> {
         // From here the generated arm owns the object's remaining members,
         // because only it knows the payload's type.
         let index = T::MAP.lookup_sized(T::VARIANTS, name);
-        if index >= T::MAP.n as usize || !T::read_variant(value, index, name, self, after, open)? {
+        if index >= T::MAP.n as usize
+            || !T::read_variant(value, resolve_variant::<T>(index), name, self, after, open)?
+        {
             self.pos = at;
             return Err(ErrorCode::UnknownVariant);
         }
