@@ -1,5 +1,10 @@
 //! Declarations the macros refuse, and the message each one gives.
 //!
+//! Two suites, split by how the refusal is rendered rather than by what it
+//! says: `tests/ui` for the ones a `compile_error!` produces, compared exactly,
+//! and `tests/ui-const` for the two that are a `panic!` in const evaluation,
+//! compared briefly. The second test below says why that split is forced.
+//!
 //! These are programs that must not compile, so no ordinary test can reach
 //! them. What they hold in place is the wording: a refusal is only worth
 //! having if it says what to do instead, and a message nothing asserts is one
@@ -43,5 +48,35 @@ fn a_refused_declaration_says_what_to_do_instead() {
     t.dependency_path("structio", ".");
     t.elide_implementors(true);
     t.compile_fail_dir("tests/ui");
+    t.assert();
+}
+
+/// The refusals that are a `panic!` in const evaluation rather than a
+/// `compile_error!`, compared under [`Brief`](nocompile::Mode::Brief).
+///
+/// These two are the schema mistakes no macro matcher can catch, because both
+/// are a property of the whole key set rather than of any one declaration
+/// token: a name written twice, which would leave one field permanently
+/// unreachable, and an internal tag that is also a member of the payload it
+/// shares an object with, which a last-wins parser resolves by keeping the
+/// member and losing the variant. Neither is new here; what is new is that the
+/// aliases join that key set, so an alias can now make either mistake.
+///
+/// They cannot live in the suite above. A const-eval panic is rendered with a
+/// frame through `core`'s own source, and rustc prints that source only where
+/// the `rust-src` component is installed, so an `Exact` golden blessed on a
+/// full toolchain does not match a `--profile minimal` one and the fixture
+/// asserts the environment rather than the crate. `Brief` compares each
+/// diagnostic's code, primary message and location and drops the frame, which
+/// here costs nothing: the panic text and the declaration it is pointed at are
+/// the whole product, and the backtrace through `core` is not something this
+/// crate writes or should hold still.
+#[test]
+#[cfg_attr(windows, ignore = "nocompile does not claim Windows support in v1")]
+fn a_refused_schema_says_what_to_do_instead() {
+    let mut t = nocompile::cases!();
+    t.dependency_path("structio", ".");
+    t.mode(nocompile::Mode::Brief);
+    t.compile_fail_dir("tests/ui-const");
     t.assert();
 }
