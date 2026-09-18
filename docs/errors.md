@@ -60,6 +60,44 @@ Every other code leaves `key` as `None`. In particular `UnknownKey` and `Unknown
 
 `&'static str`, so `Error` still carries no lifetime, stays `Copy`, and outlives the document. Everything nameable here is a constant of the destination type rather than a run of input bytes, which is what makes that possible.
 
+### Reading the name back
+
+An offset is a thin answer for code that wants the name itself, to collect every rejected key or to put one in a message of its own. `Error::key_in` hands that back, taking the document the offset indexes:
+
+```rust
+let doc = r#"{"a":1,"nope":2}"#;
+let e = structio::from_str::<OnlyA>(doc).unwrap_err();
+assert_eq!(e.code, ErrorCode::UnknownKey);
+assert_eq!(e.key, None);
+assert_eq!(e.key_in(doc).unwrap().as_str(), "nope");
+```
+
+It answers for both kinds of key: a `MissingKey` gets the `&'static str` the error already carries, and `UnknownKey` and `UnknownVariant` get theirs read out of the document. Other codes get `None` — the offset means something else entirely for them, and a string that happens to parse there is not a name. Nor, usually, is a value: the quote that must precede a key is checked, which rejects the offset a reader refusing after the colon would carry. It is a sanity check and not a proof — the text inside a string value is locally indistinguishable from a key.
+
+What is not checked is that the document is the right one. Hand it another and the answer is a name out of *that* one, not `None`, which is `display_with`'s hazard exactly and is avoided the same way: ask at the parse site.
+
+Escapes are resolved, so this allocates exactly when reading the key the first time would.
+
+JSON only, and `UnknownVariant` included in that: a BEVE key is not self-delimiting from the byte its offset names, the length living in the prefix that offset is already past, so a BEVE reader takes the name while it still has it — see below. Errors out of the streaming readers are outside this too, their offsets indexing a window the caller never holds.
+
+### Driving a map by hand
+
+`read_map` gives the name and not the position: its callback fires after the colon, so `position` by then names the value. Hand-rolling the loop instead is not a way out, the depth counter that bounds nesting not being public. `read_map_located` is the way to have both, on `json::Parser` and on `beve::Reader` alike:
+
+```rust
+let mut unknown = Vec::new();
+Parser::new(doc).read_map_located(|p, key, at| {
+    if !claimed(key.as_str()) {
+        unknown.push(Error::new(ErrorCode::UnknownKey, at));
+    }
+    p.skip_value()
+})?;
+```
+
+The offset is the key's first byte, which is the byte a generated reader's `UnknownKey` reports for the same document. So an error minted here reads the same as one the crate raised, `key_in` included. `Matrix` is the crate's own caller of this: it reads its three members by hand, and winds back to the key before refusing so that its `UnknownKey` means what every other one does.
+
+On `beve::Reader` the offset is the key's text, past the length prefix, for a string key. An integer key gets the first of its little-endian bytes, and has no generated-reader counterpart to agree with — `read_object` refuses an integer-keyed object outright, as an `UnsupportedKeyType`.
+
 ### From a hand-written reader
 
 A `Read` impl that tracks its own keys has the same problem and sets its own name, on the branch that is failing:
@@ -130,7 +168,7 @@ Long lines are trimmed around the caret so the output stays readable. The input 
 | `ExpectedTag` | An [internally tagged](enums.md#internal-tagging) enum's object did not begin with its tag. The tag has to be the first member, so that one pass over the object is enough to know what it is; an object starting with any other key is refused here rather than searched. Also covers an object with no members, and a tag whose value is not a string. A tag that *is* first and names nothing is `UnknownVariant` instead. |
 | `ArrayLengthMismatch` | A fixed-size target (`[T; N]`, a tuple) did not match the input's length. |
 | `ExpectedSingleChar` | A `char` was requested but the string was not exactly one scalar value. |
-| `UnknownKey` | An object held a key no field of the destination claims. Read with [`SkipUnknown`](options.md#error_on_unknown_keys) to step over it instead. |
+| `UnknownKey` | An object held a key no field of the destination claims. The offset is the key; [`key_in`](#reading-the-name-back) reads the name back. Read with [`SkipUnknown`](options.md#error_on_unknown_keys) to step over it instead. |
 | `MissingKey` | An object left out a field the destination declares, under [`RequireKeys`](options.md#error_on_missing_keys) or `#[required]`. Off by default, absence otherwise meaning the destination keeps what it held. The offset is the object's first byte, and `key` is the absent one. |
 | `UnknownVariant` | An enum's tag named no variant the destination declares. Refused under every policy, `SkipUnknown` included: a member with nowhere to go can be stepped over and the object still read, but a variant with nowhere to go leaves the value itself undecided. |
 | `InvalidMatrixLayout` | A matrix named a storage order that is not one of the two defined. |
