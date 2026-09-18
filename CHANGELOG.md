@@ -14,6 +14,10 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 ### Added
 
+- **`Error::key_in`, the name an unknown key had.** `UnknownKey` and `UnknownVariant` carry no name, a name the document chose being no `&'static str`, so the error winds back to it and reports the offset. This reads it back out of the document at that offset, unescaping as the reader would, and hands a `MissingKey` the static name it already carries. The lifetime is the document argument's, not the error's, so `Error` stays `Copy` and independent of the buffer. JSON only: a BEVE key's length lives in a prefix the offset is already past.
+
+- **`read_map_located`, on `json::Parser` and `beve::Reader`.** `read_map` calls back after the colon, so a hand-written map reader could see a key's name but not its position, and hand-rolling the loop was no way out either, the depth counter that bounds nesting not being public. This reports the offset alongside the key: the same byte a generated reader's `UnknownKey` names, so an error raised by hand reads like one the crate raised.
+
 - **`structio::OrderedMap<V>`, a string-keyed map that keeps its insertion order.** Entries live in one vector in the order they arrived; below nine keys a lookup scans it, above that a robin hood hash table indexes it. It reads and writes in both formats, so it works as a whole document or as a declared field where `BTreeMap` would, and `Object` is `OrderedMap<Value>`. Equality ignores order; `sort_keys()` reorders by key.
 
 - **`write_only`, a declaration of the write half alone.** `object!(write_only ..)`, and the same token in front of `array!`, `unit_enum!`, `tagged_enum!` and the one-format macros, generate the writing impls and no read at all, so a field's type needs no `Read` impl and no `Default`. `#[structio(write_only)]` is the derive's spelling of it, and the bytes written are unchanged either way. A generic one bounds its type parameters by the new `structio::Write` rather than by `structio::ReadWrite` and `Default`. `#[required]` is refused, being a rule about reading, and there is no `read_only`. [docs/schemas.md](docs/schemas.md#one-direction-only) has the rest.
@@ -23,6 +27,8 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 - **`json::Parser::rest_str`.** The `&str` counterpart of `rest`, for a hand-written `Read` impl capturing a span: the input's UTF-8 validity is already known, so nothing has to establish it a second time.
 
 ### Fixed
+
+- **A `Matrix` names the unknown key it refused.** It reads its three members by hand through a map callback, which runs after the colon, so its `UnknownKey` reported the offending member's *value* rather than its key: a caret under the value, and `key_in` reading a name off it. It winds back to the key, so every `UnknownKey` in the crate now names a key. The reported offset for this one code on this one type moves.
 
 - **The whole-key hash now folds in the key length.** It read whole 8-byte chunks and then an overlapping tail, so two keys differing only in the bytes between them, such as `field_name_10500_value` and `field_name_105000_value`, hashed the same under every seed and cost the object its hash: it read under a linear scan instead. Keys shorter than 8 bytes were zero filled, so trailing NULs vanished the same way. Never a wrong field, since a candidate is always confirmed by a full comparison, only a slower read.
 
