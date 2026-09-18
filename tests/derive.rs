@@ -296,6 +296,57 @@ fn an_array_matches_its_declaration() {
     assert_eq!(beve::to_vec(&d), beve::to_vec(&[1u8, 2, 3]));
 }
 
+// A tuple struct, which is the shape only the positional declaration can take.
+
+#[derive(Default, Debug, PartialEq)]
+struct MacroEntry(String, f32);
+structio::array!(MacroEntry [0, 1]);
+
+#[derive(Default, Debug, PartialEq, Structio)]
+#[structio(array)]
+struct DeriveEntry(String, f32);
+
+#[derive(Default, Debug, PartialEq)]
+struct MacroColour(u8, u8, u8, String);
+structio::array!(MacroColour [u8; 0, 1, 2, ..]);
+
+#[derive(Default, Debug, PartialEq, Structio)]
+#[structio(array, element = "u8")]
+struct DeriveColour(u8, u8, u8, #[structio(skip)] String);
+
+#[derive(Default, Debug, PartialEq, Structio)]
+#[structio(array)]
+struct DeriveHeld<T>(T, T)
+where
+    T: structio::ReadWrite + Default;
+
+#[test]
+fn a_tuple_struct_matches_its_declaration() {
+    let m = MacroEntry("load".into(), 1.5);
+    let d = DeriveEntry("load".into(), 1.5);
+    same_wire(&m, &d);
+    assert_eq!(
+        <MacroEntry as Elements>::LEN,
+        <DeriveEntry as Elements>::LEN
+    );
+    assert_eq!(to_string(&d), r#"["load",1.5]"#);
+    same_error::<MacroEntry, DeriveEntry>(
+        r#"["load"]"#,
+        from_str::<MacroEntry>(r#"["load"]"#).unwrap_err().code,
+    );
+
+    let m = MacroColour(1, 2, 3, "red".into());
+    let d = DeriveColour(1, 2, 3, "red".into());
+    assert_eq!(to_string(&m), to_string(&d));
+    assert_eq!(beve::to_vec(&m), beve::to_vec(&d));
+    assert_eq!(beve::to_vec(&d), beve::to_vec(&[1u8, 2, 3]));
+
+    // A `where` clause on a tuple struct follows the fields rather than
+    // preceding the body, which is the one place the two shapes are parsed in
+    // a different order.
+    assert_eq!(to_string(&DeriveHeld(1u8, 2u8)), "[1,2]");
+}
+
 // A unit enum, a tagged enum with a payload, and an internally tagged enum.
 
 #[derive(Default, Debug, PartialEq, Clone, Copy)]

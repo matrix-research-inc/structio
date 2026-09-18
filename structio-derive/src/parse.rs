@@ -4,7 +4,9 @@
 //! their bounds, each field's name, each variant's name and how many values
 //! it carries, and the `#[structio(..)]` attributes on all of them. Field
 //! types are stepped over, since the macros never see them either: they read
-//! a field through `self.name` and let the compiler find the type.
+//! a field through `self.name` and let the compiler find the type. A tuple
+//! struct's fields are read the same way, through `self.0`, so a position is
+//! a name here like any other.
 
 use proc_macro::{Delimiter, Ident, Literal, Span, TokenStream, TokenTree};
 
@@ -44,7 +46,25 @@ pub(crate) enum Shape {
 
 pub(crate) struct Field {
     pub(crate) attrs: Vec<Meta>,
-    pub(crate) name: Ident,
+    pub(crate) name: FieldName,
+}
+
+/// How a field is reached, which is the token the declaration macros take.
+pub(crate) enum FieldName {
+    /// `a: T`, read through `self.a`, and an object's key unless renamed.
+    Named(Ident),
+    /// A tuple struct's position, read through `self.0`. It carries the span
+    /// of the type it stands for, since that is what the author wrote.
+    Index(Literal),
+}
+
+impl FieldName {
+    pub(crate) fn token(&self) -> TokenTree {
+        match self {
+            FieldName::Named(name) => TokenTree::Ident(name.clone()),
+            FieldName::Index(index) => TokenTree::Literal(index.clone()),
+        }
+    }
 }
 
 pub(crate) struct Variant {
@@ -95,26 +115,44 @@ pub(crate) fn parse(input: TokenStream) -> Result<Input> {
         Vec::new()
     };
 
-    if !is_enum && !c.peek_group(Delimiter::Brace) && !c.peek_ident("where") {
-        let what = if c.peek_group(Delimiter::Parenthesis) {
-            "a tuple struct has no field names to be keys, and the positional \
-             macro counts by name too. Give the fields names, or declare a \
-             tuple instead of a struct"
-        } else {
-            "a unit struct has no fields to put on the wire"
-        };
-        return Err(Error::new(c.span(), what));
+    // A tuple struct's fields come before its `where` clause and a named
+    // struct's after, so which is read first depends on which this is.
+    let tuple = if is_enum {
+        None
+    } else {
+        c.eat_group(Delimiter::Parenthesis)
+    };
+
+    if let Some(body) = &tuple
+        && body.stream().is_empty()
+    {
+        return Err(Error::new(
+            body.span(),
+            "a tuple struct with no fields has nothing to put on the wire",
+        ));
+    }
+
+    if !is_enum && tuple.is_none() && !c.peek_group(Delimiter::Brace) && !c.peek_ident("where") {
+        return Err(Error::new(
+            c.span(),
+            "a unit struct has no fields to put on the wire",
+        ));
     }
 
     if let Some(kw) = c.eat_ident("where") {
         where_clause(&mut c, &mut generics, kw.span())?;
     }
 
-    let body = c.expect_group(Delimiter::Brace, "the type's body")?;
-    let shape = if is_enum {
-        Shape::Enum(variants(&body)?)
-    } else {
-        Shape::Struct(fields(&body)?)
+    let shape = match &tuple {
+        Some(body) => Shape::Struct(tuple_fields(body)?),
+        None => {
+            let body = c.expect_group(Delimiter::Brace, "the type's body")?;
+            if is_enum {
+                Shape::Enum(variants(&body)?)
+            } else {
+                Shape::Struct(fields(&body)?)
+            }
+        }
     };
 
     Ok(Input {
@@ -254,7 +292,11 @@ fn params(tokens: Vec<TokenTree>) -> Result<Vec<Param>> {
 fn where_clause(c: &mut Cursor, generics: &mut [Param], at: Span) -> Result<()> {
     let mut tokens = Vec::new();
     while let Some(tt) = c.peek() {
-        if matches!(tt, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace) {
+        // A named struct's clause ends at its body and a tuple struct's at the
+        // `;` that closes the declaration.
+        if matches!(tt, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
+            || matches!(tt, TokenTree::Punct(p) if p.as_char() == ';')
+        {
             break;
         }
         tokens.push(tt.clone());
@@ -314,7 +356,35 @@ fn fields(body: &proc_macro::Group) -> Result<Vec<Field>> {
         let name = c.expect_ident("a field name")?;
         c.expect_punct(':', "`:` after the field name")?;
         c.until_comma();
-        out.push(Field { attrs, name });
+        out.push(Field {
+            attrs,
+            name: FieldName::Named(name),
+        });
+    }
+    Ok(out)
+}
+
+/// A tuple struct's fields, whose names are their positions.
+///
+/// The index is given the span of the type it stands for, so an error the
+/// derive reports about a field lands on what the author wrote rather than on
+/// a number they did not.
+fn tuple_fields(body: &proc_macro::Group) -> Result<Vec<Field>> {
+    let mut c = Cursor::inside(body);
+    let mut out = Vec::new();
+    while !c.is_empty() {
+        let attrs = attributes(&mut c)?;
+        visibility(&mut c);
+        let at = c.span();
+        if c.until_comma().is_empty() {
+            return Err(Error::new(at, "expected a field type"));
+        }
+        let mut index = Literal::usize_unsuffixed(out.len());
+        index.set_span(at);
+        out.push(Field {
+            attrs,
+            name: FieldName::Index(index),
+        });
     }
     Ok(out)
 }

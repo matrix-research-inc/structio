@@ -1,5 +1,5 @@
-error: a tuple struct has no field names to be keys, and the positional macro counts by name too. Give the fields names, or declare a tuple instead of a struct
- --> tests/ui/tuple_struct.rs:2:12
+error: a tuple struct has no field names to be keys. Declare it positional with `#[structio(array)]`, which writes the fields in order and asks for no names, or give the fields names
+ --> tests/ui/tuple_struct.rs:2:13
   |
 2 | struct Pair(i32, i32);
-  |            ^^^^^^^^^^
+  |             ^^^

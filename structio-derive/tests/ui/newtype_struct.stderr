@@ -1,0 +1,5 @@
+error: a tuple struct has no field names to be keys. `#[structio(array)]` declares it positional, which writes this field as a one-element array; writing it as the field's own value is `transparent`, a stage 2 shape; see docs/derive.md
+ --> tests/ui/newtype_struct.rs:2:15
+  |
+2 | struct Meters(f64);
+  |               ^^^
