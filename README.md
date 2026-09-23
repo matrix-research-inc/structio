@@ -19,7 +19,11 @@ Built in the spirit of [Glaze](https://github.com/stephenberry/glaze).
 structio = "0.6"
 ```
 
-Rust 2024 edition, MSRV 1.96.
+Rust 2024 edition, MSRV 1.96. For `#[derive(Structio)]`, enable the `derive` feature:
+
+```toml
+structio = { version = "0.6", features = ["derive"] }
+```
 
 ## Quickstart
 
@@ -54,6 +58,8 @@ fn main() -> Result<(), structio::Error> {
 
 That is the whole API surface most work needs: declare the schema once, then convert. This example is [`examples/quickstart.rs`](examples/quickstart.rs), and a test fails if the two stop matching.
 
+With the `derive` feature, `#[derive(Structio)]` on the struct takes the place of the `object!` line and expands to the same declaration. [The derive](docs/derive.md) has its attributes.
+
 ## Is this the right library for you?
 
 **`serde` and `serde_json` are the right default for most Rust projects**, and this does not try to replace them. They have a vast ecosystem, support dozens of formats, and offer field attributes this crate has no answer to.
@@ -64,29 +70,32 @@ Reach for structio when one of these matters more:
 |---|---|
 | **You want BEVE** | A binary format that stays self-describing, so numeric arrays are a `memcpy` and documents are much smaller, without giving up the ability to skip a field you do not understand. |
 | **You want a small dependency graph** | Nothing to audit, nothing to vendor, no proc-macro crate to build and link for the host before your own code can start, and nothing extra when cross-compiling. Compile *time* is a wash: measured over 200 declared structs, one format's impls cost about what `serde`'s two derives do. The optional `derive` feature adds one dependency-free proc-macro crate and nothing else. |
-| **You want to see what runs** | `object!`, `array!` and `tagged_enum!` expand to ordinary trait impls you could have written. There is no derive to reverse-engineer when something is slow or wrong. |
+| **You want to see what runs** | `object!`, `array!`, `transparent!` and the enum macros expand to ordinary trait impls you could have written, and the derive expands to those same macros. There is nothing to reverse-engineer when something is slow or wrong. |
 | **You are converting a fixed set of known types** | Which is what the design is optimized for, at the cost of not handling arbitrary documents at all. |
 
-**Do not reach for it if** you need to inspect documents whose shape you do not know at compile time, you need a format other than JSON or BEVE, or you rely on `serde`'s attributes (`flatten`, `skip_serializing_if`, tagged enums, and so on). See [what it does not do](#what-it-does-not-do).
+**Do not reach for it if** most of your documents have no shape you know at compile time (there is a `Value` tree for those, but the crate is built around declared types), you need a format other than JSON or BEVE, or you rely on `serde` attributes that have no counterpart here yet, such as `flatten`, `untagged`, adjacent tagging or `skip_serializing_if`. See [what it does not do](#what-it-does-not-do).
 
 ## Highlights
 
 - **No dependencies.** Standard library only.
-- **No proc-macros required.** `object!`, `array!` and `tagged_enum!` are `macro_rules!` macros. `#[derive(Structio)]`, behind the `derive` feature, is a front end that expands to them; see [the derive](docs/derive.md).
+- **No proc-macros required.** `object!`, `array!`, `transparent!`, `unit_enum!` and `tagged_enum!` are `macro_rules!` macros. `#[derive(Structio)]`, behind the `derive` feature, is a front end that expands to them; see [the derive](docs/derive.md).
 - **A declaration is checked against its type.** A field added to the struct and forgotten in the declaration is a build error naming the field, not a member that quietly stops being written. `..` at the end says an omission is deliberate.
 - **One schema, both formats.** The field list and its hash table are declared once and shared; only the bytes differ.
-- **Objects or arrays.** `object!` declares a struct by key, `array!` by position, for types like a coordinate whose field names carry nothing.
+- **Objects, arrays, or the field alone.** `object!` declares a struct by key. `array!` declares one by position, for tuple structs and for types like a coordinate whose field names carry nothing. `transparent!` writes a one-field newtype as that field, so `UserId(7)` is `7`.
+- **Renaming without breaking old documents.** A field or variant can answer to more than one name: `object!(Settings { timeout | "timeout_ms" })` reads either key and writes `timeout`, so documents already written under the old spelling still read.
+- **One direction when that is all you need.** `write_only` declares the write half alone, so a type that is only ever emitted needs no `Read` impls and no `Default` for its fields.
 - **Required members, one at a time.** A field marked `#[required]` has to be in the document; the rest keep their defaults when it is quiet. Mixed schemas are most schemas, so this is the type's business rather than a reader policy.
-- **Enums by name, not by index.** `unit_enum!` writes a variant as its name; `tagged_enum!` writes one carrying a value as a one-member object keyed by that name; `tagged_enum!(.. as tag "kind")` puts that name inside the payload's object instead, the convention most JSON APIs use. Adding or reordering variants does not change what a document already means.
+- **Enums by name, not by index.** `unit_enum!` writes a variant as its name; `tagged_enum!` writes one carrying a value as a one-member object keyed by that name; `tagged_enum!(.. as tag "kind")` puts that name inside the payload's object instead, the convention most JSON APIs use. Adding or reordering variants does not change what a document already means, and an internal tag does not have to be the object's first member.
 - **Keys are hashed at compile time.** The macro picks the cheapest perfect hash that fits your key set, from a single byte comparison up to a full key hash.
 - **Reads reuse what you already own.** Parsing into an existing value refills its buffers instead of reallocating them, so a loop over records of the same shape settles into no allocation at all.
 - **JSON that goes through untouched.** A `json::Raw` field holds one value as the text that spelled it, so a body a gateway forwards keeps the key order, the number spellings and the escapes it arrived with. Reading borrows the span out of the document and writing copies it back; under `Pretty` it is laid out again at the depth it actually sits at, rather than left as an unindented blob.
 - **One field out of a BEVE document.** `from_beve_at(&bytes, "/servers/1/port")` walks the headers in front of the value and decodes nothing else, and `validate_beve` checks a document is well formed without decoding any of it.
 - **Both formats stream, both ways.** `Documents` and `Feed` hand out one value at a time from a reader or from chunks pushed at you, in JSON and in BEVE, so a file too large to hold costs one record rather than the file. A BEVE typed array streams element by element too.
 - **Arrays a reader can point at.** `to_beve_aligned` writes BEVE's aligned typed arrays, padding each numeric payload onto its own element width so the block can be borrowed rather than copied. A `Cow<'de, [f64]>` field takes that borrow where the document allows it and copies where it does not. The same document either way, and every reader here takes both forms.
+- **A tree when there is no type.** `Value` holds a document nothing declares, in either format, and is walked by key, index or JSON Pointer. Its objects keep their member order, and the map beneath them, `OrderedMap`, works as a declared field too.
 - **A BEVE document you have no type for.** `beve_to_json(&bytes)` rewrites it as JSON in one walk, with no tree and no schema, which is the answer to "what is actually in this file".
 - **Complex numbers and matrices.** `Complex<T>` and `Matrix<T>` cover BEVE's two data-carrying extensions, in both formats. A `Vec<Complex<f64>>` is one header and one block, so it moves in a single copy exactly as a `Vec<f64>` does.
-- **Errors carry a byte offset**, and `Error::display_with(input)` renders it with a line, column, and caret. A missing key also names itself, the offset there being able to point only at the object that lacks it.
+- **Errors carry a byte offset**, and `Error::display_with(input)` renders it with a line, column, and caret. A missing key also names itself, the offset there being able to point only at the object that lacks it, and `Error::key_in(input)` reads an unknown key's name back out of the document.
 
 ## API
 
@@ -129,6 +138,7 @@ The crate root carries the JSON entry points unqualified and the BEVE ones with 
 | `to_beve_writer(&T, impl io::Write)` | Serialize into a sink, draining as it goes. |
 | `append_beve(&T, &mut Vec<u8>)` | Serialize after what a buffer already holds. |
 | `append_beve_aligned(&T, &mut Vec<u8>)` | Serialize after what a buffer holds, padded against its length. |
+| `to_beve_aligned(&T) -> Vec<u8>` | Serialize with each numeric array padded onto its element width, so a reader can borrow it. |
 | `beve_size(&T) -> usize` | The length `to_beve` would produce, without producing it. |
 | `beve_size_aligned_after(&T, usize) -> usize` | The same for an aligned body landing behind a prefix. |
 | `from_beve_reader::<T>(impl io::Read)` | Read a whole document from a reader, then parse. |
@@ -139,6 +149,18 @@ The crate root carries the JSON entry points unqualified and the BEVE ones with 
 | `MatrixRef::new(layout, &[usize], &[T])` | The same, borrowed, for writing data you already hold. |
 
 `read_into` and `write_into` are the ones to reach for in a loop. `read_into` is also the way in for a type with no meaningful zero value, and a placeholder to read over [does not have to be public](docs/schemas.md#default-is-required-where-values-are-constructed). It drops the `Default` a returning function needs only for the `T` you hand it, though: whatever the read has to *construct* still needs one, which is a growing `Vec`'s new elements, a map's values, an `Option`'s payload and an enum variant's payload. A field the read only ever fills in place does not, so `Box<T>` and `[T; N]` hold a type with no `Default` where `Vec<T>` cannot.
+
+A generic function that parses a `T` out of a buffer it owns bounds it by `ReadOwned`, which is `Default` plus a read that borrows nothing from the input.
+
+### Without a declared type
+
+| Function | Purpose |
+|---|---|
+| `Value` | A tree for a document nothing declares, with `get`, `pointer` and indexing by key or position. Reads and writes in both formats. |
+| `value!(..)` | Build a `Value` from JSON-shaped syntax. |
+| `to_value(&T) -> Result<Value>` | Turn a declared type into a `Value`. |
+| `from_value::<T>(&Value) -> Result<T>` | Read a declared type back out of one. |
+| `OrderedMap<V>` | A string-keyed map that keeps insertion order. `Value`'s objects are `OrderedMap<Value>`. |
 
 ### Between the formats
 
@@ -152,8 +174,9 @@ The crate root carries the JSON entry points unqualified and the BEVE ones with 
 
 | | |
 |---|---|
-| [Schemas and types](docs/schemas.md) | Renaming keys, aliasing them, required fields, positional and transparent structs, generics and borrowing, the supported type set, writing impls by hand. |
-| [Enums](docs/enums.md) | The two wire forms and which of them reading accepts, renaming and aliasing variants, what is refused and with which error, the policies, and the BEVE string-array form. |
+| [Schemas and types](docs/schemas.md) | Renaming keys, aliasing them, required fields, positional and transparent structs, one format or one direction only, generics and borrowing, the supported type set, adapters for types you do not own, writing impls by hand. |
+| [The derive](docs/derive.md) | `#[derive(Structio)]`: each attribute and the declaration it expands to, what is refused, the later stages, and a table for anyone coming from `serde`. |
+| [Enums](docs/enums.md) | The wire forms, external and internal tagging, which forms reading accepts, renaming and aliasing variants, what is refused and with which error, the policies, and the BEVE string-array form. |
 | [BEVE](docs/beve.md) | What the binary format buys you, pointers and validation, turning a document you have no type for into JSON, and what is not implemented yet. |
 | [Options](docs/options.md) | Indenting JSON, keeping arrays on one line, leaving null members out, refusing unknown keys, requiring declared ones, reading comments, prettifying and minifying text that is already JSON, and writing your own policy. |
 | [Streaming](docs/streaming.md) | Documents too large to hold, or not yet fully arrived, in either format. |
@@ -161,12 +184,13 @@ The crate root carries the JSON entry points unqualified and the BEVE ones with 
 | [Performance](docs/performance.md) | Benchmarks against Glaze, methodology, and how to reproduce them. |
 | [Correctness](docs/correctness.md) | What is tested, and how. |
 | [Design notes](docs/design.md) | How it works inside. |
+| [Schema declaration](docs/schema-declaration.md) | Why the declaration is a `macro_rules!` macro first and a derive second, with compile-time measurements. |
 
 `cargo doc --open` builds the API reference.
 
 ## Performance in one paragraph
 
-Against Glaze on identical documents, reading is 58-105% and writing 67-161% depending on the type. Writing integers and booleans is faster than Glaze; strings and floats are below it. Output is byte-identical to Glaze's on every benchmark document, floats included. Full table, methodology, and an important caveat about how sensitive the benchmark is to code layout: [docs/performance.md](docs/performance.md).
+Against Glaze on identical documents, reading is 82-117% and writing 65-163% depending on the type, with reading level on the representative mixed document. Writing integers and booleans is faster than Glaze; strings and floats are below it. Output is byte-identical to Glaze's on every benchmark document, floats included. Figures, methodology, and an important caveat about how sensitive the benchmark is to code layout: [docs/performance.md](docs/performance.md).
 
 No comparison against `serde_json` has been run, so please do not infer one.
 
@@ -180,9 +204,9 @@ No comparison against `serde_json` has been run, so please do not infer one.
 
 **Few options.** [`Options`](docs/options.md) covers indentation, keeping an array on the line it began on, leaving null members out, refusing a key nothing claims, requiring every key the schema declares, and reading JSONC comments, which is where Glaze's `glz::opts` starts. Requiring *some* of the keys is a property of the schema rather than a policy: mark those fields [`#[required]`](docs/schemas.md#required-fields).
 
-**Few `serde` attributes.** Keys can be renamed one at a time or by a [case rule](docs/schemas.md#case-rules), fields can be marked [`#[required]`](docs/schemas.md#required-fields), null members can be skipped, and that is the extent of it. There is no `flatten` and no enum tagging strategy.
+**Not every `serde` attribute.** Keys can be renamed one at a time or by a [case rule](docs/schemas.md#case-rules) and given [aliases](docs/schemas.md#more-than-one-key-for-a-field), fields can be marked [`#[required]`](docs/schemas.md#required-fields) or left out, a field can name an [adapter](docs/schemas.md#adapters), a newtype can be [transparent](docs/schemas.md#a-wrapper-that-is-not-on-the-wire), a type can be [write-only](docs/schemas.md#one-direction-only), and an enum can be tagged [externally or internally](docs/enums.md). There is no `flatten` or `untagged`, and neither is planned. Adjacent tagging, `skip_serializing_if`, per-field defaults and one-direction fields are planned as [later stages of the derive](docs/derive.md#later-stages). [The derive's table](docs/derive.md#coming-from-serde) maps each `serde` attribute to its counterpart.
 
-**Foreign types need an adapter or a wrapper.** Rust's orphan rule means you cannot describe a type from another crate the way you can specialize `glz::meta` for any C++ type. A field can name an [adapter](docs/schemas.md#types-you-do-not-own) that says how its type is read and written, which keeps the type out of your API; a newtype is still the answer when the foreign type has no `Default`, or when it appears in many structs.
+**Foreign types need an adapter or a wrapper.** Rust's orphan rule means you cannot describe a type from another crate the way you can specialize `glz::meta` for any C++ type. A field can name an [adapter](docs/schemas.md#types-you-do-not-own) that says how its type is read and written, which keeps the type out of your API; a newtype is still the answer when the foreign type has no `Default`, or when it appears in many structs, and declared with [`transparent!`](docs/schemas.md#a-wrapper-that-is-not-on-the-wire) it adds nothing to the document.
 
 ## Status
 

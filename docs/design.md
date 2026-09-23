@@ -142,6 +142,8 @@ That makes it lenient by construction rather than by choice, and it is worth bei
 
 The one thing leniency must not buy is a changed document. Whitespace between two bare tokens is not the formatter's, it is the only thing holding them apart, and dropping it would turn `[1 2]` into `[12]`: well-formed, and not what came in. That is a single test against the byte before the run and the byte after it, using the same "could this be part of a number or a literal" predicate the stream splitter uses to find where a bare top-level value ends. Two other things are refused for the same reason -- there is no answer, not that the document is wrong: a string that never closes, and a slash that begins no comment where comments are whitespace.
 
+Three things make it fast. Runs are copied as blocks of a compile-time-constant 16 or 64 bytes, keeping only the run's length, for the reason `append_fixed` exists; a 32-byte rung between them moved nothing. Each run of whitespace is compared eight bytes at a time against the run before it, since indentation repeats, which is Glaze's `skip_matching_ws`; runs shorter than eight bytes are walked instead, so at a two-space indent it does nothing until a document is four deep. And a string is scanned for its closing quote alone, since an escape goes out as it came in. What Glaze still does better is step over `true` from its first byte, where this scans for the token's end, which shows on documents whose tokens are short and whose bytes are mostly whitespace.
+
 ## Writing cannot fail
 
 `Write::write` returns nothing. There is no `Result` on it, no error a member has to thread through, and no way for an implementation to decline. That is what the generated code is built on: a struct's write is a straight run of appends with nothing between them, and a container takes a closure rather than handing back a value the caller has to unwrap. It shapes types elsewhere too. `Matrix` keeps its fields private and checks its shape in the constructor because extents that disagree with the data would have nowhere to be reported. `Writer::at` is total for the same reason: every position a document can begin at is expressible, so no offset has to be refused.
@@ -197,6 +199,19 @@ These mattered more than any algorithmic change, and neither is obvious.
 **Do not force-inline the generated field dispatch.** `read_field` holds the parser for every field of a struct. Marking it `#[inline(always)]`, which looks right because it is a dispatch, duplicates a whole nested struct's parser into each field arm of its parent, recursively. For the benchmark type (26 fields of structs of 5 fields) the entire parser collapsed into one function, and integer-heavy documents ran at **30% of their proper speed**. Changing four attributes from `inline(always)` to `inline` roughly doubled read throughput and tripled some write paths.
 
 **But do not add an inline barrier either.** The obvious fix, `#[inline(never)]` on `read_object` and `write_object` to create a hard recursion boundary, measurably *hurt* writing. Left to `#[inline]`, LLVM makes better choices than either extreme.
+
+## What the hot loops must not do
+
+The per-element paths were each found slow for reasons the source did not show, and the fixes are easy to undo by accident. Read the disassembly of the element loop before rewriting a conversion: every one of these was found there, and two rewrites of the integer conversion made on theory alone were slower than the loop they replaced.
+
+- **Make a call per element.** A container's loop has to inline the scalar read, or every element pays an argument setup, a call, and the parser's cursor spilled to the stack and reloaded. `#[inline]` is a hint LLVM declines when the transitive body is large, so the common case is kept small and the rare one is split out: `parse_u64` handles up to fifteen digits ending inside the buffer, and `parse_u64_wide` takes the rest out of line. The scalar readers are `#[inline(always)]` rather than `#[inline]`, because a hint makes the loop's throughput depend on whether anything downstream has recently grown.
+- **Ask for the same inlining twice.** `Vec<T>`'s reader pushes a default and reads into that slot, so there is one call site for the element read rather than one for an existing slot and another for a fresh value. Two sites doubled what the compiler was asked to inline and it declined both.
+- **Pass the cursor by `&mut` to anything out of line.** A value whose address reaches a call has to live on the stack for the whole loop around that call, stored and reloaded on every element whether the call happens or not. Out-of-line helpers take the cursor by value and return the new one.
+- **Branch on the data.** Benchmark signs and bools are random, and a mispredict costs more than the conversion. An integer's sign is applied through a mask, a float's by setting its sign bit, and `true` and `false` are told apart by one eight-byte load compared against whichever the first byte selects. Watch the output here: written as `is_true | is_false` over two compares, the compiler turned it back into two branches.
+- **Loop over a short number's digits.** The loop's exit lands on a different digit for each value of varying length, so it mispredicts about as often as it runs. The fold described under [Numbers](#numbers) has no loop and no branch on the count.
+- **Test whitespace with a `matches!`.** It becomes a shift and mask against a 64-bit set plus a range guard. The parser indexes a 256-entry table instead.
+
+Tried on the float writer and measured slower or no better, so not worth retrying without a new reason: laying fixed notation out branch-free as Glaze's table-driven layout does, rendering straight into the writer's spare capacity instead of a scratch array, and loading both words of the fraction before deciding on the first.
 
 ## BEVE
 
@@ -375,7 +390,7 @@ String values are handed back as subslices of the input with no UTF-8 validation
 
 ## Known gaps
 
-**Float writing was the one real gap.** It used to run Ryu, at 26-39% of Glaze. `num/zmij.rs` is a port of the algorithm Glaze itself uses, which roughly doubled float write throughput and moved it to 66-71% of Glaze. That is now in line with the rest of the library rather than an outlier.
+**Float writing is the widest gap.** It used to run Ryu, at 26-39% of Glaze. `num/zmij.rs` is a port of the algorithm Glaze itself uses, which roughly doubled float write throughput. Floats remain the widest write gap in [performance.md](performance.md).
 
 The idea worth carrying: Ryu brackets the value in base ten and divides digits away until the interval stops admitting an answer, which is a data-dependent chain of 64-bit divisions. It is slowest on exactly the values real documents are full of, since an exact short decimal like `5.0` arrives with fifteen redundant digits. Zmij instead produces a fixed-width significand from one 128x64 multiply, holds one extra digit back, and lets the rounding test say whether that digit is needed. Trailing zeros then fall out of a leading-zeros count over the digit bytes rather than a loop, so the cost is the same for every input.
 
