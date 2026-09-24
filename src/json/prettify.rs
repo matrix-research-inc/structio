@@ -268,55 +268,57 @@ fn value<O: Options>(p: &mut Parser<'_, O>, w: &mut Writer<'_, O>) -> PResult<()
 /// `{ "key": value, ... }`, one member per line.
 fn object<O: Options>(p: &mut Parser<'_, O>, w: &mut Writer<'_, O>) -> PResult<()> {
     p.expect(b'{', ErrorCode::ExpectedBrace)?;
-    p.enter()?;
-    w.open(b'{');
-    p.skip_ws();
-    if !p.try_byte(b'}') {
-        loop {
-            // The cursor is on a token: the `{` above skipped its whitespace,
-            // and so does `comma_or_close` at the foot of the loop.
-            match p.peek() {
-                Some(b'"') => {}
-                None => return Err(ErrorCode::UnexpectedEnd),
-                Some(_) => return Err(ErrorCode::ExpectedQuote),
-            }
-            w.line();
-            copy_token(p, w)?;
-            p.colon()?;
-            w.colon();
-            value(p, w)?;
-            // The unconditional trailing comma every container in this crate
-            // writes; `close` below either overwrites it or takes it back.
-            w.push(b',');
-            if !p.comma_or_close(b'}')? {
-                break;
+    p.nested(|p| {
+        w.open(b'{');
+        p.skip_ws();
+        if !p.try_byte(b'}') {
+            loop {
+                // The cursor is on a token: the `{` above skipped its
+                // whitespace, and so does `comma_or_close` at the foot of the
+                // loop.
+                match p.peek() {
+                    Some(b'"') => {}
+                    None => return Err(ErrorCode::UnexpectedEnd),
+                    Some(_) => return Err(ErrorCode::ExpectedQuote),
+                }
+                w.line();
+                copy_token(p, w)?;
+                p.colon()?;
+                w.colon();
+                value(p, w)?;
+                // The unconditional trailing comma every container in this
+                // crate writes; `close` below either overwrites it or takes it
+                // back.
+                w.push(b',');
+                if !p.comma_or_close(b'}')? {
+                    break;
+                }
             }
         }
-    }
-    w.close(b'}');
-    p.leave();
-    Ok(())
+        w.close(b'}');
+        Ok(())
+    })
 }
 
 /// `[value, ...]`, one element per line or all on one, as the policy says.
 fn array<O: Options>(p: &mut Parser<'_, O>, w: &mut Writer<'_, O>) -> PResult<()> {
     p.expect(b'[', ErrorCode::ExpectedBracket)?;
-    p.enter()?;
-    w.open(b'[');
-    p.skip_ws();
-    if !p.try_byte(b']') {
-        loop {
-            w.item();
-            value(p, w)?;
-            w.push(b',');
-            if !p.comma_or_close(b']')? {
-                break;
+    p.nested(|p| {
+        w.open(b'[');
+        p.skip_ws();
+        if !p.try_byte(b']') {
+            loop {
+                w.item();
+                value(p, w)?;
+                w.push(b',');
+                if !p.comma_or_close(b']')? {
+                    break;
+                }
             }
         }
-    }
-    w.close(b']');
-    p.leave();
-    Ok(())
+        w.close(b']');
+        Ok(())
+    })
 }
 
 /// Copy one scalar token through, exactly as the input spelled it.

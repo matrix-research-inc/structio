@@ -304,20 +304,20 @@ fn pair<O: Options>(
 /// way a valid document may hold a number no target can take.
 fn matrix<O: Options>(r: &mut Reader<'_>, w: &mut Writer<'_, O>) -> PResult<()> {
     let layout = MatrixLayout::from_byte(r.take(1)?[0]).ok_or(ErrorCode::InvalidMatrixLayout)?;
-    r.enter()?;
-    w.open(b'{');
-    w.key(LAYOUT_MEMBER);
-    w.write_str(layout.as_str());
-    w.push(b',');
-    w.key(EXTENTS_MEMBER);
-    value(r, w)?;
-    w.push(b',');
-    w.key(VALUE_MEMBER);
-    value(r, w)?;
-    w.push(b',');
-    w.close(b'}');
-    r.leave();
-    Ok(())
+    r.nested(|r| {
+        w.open(b'{');
+        w.key(LAYOUT_MEMBER);
+        w.write_str(layout.as_str());
+        w.push(b',');
+        w.key(EXTENTS_MEMBER);
+        value(r, w)?;
+        w.push(b',');
+        w.key(VALUE_MEMBER);
+        value(r, w)?;
+        w.push(b',');
+        w.close(b'}');
+        Ok(())
+    })
 }
 
 /// The bits a 16-bit float is stored as.
@@ -366,45 +366,45 @@ fn object<O: Options>(r: &mut Reader<'_>, w: &mut Writer<'_, O>, h: u8) -> PResu
     let cat = header::sub(h);
     let width = key_width(h)?;
     let members = r.count()?;
-    r.enter()?;
-    w.open(b'{');
-    for _ in 0..members {
-        w.line();
-        if cat == header::CAT_FLOAT {
-            w.write_str(r.str_body()?);
-        } else {
-            // JSON has no key but a string, so an integer key is written as its
-            // digits inside quotes. That is not so much a lossy choice as the
-            // only one, and it is the form `ToJsonKey` already uses, so a
-            // `HashMap<u32, _>` transcodes to the bytes it would have been
-            // written as directly. `key_width` took its width from the same
-            // `byte_width` call, so the payload is what `number` expects.
-            w.push(b'"');
-            number(w, cat, header::count(h), r.take(width)?)?;
-            w.push(b'"');
+    r.nested(|r| {
+        w.open(b'{');
+        for _ in 0..members {
+            w.line();
+            if cat == header::CAT_FLOAT {
+                w.write_str(r.str_body()?);
+            } else {
+                // JSON has no key but a string, so an integer key is written as its
+                // digits inside quotes. That is not so much a lossy choice as the
+                // only one, and it is the form `ToJsonKey` already uses, so a
+                // `HashMap<u32, _>` transcodes to the bytes it would have been
+                // written as directly. `key_width` took its width from the same
+                // `byte_width` call, so the payload is what `number` expects.
+                w.push(b'"');
+                number(w, cat, header::count(h), r.take(width)?)?;
+                w.push(b'"');
+            }
+            w.colon();
+            value(r, w)?;
+            w.push(b',');
         }
-        w.colon();
-        value(r, w)?;
-        w.push(b',');
-    }
-    w.close(b'}');
-    r.leave();
-    Ok(())
+        w.close(b'}');
+        Ok(())
+    })
 }
 
 /// Transcribe a generic array, whose elements each carry their own header.
 fn generic_array<O: Options>(r: &mut Reader<'_>, w: &mut Writer<'_, O>) -> PResult<()> {
     let n = r.count()?;
-    r.enter()?;
-    w.open(b'[');
-    for _ in 0..n {
-        w.item();
-        value(r, w)?;
-        w.push(b',');
-    }
-    w.close(b']');
-    r.leave();
-    Ok(())
+    r.nested(|r| {
+        w.open(b'[');
+        for _ in 0..n {
+            w.item();
+            value(r, w)?;
+            w.push(b',');
+        }
+        w.close(b']');
+        Ok(())
+    })
 }
 
 /// Transcribe a typed array, in any of its three shapes.
@@ -415,41 +415,41 @@ fn generic_array<O: Options>(r: &mut Reader<'_>, w: &mut Writer<'_, O>) -> PResu
 /// checks than an element at a time and the reason a bogus element count cannot
 /// drag this through millions of iterations before running out of input.
 fn typed_array<O: Options>(r: &mut Reader<'_>, w: &mut Writer<'_, O>, h: u8) -> PResult<()> {
-    r.enter()?;
-    w.open(b'[');
-    match r.typed_head(h)? {
-        Typed::Bools(n) => {
-            let payload = r.take(n.div_ceil(8))?;
-            for i in 0..n {
-                w.item();
-                w.write_bool((payload[i >> 3] >> (i & 7)) & 1 == 1);
-                w.push(b',');
+    r.nested(|r| {
+        w.open(b'[');
+        match r.typed_head(h)? {
+            Typed::Bools(n) => {
+                let payload = r.take(n.div_ceil(8))?;
+                for i in 0..n {
+                    w.item();
+                    w.write_bool((payload[i >> 3] >> (i & 7)) & 1 == 1);
+                    w.push(b',');
+                }
+            }
+            // The one shape that has to be walked rather than indexed, each
+            // element carrying its own length.
+            Typed::Strings(n) => {
+                for _ in 0..n {
+                    w.item();
+                    w.write_str(r.str_body()?);
+                    w.push(b',');
+                }
+            }
+            Typed::Fixed(elem, n) => {
+                let cat = header::sub(elem);
+                let code = header::count(elem);
+                let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
+                let payload = r.take(payload_len(elem, n)?)?;
+                // `chunks_exact` panics on a zero width; `byte_width` returns at
+                // least one byte for every header it accepts at all.
+                for chunk in payload.chunks_exact(width) {
+                    w.item();
+                    number(w, cat, code, chunk)?;
+                    w.push(b',');
+                }
             }
         }
-        // The one shape that has to be walked rather than indexed, each
-        // element carrying its own length.
-        Typed::Strings(n) => {
-            for _ in 0..n {
-                w.item();
-                w.write_str(r.str_body()?);
-                w.push(b',');
-            }
-        }
-        Typed::Fixed(elem, n) => {
-            let cat = header::sub(elem);
-            let code = header::count(elem);
-            let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
-            let payload = r.take(payload_len(elem, n)?)?;
-            // `chunks_exact` panics on a zero width; `byte_width` returns at
-            // least one byte for every header it accepts at all.
-            for chunk in payload.chunks_exact(width) {
-                w.item();
-                number(w, cat, code, chunk)?;
-                w.push(b',');
-            }
-        }
-    }
-    w.close(b']');
-    r.leave();
-    Ok(())
+        w.close(b']');
+        Ok(())
+    })
 }

@@ -281,7 +281,8 @@ impl<'de, O: Options> Reader<'de, O> {
     /// assert_eq!(r.position(), start);
     /// ```
     /// Any key [`set_error_key`](Self::set_error_key) left is dropped, for
-    /// the reason [`json::Parser::rewind`](crate::json::Parser::rewind) gives.
+    /// the reason [`json::Parser::rewind`](crate::json::Parser::rewind) gives,
+    /// and nothing else needs winding back, for the reason it gives too.
     #[inline]
     pub fn rewind(&mut self, to: usize) {
         // Clamping is also what keeps `pos <= data.len()`, which every bounds
@@ -366,19 +367,40 @@ impl<'de, O: Options> Reader<'de, O> {
         usize::try_from(self.size()?).map_err(|_| ErrorCode::UnexpectedEnd)
     }
 
+    /// Count one more level of nesting, or refuse it past [`MAX_DEPTH`].
+    ///
+    /// A refusal leaves the count where it was, for the reason
+    /// [`nested`](Self::nested) gives.
     #[inline(always)]
     pub(crate) fn enter(&mut self) -> PResult<()> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            Err(ErrorCode::ExceededMaxDepth)
-        } else {
-            Ok(())
+        if self.depth >= MAX_DEPTH {
+            return Err(ErrorCode::ExceededMaxDepth);
         }
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Run `body` one level deeper, and come back up however it exits.
+    ///
+    /// The depth count is state that outlives a failed read, which the cursor
+    /// is not: [`rewind`](Self::rewind) puts the cursor back, but a level
+    /// entered and never left would stay counted, so a reader that speculates
+    /// and winds back would lose a level per failure and, some hundreds of
+    /// failures on, have ordinary input refused as too deep. So a failure
+    /// releases what it entered on the way out, and every container walk goes
+    /// through here rather than pairing `enter` and `leave` around `?`s that
+    /// would skip the `leave`.
+    #[inline(always)]
+    pub(crate) fn nested<R>(&mut self, body: impl FnOnce(&mut Self) -> PResult<R>) -> PResult<R> {
+        self.enter()?;
+        let result = body(self);
+        self.leave();
+        result
     }
 
     /// Leave a container [`enter`](Self::enter) counted.
     ///
-    /// The two are balanced by the caller, and the public
+    /// The two are balanced by the caller, on every exit, and the public
     /// `read_object_rest` / `finish_internally_tagged` pair takes its `enter`
     /// from whoever opened the object. A hand-written impl that calls one of
     /// those without having entered wraps the depth, and what that costs
@@ -769,13 +791,38 @@ impl<'de, O: Options> Reader<'de, O> {
     /// `open` is the offset of the object's header byte, carried in because a
     /// [`MissingKey`](ErrorCode::MissingKey) is reported against the object
     /// rather than against what follows it, and this is called once the cursor
-    /// is past it. The `enter` is the caller's, and is balanced here.
+    /// is past it. The `enter` is the caller's, and is balanced here, whether
+    /// or not the members read.
     pub fn read_object_rest<T: ReadObject<'de>>(
         &mut self,
         value: &mut T,
         remaining: usize,
         open: usize,
     ) -> PResult<()> {
+        let seen = self.rest_members::<T>(value, remaining);
+        self.leave();
+        let seen = seen?;
+        let mask = Fields::<O, T>::MASK;
+        if seen & mask != mask {
+            // Back to the object's header: the cursor is past the object by
+            // now, and what is incomplete is the object, not what follows it.
+            // The offset can therefore only name the object, so the key of the
+            // member it lacks is carried alongside it.
+            self.pos = open;
+            self.error_key = Fields::<O, T>::missing(seen);
+            return Err(ErrorCode::MissingKey);
+        }
+        Ok(())
+    }
+
+    /// [`read_object_rest`](Self::read_object_rest) short of its `leave`, so
+    /// that a member failing to read cannot skip it.
+    #[inline(always)]
+    fn rest_members<T: ReadObject<'de>>(
+        &mut self,
+        value: &mut T,
+        remaining: usize,
+    ) -> PResult<u64> {
         // One bit per field filled, compared once the object ends against the
         // fields that had to be there. Never written, and so never read, unless
         // the policy or the type asks for one.
@@ -791,19 +838,7 @@ impl<'de, O: Options> Reader<'de, O> {
             }
             self.pos = resume;
         }
-
-        self.leave();
-        let mask = Fields::<O, T>::MASK;
-        if seen & mask != mask {
-            // Back to the object's header: the cursor is past the object by
-            // now, and what is incomplete is the object, not what follows it.
-            // The offset can therefore only name the object, so the key of the
-            // member it lacks is carried alongside it.
-            self.pos = open;
-            self.error_key = Fields::<O, T>::missing(seen);
-            return Err(ErrorCode::MissingKey);
-        }
-        Ok(())
+        Ok(seen)
     }
 
     /// One member, the cursor sitting on its key: look the key up, let the
@@ -857,8 +892,17 @@ impl<'de, O: Options> Reader<'de, O> {
     ///
     /// The tag was the whole value, so anything after it is an unknown member
     /// and meets the policy that governs one. The `enter` is the caller's, and
-    /// is balanced here.
+    /// is balanced here, whether or not the members were acceptable.
     pub fn finish_internally_tagged(&mut self, remaining: usize) -> PResult<()> {
+        let result = self.unknown_members(remaining);
+        self.leave();
+        result
+    }
+
+    /// [`finish_internally_tagged`](Self::finish_internally_tagged) short of
+    /// its `leave`, for [`read_object_rest`](Self::read_object_rest)'s reason.
+    #[inline(always)]
+    fn unknown_members(&mut self, remaining: usize) -> PResult<()> {
         for _ in 0..remaining {
             self.unknown_member()?;
         }
@@ -870,7 +914,6 @@ impl<'de, O: Options> Reader<'de, O> {
             }
             self.pos = resume;
         }
-        self.leave();
         Ok(())
     }
 
@@ -928,21 +971,21 @@ impl<'de, O: Options> Reader<'de, O> {
                     self.pos = open;
                     return Err(ErrorCode::ExpectedVariant);
                 }
-                self.enter()?;
-                let n = self.count()?;
-                // Where the name's bytes begin, so a refusal points at them
-                // rather than at the value they introduced.
-                let at = self.pos;
-                let name = self.take(n)?;
-                let index = T::MAP.lookup_sized(T::VARIANTS, name);
-                if index >= T::MAP.n as usize
-                    || !T::read_payload(value, resolve_variant::<T>(index), name, self)?
-                {
-                    self.pos = at;
-                    return Err(ErrorCode::UnknownVariant);
-                }
-                self.leave();
-                Ok(())
+                self.nested(|r| {
+                    let n = r.count()?;
+                    // Where the name's bytes begin, so a refusal points at
+                    // them rather than at the value they introduced.
+                    let at = r.pos;
+                    let name = r.take(n)?;
+                    let index = T::MAP.lookup_sized(T::VARIANTS, name);
+                    if index >= T::MAP.n as usize
+                        || !T::read_payload(value, resolve_variant::<T>(index), name, r)?
+                    {
+                        r.pos = at;
+                        return Err(ErrorCode::UnknownVariant);
+                    }
+                    Ok(())
+                })
             }
             _ => {
                 self.pos = open;
@@ -987,6 +1030,31 @@ impl<'de, O: Options> Reader<'de, O> {
             self.pos = open;
             return Err(ErrorCode::ExpectedTag);
         }
+        // What a failure puts back, for the reason
+        // [`json::Parser::read_internally_tagged`](crate::json::Parser::read_internally_tagged)
+        // gives: the level is left by whichever of `read_object_rest` and
+        // `finish_internally_tagged` ends the generated arm, if a failure got
+        // that far, and a late-tag run left on the stack would be taken by the
+        // next object read at its depth.
+        let depth = self.depth;
+        let runs = self.deferred.len();
+        let result = self.tagged_object::<T>(value, members, open);
+        if result.is_err() {
+            self.depth = depth;
+            self.deferred.truncate(runs);
+        }
+        result
+    }
+
+    /// [`read_internally_tagged`](Self::read_internally_tagged) past the
+    /// object's header and count, which `open` and `members` are.
+    #[inline(always)]
+    fn tagged_object<T: ReadInternallyTagged<'de>>(
+        &mut self,
+        value: &mut T,
+        members: usize,
+        open: usize,
+    ) -> PResult<()> {
         self.enter()?;
 
         // Where the first member's key begins, which is what a tag that is not
@@ -1108,31 +1176,28 @@ impl<'de, O: Options> Reader<'de, O> {
         let width = key_width(h)?;
         let members = self.count()?;
         let mut entry = start(self.honest(members));
-        self.enter()?;
-
-        for _ in 0..members {
-            // An integer key starts where the member does. A string key does
-            // not: its length comes first, and the position wanted is the text
-            // after it, which is where `object_member` winds back to before
-            // refusing. So the string arm shadows this.
-            let at = self.pos;
-            let (key, at) = match cat {
-                header::CAT_FLOAT => {
-                    let n = self.count()?;
-                    let at = self.pos;
-                    (Key::Str(self.str_text(n)?), at)
-                }
-                header::CAT_SIGNED => (
-                    Key::Signed(sign_extend(le_u128(self.take(width)?), width)),
-                    at,
-                ),
-                _ => (Key::Unsigned(le_u128(self.take(width)?)), at),
-            };
-            entry(self, key, at)?;
-        }
-
-        self.leave();
-        Ok(())
+        self.nested(|r| {
+            for _ in 0..members {
+                // An integer key starts where the member does. A string key
+                // does not: its length comes first, and the position wanted is
+                // the text after it, which is where `object_member` winds back
+                // to before refusing. So the string arm shadows this.
+                let at = r.pos;
+                let (key, at) = match cat {
+                    header::CAT_FLOAT => {
+                        let n = r.count()?;
+                        let at = r.pos;
+                        (Key::Str(r.str_text(n)?), at)
+                    }
+                    header::CAT_SIGNED => {
+                        (Key::Signed(sign_extend(le_u128(r.take(width)?), width)), at)
+                    }
+                    _ => (Key::Unsigned(le_u128(r.take(width)?)), at),
+                };
+                entry(r, key, at)?;
+            }
+            Ok(())
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1255,10 +1320,7 @@ impl<'de, O: Options> Reader<'de, O> {
         if !installed && h == header::COMPLEX {
             return self.complex_run(start);
         }
-        self.enter()?;
-        let n = self.drive(h, start)?;
-        self.leave();
-        Ok(n)
+        self.nested(|r| r.drive(h, start))
     }
 
     /// Drive the elements of a complex array, its extension header consumed.
@@ -1642,38 +1704,33 @@ impl<'de, O: Options> Reader<'de, O> {
                 let cat = header::sub(h);
                 let width = key_width(h)?;
                 let members = self.count()?;
-                self.enter()?;
-                for _ in 0..members {
-                    if cat == header::CAT_FLOAT {
-                        self.skip_str::<UTF8>()?;
-                    } else {
-                        self.drop_bytes(width)?;
+                self.nested(|r| {
+                    for _ in 0..members {
+                        if cat == header::CAT_FLOAT {
+                            r.skip_str::<UTF8>()?;
+                        } else {
+                            r.drop_bytes(width)?;
+                        }
+                        r.step::<UTF8>()?;
                     }
-                    self.step::<UTF8>()?;
-                }
-                self.leave();
-                Ok(())
+                    Ok(())
+                })
             }
             header::TY_GENERIC_ARRAY => {
                 let n = self.count()?;
-                self.enter()?;
-                for _ in 0..n {
-                    self.step::<UTF8>()?;
-                }
-                self.leave();
-                Ok(())
+                self.nested(|r| {
+                    for _ in 0..n {
+                        r.step::<UTF8>()?;
+                    }
+                    Ok(())
+                })
             }
             // Charged a level despite never recursing, because [`Self::read_seq`]
             // charges one and the two have to agree. A typed array is where the
             // deepest value in a document usually sits, so a walk that let it
             // through free would accept, one level down, exactly the documents
             // reading then refuses.
-            header::TY_TYPED_ARRAY => {
-                self.enter()?;
-                self.skip_typed::<UTF8>(h)?;
-                self.leave();
-                Ok(())
-            }
+            header::TY_TYPED_ARRAY => self.nested(|r| r.skip_typed::<UTF8>(h)),
             header::TY_EXTENSION => self.skip_extension::<UTF8>(h),
             _ => Err(ErrorCode::InvalidHeader),
         }
@@ -1719,19 +1776,15 @@ impl<'de, O: Options> Reader<'de, O> {
             // The deprecated type tag: an index, then the value it tagged.
             header::EXT_TYPE_TAG => {
                 self.size()?;
-                self.enter()?;
-                self.step::<UTF8>()?;
-                self.leave();
-                Ok(())
+                self.nested(|r| r.step::<UTF8>())
             }
             // A layout byte, then the extents and the data, both typed arrays.
             header::EXT_MATRIX => {
                 self.drop_bytes(1)?;
-                self.enter()?;
-                self.step::<UTF8>()?;
-                self.step::<UTF8>()?;
-                self.leave();
-                Ok(())
+                self.nested(|r| {
+                    r.step::<UTF8>()?;
+                    r.step::<UTF8>()
+                })
             }
             // A class header, a count in the run form, and then pairs of
             // components. Charged no level: it holds numbers and nothing else,

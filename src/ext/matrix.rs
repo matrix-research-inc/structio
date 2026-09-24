@@ -407,11 +407,10 @@ where
                 MatrixLayout::from_byte(r.take(1)?[0]).ok_or(ErrorCode::InvalidMatrixLayout)?;
             // One level for the extension, which is exactly what `skip_value`
             // charges it; the two values inside then charge their own.
-            r.enter()?;
-            beve::Read::read(&mut m.extents, r)?;
-            beve::Read::read(&mut m.data, r)?;
-            r.leave();
-            Ok(())
+            r.nested(|r| {
+                beve::Read::read(&mut m.extents, r)?;
+                beve::Read::read(&mut m.data, r)
+            })
         }
         // The object form, which is what a producer without the extension
         // writes and what the JSON side always writes.
