@@ -26,4 +26,4 @@ structio = { path = "..", features = ["derive"] }
 # the reason it is here rather than `trybuild`: a handful of fixtures asserting
 # that the derive refuses an attribute should not be the largest thing in
 # `cargo tree`. The goldens are the format `trybuild` writes.
-nocompile = "0.7"
+nocompile = "0.8"
