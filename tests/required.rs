@@ -11,9 +11,12 @@
 //! travels into a nested struct nothing else asked anything of, and the wide
 //! struct the global option refuses but a mark does not.
 //!
-//! Two refusals here are compile errors and so cannot be a `#[test]`: a marked
-//! field past the 64th, and a marker that is not `required`. Both are checked
-//! by hand, this crate carrying no compile-fail harness.
+//! Three refusals here are compile errors and so cannot be a `#[test]`: a
+//! marked field past the 64th, a marker that is not `required`, and a marker
+//! on a declaration that never reads. They are fixtures of the compile-fail
+//! suites in `tests/ui.rs` instead, `tests/ui-const/required_past_the_64th.rs`,
+//! `tests/ui/a_misspelled_marker.rs` and `tests/ui/required_when_write_only.rs`,
+//! each asserting the message as well as the refusal.
 
 use std::collections::BTreeMap;
 

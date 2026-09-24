@@ -1,0 +1,3 @@
+error[E0080]: evaluation panicked: structio: the tag of an internally tagged enum is also a field of this variant's payload, or an alias of one. The two share one object, so the name would be written twice and a last-wins parser would keep the field and lose the variant. Rename the field, or choose another tag.
+--> tests/ui-const/tag_is_a_field.rs:17:1
+--> $RUST/core/src/panic.rs

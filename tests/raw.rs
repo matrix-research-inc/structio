@@ -15,13 +15,14 @@
 //! That is the one design property here with no `#[test]` behind it. There is
 //! deliberately no `beve::Read` and no `beve::Write` for `Raw`, so a struct
 //! holding one cannot be declared with `object!` and `json_object!` is the
-//! declaration that works. A missing impl is a compile error, and this crate
-//! carries no compile-fail harness, so it is checked by hand: writing
-//! `object!` in place of any `json_object!` below refuses the declaration with
-//! two `E0277`s, one per BEVE trait, each naming `Raw` and adding that it
+//! declaration that works. A missing impl is a compile error, so it is a
+//! compile-fail fixture instead, `tests/ui/raw_in_both_formats.rs`: writing
+//! `object!` in place of `json_object!` refuses the declaration with `E0277`s
+//! against both BEVE traits, each naming `Raw` and adding that it
 //! implements the similarly named `json::Read` or `json::Write` instead. That
 //! last line is what makes the refusal read as a wrong-format mistake rather
-//! than as a type that forgot to implement something.
+//! than as a type that forgot to implement something, and the fixture holds it
+//! exactly.
 
 use structio::json::{Raw, Write as _};
 use structio::{

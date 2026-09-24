@@ -1,0 +1,18 @@
+error[E0023]: this pattern has 1 field, but the corresponding tuple variant has 2 fields
+--> tests/ui-rustc/variant_with_two_fields.rs:11:1
+--> $DIR/src/macros.rs
+error[E0061]: this enum variant takes 2 arguments but 1 argument was supplied
+--> tests/ui-rustc/variant_with_two_fields.rs:11:1
+--> tests/ui-rustc/variant_with_two_fields.rs:8:5
+error[E0023]: this pattern has 1 field, but the corresponding tuple variant has 2 fields
+--> tests/ui-rustc/variant_with_two_fields.rs:11:1
+--> $DIR/src/macros.rs
+error[E0023]: this pattern has 1 field, but the corresponding tuple variant has 2 fields
+--> tests/ui-rustc/variant_with_two_fields.rs:11:1
+--> $DIR/src/macros.rs
+error[E0061]: this enum variant takes 2 arguments but 1 argument was supplied
+--> tests/ui-rustc/variant_with_two_fields.rs:11:1
+--> tests/ui-rustc/variant_with_two_fields.rs:8:5
+error[E0023]: this pattern has 1 field, but the corresponding tuple variant has 2 fields
+--> tests/ui-rustc/variant_with_two_fields.rs:11:1
+--> $DIR/src/macros.rs

@@ -1,0 +1,7 @@
+error: `unit_enum!` takes a type and a brace-delimited list of variant names, each optionally renamed with `"name" => Variant` and aliased with `Variant | "other"`. A variant that carries a value, written `Variant(_)`, belongs to `tagged_enum!` instead, and so does a tag clause: a unit enum's value is a bare name, with no object for a tag to go in.
+  --> tests/ui/unit_variant_with_a_value.rs:11:1
+   |
+11 | structio::unit_enum!(Level { Info, Custom(_) });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__unit_enum` which comes from the expansion of the macro `structio::unit_enum` (in Nightly builds, run with -Z macro-backtrace for more info)

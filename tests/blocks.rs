@@ -14,8 +14,8 @@
 //! rather than merely round-trip against.
 //!
 //! One refusal here is a compile error and so cannot be a `#[test]`: a
-//! `NumericBytes` impl whose declared element is not its own width. It is
-//! checked by hand, this crate carrying no compile-fail harness.
+//! `NumericBytes` impl whose declared element is not its own width. It is a
+//! compile-fail fixture instead, `tests/ui-const/numeric_bytes_wrong_width.rs`.
 //!
 //! # Little-endian only, deliberately
 //!

@@ -3,6 +3,12 @@
 //! A perfect hash that quietly collides would make one field permanently
 //! unreachable, and the failure would look like a missing key rather than a
 //! bug, so each scheme is exercised directly.
+//!
+//! Every hand-picked set asserts the exact scheme it lands on. The ladder is
+//! tried in order, so a set that drifted onto a neighbouring rung would still
+//! resolve every key and still pass, while the scheme it was picked for went
+//! untested. The generated sets are no substitute: they reach the rarer rungs
+//! by chance or not at all.
 
 use structio::KeyMap;
 use structio::keymap::HashKind;
@@ -64,6 +70,12 @@ fn assert_rejects(keys: &'static [&'static str], strangers: &[&str]) {
 }
 
 #[test]
+fn no_keys() {
+    assert_eq!(assert_exact(&[]), HashKind::Empty);
+    assert_rejects(&[], &["", "a"]);
+}
+
+#[test]
 fn single_element() {
     assert_eq!(assert_exact(&["only"]), HashKind::SingleElement);
 }
@@ -75,17 +87,28 @@ fn two_elements_use_one_byte() {
     assert_rejects(&["alpha", "beta"], &["gamma", "a", "", "alphaa", "bet"]);
 }
 
+/// Three or four keys whose first bytes land on `0..4` under one cheap
+/// operation, so the index needs no table. The three operations are tried in
+/// order, so each gets a set the ones before it refuse.
 #[test]
 fn mod4_family() {
-    // Consecutive first letters are what the subtract variant is for.
-    let kind = assert_exact(&["x", "y", "z"]);
-    assert!(
-        matches!(
-            kind,
-            HashKind::Mod4 | HashKind::XorMod4 | HashKind::MinusMod4
-        ),
-        "expected a mod4 scheme, got {kind:?}"
-    );
+    // `x`, `y`, `z` are 0x78 to 0x7a, which is 0, 1, 2 mod 4 as they stand.
+    let plain: &[&str] = &["x", "y", "z"];
+    assert_eq!(assert_exact(plain), HashKind::Mod4);
+    assert_rejects(plain, &["w", "xx", "a", ""]);
+
+    // `a` is 1 mod 4, which rules the plain form out. Xored with `a`, the
+    // first bytes of `a`, `d`, `c`, `b` are 0, 5, 2, 3: 0 to 3 mod 4.
+    let xor: &[&str] = &["alpha", "delta", "charlie", "bravo"];
+    assert_eq!(assert_exact(xor), HashKind::XorMod4);
+    assert_rejects(xor, &["echo", "alphaa", "d", ""]);
+
+    // With `a` subtracted, the first bytes of `a`, `b`, `g` are 0, 1, 6: 0 to
+    // 2 mod 4.
+    // Xored, `b` with `a` is 3 rather than 1, so only subtracting fits.
+    let minus: &[&str] = &["alpha", "beta", "gamma"];
+    assert_eq!(assert_exact(minus), HashKind::MinusMod4);
+    assert_rejects(minus, &["delta", "betaa", "c", ""]);
 }
 
 #[test]
@@ -101,35 +124,63 @@ fn unique_index_is_exact_without_a_seed() {
 #[test]
 fn front_hash_handles_shared_first_bytes() {
     // No single byte column separates these, but the leading words do.
+    // `aaaa` and `aaab` share their leading two bytes, so it is the four.
     let keys: &[&str] = &["aaaa", "aaab", "aaba", "abaa", "baaa"];
-    let kind = assert_exact(keys);
-    assert!(
-        matches!(
-            kind,
-            HashKind::FrontHash2 | HashKind::FrontHash4 | HashKind::FrontHash8
-        ) || matches!(kind, HashKind::UniqueIndex),
-        "got {kind:?}"
-    );
+    assert_eq!(assert_exact(keys), HashKind::FrontHash4);
     assert_rejects(keys, &["aaac", "bbbb", "aaaaa", "aaa", ""]);
+}
+
+/// Each width of the front-bytes hash, from one family of sets. The endings
+/// `ab`, `ba`, `aa` and `bb` have no column that tells all four apart, and
+/// behind a shared prefix of none, two and six bytes they first differ in the
+/// leading two, four and eight, so each set is refused by every narrower
+/// window and taken by its own. The eight-byte width is the one that mixes
+/// with `rich_bitmix` rather than `bitmix`.
+#[test]
+fn every_front_hash_width() {
+    let two: &[&str] = &["ab", "ba", "aa", "bb"];
+    assert_eq!(assert_exact(two), HashKind::FrontHash2);
+    assert_rejects(two, &["ac", "abb", "a", ""]);
+
+    let four: &[&str] = &["aaab", "aaba", "aaaa", "aabb"];
+    assert_eq!(assert_exact(four), HashKind::FrontHash4);
+    assert_rejects(four, &["aaac", "aaabb", "aab", ""]);
+
+    let eight: &[&str] = &["aaaaaaab", "aaaaaaba", "aaaaaaaa", "aaaaaabb"];
+    assert_eq!(assert_exact(eight), HashKind::FrontHash8);
+    assert_rejects(eight, &["aaaaaaac", "aaaaaaabb", "aaaaaab", ""]);
 }
 
 #[test]
 fn length_and_byte_together() {
     // Same first bytes, different lengths: length has to join the hash.
     let keys: &[&str] = &["a", "aa", "aaa", "aaaa", "aaaaa", "aaaaaa"];
-    assert_exact(keys);
+    assert_eq!(assert_exact(keys), HashKind::UniqueIndexSized);
     assert_rejects(keys, &["aaaaaaa", "b", "", "ab"]);
 }
 
+/// A column chosen per key length, for a set no single column serves: `ids`
+/// and `idx` agree everywhere but the last byte, which `id` does not have, so
+/// no column every key reaches tells those two apart.
 #[test]
-fn long_shared_prefixes_need_the_full_key() {
+fn a_column_per_length() {
+    let keys: &[&str] = &["id", "ids", "idx"];
+    assert_eq!(assert_exact(keys), HashKind::UniquePerLength);
+    assert_rejects(keys, &["idy", "is", "idsx", "i", ""]);
+}
+
+/// The column search is not confined to the front windows: these share twenty
+/// bytes and differ in the twenty-first, which is still one column, so the
+/// lookup is a direct table with no seed and no hash of the key.
+#[test]
+fn a_distinguishing_column_past_a_long_prefix() {
     let keys: &[&str] = &[
         "configuration_value_alpha",
         "configuration_value_bravo",
         "configuration_value_charlie",
         "configuration_value_delta",
     ];
-    assert_exact(keys);
+    assert_eq!(assert_exact(keys), HashKind::UniqueIndex);
     assert_rejects(
         keys,
         &["configuration_value_echo", "configuration_value_", ""],

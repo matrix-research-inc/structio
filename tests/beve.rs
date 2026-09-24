@@ -249,9 +249,9 @@ fn a_deque_or_a_set_writes_a_generic_array_and_reads_back_either_way() {
     // Neither has one backing slice, so neither can be a typed array's
     // payload. The two forms stay interchangeable on the way in.
     let deque = VecDeque::from(vec![1.5f64, 2.5]);
-    assert_eq!(to_beve(&deque)[0], header::GENERIC_ARRAY);
+    assert_eq!(to_beve(&deque)[0], 0x05); // generic array
     let vec = vec![1.5f64, 2.5];
-    assert_eq!(to_beve(&vec)[0], header::array_of(header::CAT_FLOAT, 3));
+    assert_eq!(to_beve(&vec)[0], 0x64); // f64 typed array
 
     assert_eq!(from_beve::<Vec<f64>>(&to_beve(&deque)).unwrap(), vec);
     assert_eq!(from_beve::<VecDeque<f64>>(&to_beve(&vec)).unwrap(), deque);
@@ -267,7 +267,7 @@ fn an_empty_sequence_keeps_its_element_type() {
         Vec::<f64>::new()
     );
     assert_eq!(
-        from_beve::<Vec<f64>>(&[header::GENERIC_ARRAY, 0]).unwrap(),
+        from_beve::<Vec<f64>>(&[0x05, 0]).unwrap(),
         Vec::<f64>::new()
     );
 }
@@ -277,8 +277,8 @@ fn bit_packing_is_right_at_every_boundary() {
     for n in 0..40usize {
         let flags: Vec<bool> = (0..n).map(|i| i % 3 == 0).collect();
         let bytes = round(&flags);
-        let prefix = 1 + header::size_len(n as u64);
-        assert_eq!(bytes.len(), prefix + n.div_ceil(8), "n = {n}");
+        // The header, and a size that fits the one-byte form below 64.
+        assert_eq!(bytes.len(), 2 + n.div_ceil(8), "n = {n}");
         // The unused high bits of the final byte must be zero.
         if n % 8 != 0 {
             let last = *bytes.last().unwrap();
@@ -359,25 +359,30 @@ fn a_typed_array_of_one_width_reads_into_a_vec_of_another() {
 
 #[test]
 fn a_float_field_takes_the_half_widths_it_will_never_write() {
+    // A number header is `0bWWW_CC_TTT`: width code, category, type. Type 1 is
+    // a number and category 0 a float, so these differ only in the width code:
+    // 0x01 is code 0, bfloat16, and 0x21 is code 1, IEEE binary16.
+    //
     // bfloat16 is the top half of an f32.
-    let bf16 = [header::number(header::CAT_FLOAT, 0), 0x80, 0x3F];
+    let bf16 = [0x01, 0x80, 0x3F];
     assert_eq!(from_beve::<f64>(&bf16).unwrap(), 1.0);
     // IEEE binary16: 1.0 is 0x3C00, and the smallest subnormal is 2^-24.
-    let f16 = [header::number(header::CAT_FLOAT, 1), 0x00, 0x3C];
+    let f16 = [0x21, 0x00, 0x3C];
     assert_eq!(from_beve::<f64>(&f16).unwrap(), 1.0);
     // The smallest binary16 subnormal, 2^-24, written as an exact quotient
     // rather than through `powi`, which is not required to be exact.
-    let sub = [header::number(header::CAT_FLOAT, 1), 0x01, 0x00];
+    let sub = [0x21, 0x01, 0x00];
     assert_eq!(from_beve::<f64>(&sub).unwrap(), 1.0 / 16_777_216.0);
-    let neg = [header::number(header::CAT_FLOAT, 1), 0x00, 0xBC];
+    let neg = [0x21, 0x00, 0xBC];
     assert_eq!(from_beve::<f64>(&neg).unwrap(), -1.0);
-    let inf = [header::number(header::CAT_FLOAT, 1), 0x00, 0x7C];
+    let inf = [0x21, 0x00, 0x7C];
     assert!(from_beve::<f64>(&inf).unwrap().is_infinite());
 }
 
 #[test]
 fn a_128_bit_float_is_reported_rather_than_guessed_at() {
-    let mut bytes = vec![header::number(header::CAT_FLOAT, 4)];
+    // Width code 4 under the float category: 0b100_00_001.
+    let mut bytes = vec![0x81];
     bytes.extend_from_slice(&[0u8; 16]);
     // The header is enough to refuse it, so the offset is just past the header
     // and not past the sixteen bytes nothing was going to read.
@@ -555,21 +560,27 @@ fn an_unknown_member_is_stepped_over_whatever_it_holds() {
 fn an_unknown_member_holding_an_extension_is_stepped_over_too() {
     // None of these decode into a Rust type, but all of them state their own
     // extent, so a document carrying one stays readable for its other fields.
+    //
+    // An extension is type 6 in the low three bits with its id in the five
+    // above them, `0bIIIII_110`: the type tag is id 1, the matrix 2 and
+    // complex 3. The delimiter, id 0, is no value and is refused instead; see
+    // below.
 
     // A matrix: layout byte, extents as a typed array, data as a typed array.
-    let mut matrix = vec![header::header(header::TY_EXTENSION, 0, 0) | (header::EXT_MATRIX << 3)];
+    let mut matrix = vec![0x16];
     matrix.push(0); // layout_right
     matrix.extend_from_slice(&to_beve(&vec![1u32, 2]));
     matrix.extend_from_slice(&to_beve(&vec![1.0f64, 2.0]));
 
-    // One complex f64: the extension header, a numeric header, and two values.
-    let mut complex = vec![header::header(header::TY_EXTENSION, 0, 0) | (header::EXT_COMPLEX << 3)];
-    complex.push(header::header(0, header::CAT_FLOAT, 3));
+    // One complex f64: the extension header, a class header, and two values.
+    // The class is 0b011_00_000, width code 3 and category 0 (float) where a
+    // number header puts them, with the low three bits saying "one".
+    let mut complex = vec![0x1E, 0x60];
     complex.extend_from_slice(&1.0f64.to_le_bytes());
     complex.extend_from_slice(&2.0f64.to_le_bytes());
 
     // The deprecated type tag: an index and the value it tagged.
-    let mut tag = vec![header::header(header::TY_EXTENSION, 0, 0) | (header::EXT_TYPE_TAG << 3)];
+    let mut tag = vec![0x0E];
     tag.push(0); // index 0
     tag.extend_from_slice(&to_beve(&7u8));
 
@@ -603,8 +614,13 @@ fn an_unknown_member_holding_a_delimiter_is_refused_rather_than_stepped_over() {
 /// `HEADER | NUMERIC_HEADER | SIZE | PADDING_LENGTH | PADDING | DATA`, where the
 /// padding exists so a reader can point at `DATA` directly. The writer here
 /// never emits this form, so these vectors stand in for a producer that does.
+///
+/// `HEADER` is 0x5C, `0b010_11_100`: a typed array (type 4) of the "other"
+/// category (3) at code 2, which is the aligned form. `NUMERIC_HEADER` is the
+/// typed-array header the plain form would have carried, 0x64 for `f64` and
+/// 0x14 for `u8`.
 fn aligned(numeric_header: u8, count: usize, pad: usize, data: &[u8]) -> Vec<u8> {
-    let mut v = vec![header::ALIGNED_ARRAY, numeric_header];
+    let mut v = vec![0x5C, numeric_header];
     v.push((count as u8) << 2); // a compressed size, one byte up to 63
     v.push(pad as u8);
     v.extend(std::iter::repeat_n(0xAA, pad));
@@ -621,11 +637,11 @@ fn an_aligned_array_is_read_and_skipped_at_its_true_extent() {
     for v in [1.0f64, 2.0, 3.0] {
         f64s.extend_from_slice(&v.to_le_bytes());
     }
-    let floats = aligned(header::array_of(header::CAT_FLOAT, 3), 3, 7, &f64s);
+    let floats = aligned(0x64, 3, 7, &f64s);
     assert_eq!(from_beve::<Vec<f64>>(&floats).unwrap(), vec![1.0, 2.0, 3.0]);
 
     // The same payload widens element by element, as a typed array does.
-    let bytes = aligned(header::array_of(header::CAT_UNSIGNED, 0), 3, 1, &[7, 8, 9]);
+    let bytes = aligned(0x14, 3, 1, &[7, 8, 9]);
     assert_eq!(from_beve::<Vec<u64>>(&bytes).unwrap(), vec![7, 8, 9]);
 
     // Read as bytes, it borrows out of the input past the padding.
@@ -642,11 +658,11 @@ fn an_aligned_array_is_read_and_skipped_at_its_true_extent() {
     }
 
     // Zero padding is the ordinary case once a producer is already aligned.
-    let none = aligned(header::array_of(header::CAT_UNSIGNED, 0), 2, 0, &[4, 5]);
+    let none = aligned(0x14, 2, 0, &[4, 5]);
     assert_eq!(from_beve::<Vec<u8>>(&none).unwrap(), vec![4, 5]);
 
     // A truncated payload is refused rather than read short.
-    let mut short = aligned(header::array_of(header::CAT_FLOAT, 3), 3, 7, &f64s);
+    let mut short = aligned(0x64, 3, 7, &f64s);
     short.truncate(short.len() - 1);
     assert!(from_beve::<Vec<f64>>(&short).is_err());
 }
