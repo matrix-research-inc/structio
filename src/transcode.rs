@@ -29,15 +29,18 @@
 //!   the typed path would have produced.
 //! - **Non-finite floats become `null`**, which is what the JSON writer does
 //!   with them everywhere else.
-//! - **Two of the four extensions are refused**, with [`UnsupportedFeature`].
-//!   A complex number becomes `[re,im]` and a matrix becomes
+//! - **The deprecated type tag is refused**, with [`UnsupportedFeature`]. It
+//!   names a variant by an index whose meaning is not in the document, so it
+//!   has no JSON form to take, though a reader that meets one still *skips* it
+//!   correctly. The other two extensions that are values are written: a complex
+//!   number becomes `[re,im]` and a matrix becomes
 //!   `{"layout":…,"extents":[…],"value":[…]}`, which are not encodings invented
 //!   here: they are what [`Complex`](crate::Complex) and
 //!   [`Matrix`](crate::Matrix) write in JSON and read back from BEVE, so a
-//!   document that goes through here still reads into the same types. The other
-//!   two hold nothing to write. A delimiter separates documents rather than
-//!   being one, and the type tag is deprecated. Both are still *skipped*
-//!   correctly by a reader that meets one.
+//!   document that goes through here still reads into the same types.
+//! - **A delimiter is refused as malformed**, with [`InvalidHeader`], as every
+//!   walk in the crate refuses one where a value belongs: it separates
+//!   documents and is never one. See [`header::DELIMITER`].
 //! - **128-bit floats are refused**, for the same reason [`from_beve`] refuses
 //!   them: there is nothing to widen them through.
 //!
@@ -56,6 +59,7 @@
 //! [`from_beve`]: crate::from_beve
 //! [`to_beve`]: crate::to_beve
 //! [`UnsupportedFeature`]: crate::ErrorCode::UnsupportedFeature
+//! [`InvalidHeader`]: crate::ErrorCode::InvalidHeader
 
 use std::io;
 
@@ -246,8 +250,11 @@ fn extension<O: Options>(r: &mut Reader<'_>, w: &mut Writer<'_, O>, h: u8) -> PR
     match header::ext_id(h) {
         header::EXT_COMPLEX => complex(r, w),
         header::EXT_MATRIX => matrix(r, w),
-        // A delimiter separates documents rather than being one, and the type
-        // tag is deprecated. See the module docs.
+        // Not a value at all, so malformed here rather than unsupported. See
+        // `header::DELIMITER`.
+        header::EXT_DELIMITER => Err(ErrorCode::InvalidHeader),
+        // The deprecated type tag, and the ids the specification leaves
+        // undefined. See the module docs.
         _ => Err(ErrorCode::UnsupportedFeature),
     }
 }

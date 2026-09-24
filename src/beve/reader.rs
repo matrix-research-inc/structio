@@ -1782,12 +1782,13 @@ impl<'de, O: Options> Reader<'de, O> {
 
     /// Step over an extension value.
     ///
-    /// None of these are read into Rust types, but all of them state their own
-    /// extent, so all of them can be stepped over.
+    /// The three that are values all state their own extent, so all of them
+    /// can be stepped over, whether or not a Rust type reads them.
     fn skip_extension<const UTF8: bool>(&mut self, h: u8) -> PResult<()> {
         match header::ext_id(h) {
-            // A delimiter is a marker with no body.
-            header::EXT_DELIMITER => Ok(()),
+            // A separator between documents rather than a value, so it has no
+            // place where one is expected. See `header::DELIMITER`.
+            header::EXT_DELIMITER => Err(ErrorCode::InvalidHeader),
             // The deprecated type tag: an index, then the value it tagged.
             header::EXT_TYPE_TAG => {
                 self.size()?;
@@ -1868,6 +1869,9 @@ impl<'de, O: Options> Reader<'de, O> {
                 Ok(())
             }
             header::TY_TYPED_ARRAY => self.descend_typed(h, index(token)?),
+            // No value at all, so not a scalar with no members either: the
+            // document's problem, as `skip_extension` says of the same byte.
+            header::TY_EXTENSION if h == header::DELIMITER => Err(ErrorCode::InvalidHeader),
             // A scalar has no members, and an extension's insides are not
             // addressable, so there is nothing here the token could name.
             header::TY_NULL_BOOL | header::TY_NUMBER | header::TY_STRING | header::TY_EXTENSION => {

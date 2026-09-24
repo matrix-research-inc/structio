@@ -639,16 +639,16 @@ fn the_two_formats_agree_on_every_value() {
 ///
 /// The two walk the same headers and derive extents from the same code, so a
 /// document one takes and the other trips over would mean they had drifted.
-/// The exceptions are the values with no JSON form: an extension, and a
-/// 128-bit float. Both are well formed, and neither can be written out.
+/// The exceptions are the values with no JSON form: the deprecated type tag,
+/// and a 128-bit float. Both are well formed, and neither can be written out.
 fn transcode_agrees_with_the_validator(bytes: &[u8]) {
     if structio::validate_beve(bytes).is_err() {
         return;
     }
     if let Err(e) = structio::beve_to_json(bytes) {
         assert!(
-            // Nothing JSON can hold: a 128-bit float, or an extension that is
-            // not a value.
+            // Nothing JSON can hold: a 128-bit float, or the deprecated type
+            // tag.
             e.code == ErrorCode::UnsupportedFeature
                 // A matrix layout byte outside the two the specification
                 // defines. It threatens no extent, so the validator has no

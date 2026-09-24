@@ -39,11 +39,13 @@ pub enum ErrorCode {
     DocumentTooLarge,
 
     // BEVE structure
-    /// A header byte named a type, width, or extension this crate cannot read.
+    /// A header byte named a type, width, or extension this crate cannot read,
+    /// or was the [delimiter](crate::beve::header::DELIMITER) where a value
+    /// belongs.
     InvalidHeader,
     /// A well-formed BEVE construct with nowhere to go: a 128-bit float, an
     /// extension beyond the four the specification defines, or, when
-    /// [transcoding](crate::transcode), any extension at all.
+    /// [transcoding](crate::transcode), the deprecated type tag.
     UnsupportedFeature,
     /// An object's keys were of a kind the destination cannot take, such as
     /// integer keys for a struct.

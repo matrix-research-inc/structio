@@ -46,7 +46,8 @@ pub enum Mode {
     /// Nothing separates them: every value states its own extent, so where one
     /// ends the next begins. The specification's delimiter extension may
     /// appear between documents all the same, and is stepped over, so a
-    /// producer that writes one is read the same as one that does not.
+    /// producer that writes one is read the same as one that does not. Inside
+    /// a document it is refused, since it separates values and is never one.
     Values,
     /// The elements of one top-level array.
     ///
@@ -308,7 +309,10 @@ fn head(buf: &[u8], at: usize, depth: usize) -> PResult<(usize, usize, Option<Fr
             }
         }
         header::TY_EXTENSION => match header::ext_id(h) {
-            header::EXT_DELIMITER => (0, None),
+            // Refused as every other walk refuses it. A delimiter *between*
+            // documents never gets here, being stepped over before a walk
+            // begins, so one met here stands where a value belongs.
+            header::EXT_DELIMITER => return Err(ErrorCode::InvalidHeader),
             // The deprecated type tag: an index, then the value it tagged.
             header::EXT_TYPE_TAG => {
                 r.size()?;

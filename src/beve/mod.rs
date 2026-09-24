@@ -86,10 +86,13 @@
 //!
 //! # What it does not do yet
 //!
-//! The delimiter and the deprecated type tag hold no data and get no types.
-//! Both are still stepped over correctly wherever they appear, so a document
-//! carrying one in a field you do not want stays readable for the fields you
-//! do.
+//! The deprecated type tag holds no data and gets no type. It is still stepped
+//! over correctly wherever it appears, so a document carrying one in a field
+//! you do not want stays readable for the fields you do.
+//!
+//! The delimiter is not something still to come, being no value at all. It
+//! separates documents in a stream, and where a value belongs it is refused.
+//! See [`header::DELIMITER`].
 
 use std::io;
 
@@ -300,8 +303,11 @@ pub fn slice_ref<T: NumericBytes>(input: &[u8]) -> Option<&[T]> {
 /// holds.
 ///
 /// Well formed here means *exactly one* value with no trailing bytes, which is
-/// what [`from_slice`] requires too. A run of delimiter-separated values is
-/// several documents rather than one, and is reported as trailing content.
+/// what [`from_slice`] requires too. A delimiter is not a value, so a document
+/// that is one, or that holds one where a value belongs, is
+/// [`InvalidHeader`]; after a whole value it is trailing content, a run of
+/// delimiter-separated values being several documents rather than one. See
+/// [`header::DELIMITER`].
 ///
 /// Validity is a property of the bytes, not of any type you have declared, so
 /// this says nothing about whether some `T` can read them. Use it on input
@@ -321,6 +327,7 @@ pub fn slice_ref<T: NumericBytes>(input: &[u8]) -> Option<&[T]> {
 /// ```
 ///
 /// [`UnsupportedFeature`]: crate::ErrorCode::UnsupportedFeature
+/// [`InvalidHeader`]: crate::ErrorCode::InvalidHeader
 pub fn validate(input: &[u8]) -> Result<()> {
     let mut r = Reader::new(input);
     match r.validate_value().and_then(|()| r.finish()) {

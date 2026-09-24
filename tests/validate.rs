@@ -219,6 +219,65 @@ fn a_delimiter_separated_stream_is_several_documents_and_not_one() {
 }
 
 #[test]
+fn a_delimiter_is_not_a_value_anywhere_one_belongs() {
+    // It separates documents and is never one, so every walk that expects a
+    // value refuses it there, and with the same code. A walk that stepped over
+    // it as a value of no extent would pass a document that frames as nothing
+    // and that no reader can read.
+    let d = header::DELIMITER;
+    let cases: [(&str, &[u8]); 4] = [
+        ("alone", &[d]),
+        ("before a value", &[d, header::TRUE]),
+        (
+            "as a member's value",
+            &[header::OBJECT, 1 << 2, 1 << 2, b'z', d],
+        ),
+        ("as an array element", &[header::GENERIC_ARRAY, 1 << 2, d]),
+    ];
+    for (name, bytes) in cases {
+        let code = |r: Result<(), structio::Error>| r.unwrap_err().code;
+        assert_eq!(
+            code(validate_beve(bytes)),
+            ErrorCode::InvalidHeader,
+            "validate {name}"
+        );
+        assert_eq!(
+            code(from_beve::<structio::Value>(bytes).map(drop)),
+            ErrorCode::InvalidHeader,
+            "Value {name}"
+        );
+        assert_eq!(
+            code(structio::beve_to_json(bytes).map(drop)),
+            ErrorCode::InvalidHeader,
+            "transcode {name}"
+        );
+    }
+
+    // Inside the two extensions that wrap values, which the readers refuse or
+    // read as a type before ever reaching an operand, the validator is the walk
+    // that meets it.
+    let tag = (header::EXT_TYPE_TAG << 3) | header::TY_EXTENSION;
+    for bytes in [vec![tag, 0, d], vec![header::MATRIX, 0, d, header::NULL]] {
+        assert_eq!(
+            validate_beve(&bytes).unwrap_err().code,
+            ErrorCode::InvalidHeader,
+            "{bytes:02x?}"
+        );
+    }
+
+    // A pointer aimed into one, or past one, finds the document at fault
+    // rather than the pointer.
+    let seek = |bytes: &[u8], pointer| {
+        beve::from_slice_at::<structio::Value>(bytes, pointer)
+            .unwrap_err()
+            .code
+    };
+    assert_eq!(seek(&[d], "/z"), ErrorCode::InvalidHeader);
+    let past = [header::GENERIC_ARRAY, 2 << 2, d, header::NULL];
+    assert_eq!(seek(&past, "/1"), ErrorCode::InvalidHeader);
+}
+
+#[test]
 fn a_string_that_is_not_utf8_is_rejected() {
     // The writer cannot produce one, so build it: header, size, payload.
     let bad = [header::STRING, 2 << 2, 0xff, 0xfe];
@@ -264,7 +323,7 @@ fn skipping_still_does_not_look_at_string_bytes() {
 }
 
 #[test]
-fn the_four_defined_extensions_validate() {
+fn the_three_extensions_that_are_values_validate() {
     let ext = |id: u8| header::header(header::TY_EXTENSION, 0, 0) | (id << 3);
     let bytes = |v: [u8; 2]| {
         vec![
@@ -274,9 +333,6 @@ fn the_four_defined_extensions_validate() {
             v[1],
         ]
     };
-
-    // A delimiter is a marker with no body.
-    validate_beve(&[ext(header::EXT_DELIMITER)]).unwrap();
 
     // The deprecated type tag: an index, then the value it tagged. Validation
     // recurses through it, so a bad string inside one is still caught.

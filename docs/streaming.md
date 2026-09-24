@@ -87,7 +87,7 @@ Chunks may split a value at **any** byte, including inside a string, inside an e
 
 | Constructor | Input shape |
 |---|---|
-| `beve::Documents::values(r)` | Whole documents back to back. Nothing separates them, since every value states its own extent; the specification's delimiter extension may appear between them and is stepped over. |
+| `beve::Documents::values(r)` | Whole documents back to back. Nothing separates them, since every value states its own extent; the specification's delimiter extension may appear between them and is stepped over, so a stream of nothing but delimiters holds no documents. Inside a document, where a value belongs, it is refused as `InvalidHeader`: it separates documents and is never one. |
 | `beve::Documents::array(r)` | The elements of one large top-level array. |
 
 ```rust

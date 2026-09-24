@@ -192,6 +192,78 @@ fn delimiters_between_documents_are_separators_rather_than_values() {
 }
 
 #[test]
+fn a_stream_of_nothing_but_delimiters_holds_no_documents() {
+    // Separators with nothing to separate: an empty stream, not a malformed
+    // one, and however the bytes arrive.
+    let d = structio::beve::header::DELIMITER;
+    for bytes in [vec![d], vec![d, d, d]] {
+        let mut docs = Documents::values(&bytes[..]);
+        assert!(docs.next_value::<Any>().is_none(), "{bytes:02x?}");
+        assert!(
+            dribble::<Any>(Mode::Values, &bytes).is_empty(),
+            "{bytes:02x?}"
+        );
+    }
+
+    // One in front of a document is still a separator, so what follows it is
+    // the one document, where the validator refuses the same bytes as a
+    // document of their own.
+    let bytes = [d, structio::beve::header::TRUE];
+    let got = dribble::<bool>(Mode::Values, &bytes);
+    assert_eq!(got.len(), 1);
+    assert!(got[0].as_ref().unwrap());
+    assert_eq!(
+        structio::validate_beve(&bytes).unwrap_err().code,
+        ErrorCode::InvalidHeader
+    );
+}
+
+#[test]
+fn a_delimiter_where_a_value_belongs_is_a_framing_failure() {
+    // A separator between documents, and never a value, so inside one it is
+    // refused with the code every other walk gives it. The refusal is the
+    // splitter's own, since the stream advanced not at all, and the validator
+    // agrees.
+    let d = structio::beve::header::DELIMITER;
+    for wrap in &WRAPS {
+        let bytes = nested(wrap, 1, &[d]);
+        let mut feed = Feed::values();
+        feed.push(&bytes);
+        feed.end();
+        let err = feed.next_value::<Any>().unwrap().unwrap_err();
+        assert_eq!(
+            err.as_parse().unwrap().code,
+            ErrorCode::InvalidHeader,
+            "{}",
+            wrap.name
+        );
+        assert_eq!(feed.offset(), 0, "{}", wrap.name);
+        assert_eq!(
+            structio::validate_beve(&bytes).unwrap_err().code,
+            ErrorCode::InvalidHeader,
+            "{}",
+            wrap.name
+        );
+    }
+
+    // An element of a top-level array is a value too, and between elements
+    // there is no document boundary for a delimiter to mark.
+    let bytes = [
+        structio::beve::header::GENERIC_ARRAY,
+        2 << 2,
+        structio::beve::header::NULL,
+        d,
+    ];
+    let got = dribble::<Any>(Mode::Array, &bytes);
+    assert_eq!(got.len(), 2);
+    assert!(got[0].is_ok());
+    assert_eq!(
+        got[1].as_ref().unwrap_err().as_parse().unwrap().code,
+        ErrorCode::InvalidHeader
+    );
+}
+
+#[test]
 fn a_generic_array_claiming_more_elements_than_it_has_ends_in_an_error() {
     let mut bytes = structio::to_beve(&vec![Small { id: 1 }, Small { id: 2 }]);
     bytes[1] = 3 << 2;
@@ -757,9 +829,8 @@ fn the_extensions_are_framed_even_though_they_are_not_read() {
     // number or a run of them.
     let pair = structio::beve::header::number(structio::beve::header::CAT_FLOAT, 3) & !0b111;
     let mut docs: Vec<Vec<u8>> = vec![
-        // A delimiter used as a value rather than as a separator, which is
-        // where a document may legitimately hold one.
-        nested(&WRAPS[0], 1, &[structio::beve::header::DELIMITER]),
+        // The deprecated type tag: an index, then the value it tagged.
+        vec![TYPE_TAG, 0, structio::beve::header::TRUE],
         // One complex number, and then a run of two.
         [&[COMPLEX, pair][..], &[0; 16]].concat(),
         [&[COMPLEX, pair | 1, 2 << 2][..], &[0; 32]].concat(),
