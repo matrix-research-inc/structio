@@ -7,10 +7,15 @@
 //! agreement, checked over every construct the writer can emit and over
 //! corruption of each one.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::cell::Cell;
+use std::collections::{HashMap, VecDeque};
 
 use structio::beve::header;
-use structio::{ErrorCode, SkipUnknown, beve, from_beve, from_beve_with, to_beve, validate_beve};
+use structio::{
+    Complex, ErrorCode, SkipUnknown, Value, beve, beve_to_json, from_beve, from_beve_with, to_beve,
+    validate_beve,
+};
 
 #[derive(Default, Debug, PartialEq)]
 struct Everything {
@@ -443,6 +448,217 @@ fn a_typed_array_costs_the_level_reading_charges_it() {
             "{} sequences: validate={validated:?} read={read:?}",
             outer + 1
         );
+    }
+}
+
+/// A chain of `{"next": ..}` objects ending in `{"data": ..}`, one per
+/// destination a typed array can be read into, so reading can reach the leaf at
+/// any depth.
+macro_rules! chains {
+    ($($name:ident: $data:ty),* $(,)?) => {$(
+        #[derive(Default)]
+        struct $name {
+            next: Option<Box<$name>>,
+            data: $data,
+        }
+        structio::object!($name { next, data });
+    )*};
+}
+chains! {
+    VecF64: Vec<f64>,
+    VecF32: Vec<f32>,
+    VecU32: Vec<u32>,
+    VecI64: Vec<i64>,
+    VecU8: Vec<u8>,
+    DequeF64: VecDeque<f64>,
+    ArrayF64: [f64; 1],
+    VecBool: Vec<bool>,
+    VecString: Vec<String>,
+    VecComplex: Vec<Complex<f64>>,
+}
+
+/// The destinations that borrow, which take the other two whole-block reads.
+#[derive(Default)]
+struct CowF64<'a> {
+    next: Option<Box<CowF64<'a>>>,
+    data: Cow<'a, [f64]>,
+}
+structio::object!(['a] CowF64<'a> { next, data });
+
+#[derive(Default)]
+struct BytesU8<'a> {
+    next: Option<Box<BytesU8<'a>>>,
+    data: &'a [u8],
+}
+structio::beve_object!(['a] BytesU8<'a> { next, data });
+
+#[test]
+fn every_walk_takes_a_typed_array_leaf_to_the_same_depth() {
+    // A typed array can be read element by element, copied whole, or borrowed
+    // whole as a `Cow` or a byte slice. Every one of those has to charge the
+    // level validating, transcoding and framing charge it, or a document one
+    // level from the limit reads and is then refused by the others, framing
+    // included, which ends a stream at the first such record. So each
+    // destination is taken to its deepest document by every walk, and all four
+    // have to agree at every depth. The element path is here for all three of
+    // its forms, numbers, packed booleans and strings. A complex array is the
+    // control: it is the one sequence no walk charges, so the bulk copy that
+    // takes it must not charge it either.
+    let limit = beve::reader::MAX_DEPTH as usize;
+    // The chain, the leaf's object and the array; a complex array costs none.
+    let typed = Some(limit - 2);
+    let complex = Some(limit - 1);
+
+    let f64s = to_beve(&vec![1.5f64]);
+    let f32s = to_beve(&vec![1.5f32]);
+    let u32s = to_beve(&vec![7u32]);
+    let i64s = to_beve(&vec![-7i64]);
+    let u8s = to_beve(&vec![7u8]);
+    let bools = to_beve(&vec![true]);
+    let strings = to_beve(&vec!["a".to_string()]);
+    let pairs = to_beve(&vec![Complex::new(1.5f64, -1.5)]);
+    let cow = |d: &[u8]| from_beve::<CowF64>(d).is_ok();
+    let bytes = |d: &[u8]| from_beve::<BytesU8>(d).is_ok();
+
+    assert_eq!(deepest("Vec<f64>", &f64s, reads::<VecF64>), typed);
+    assert_eq!(deepest("Vec<f32>", &f32s, reads::<VecF32>), typed);
+    assert_eq!(deepest("Vec<u32>", &u32s, reads::<VecU32>), typed);
+    assert_eq!(deepest("Vec<i64>", &i64s, reads::<VecI64>), typed);
+    assert_eq!(deepest("Vec<u8>", &u8s, reads::<VecU8>), typed);
+    assert_eq!(deepest("Cow<[f64]>", &f64s, cow), typed);
+    assert_eq!(deepest("&[u8]", &u8s, bytes), typed);
+    assert_eq!(deepest("VecDeque<f64>", &f64s, reads::<DequeF64>), typed);
+    assert_eq!(deepest("[f64; 1]", &f64s, reads::<ArrayF64>), typed);
+    assert_eq!(deepest("Vec<bool>", &bools, reads::<VecBool>), typed);
+    assert_eq!(deepest("Vec<String>", &strings, reads::<VecString>), typed);
+    let deepest_complex = deepest("Vec<Complex<f64>>", &pairs, reads::<VecComplex>);
+    assert_eq!(deepest_complex, complex);
+}
+
+fn reads<T: beve::ReadOwned>(doc: &[u8]) -> bool {
+    from_beve::<T>(doc).is_ok()
+}
+
+/// The deepest chain around `{"data": array}` that `read` accepts, having
+/// required validating, transcoding and framing to accept exactly the same
+/// chains.
+fn deepest(name: &str, array: &[u8], read: fn(&[u8]) -> bool) -> Option<usize> {
+    let key = |name: &[u8; 4]| [&[header::OBJECT, 1 << 2, 4 << 2][..], name].concat();
+    let limit = beve::reader::MAX_DEPTH as usize;
+    // Every depth ordinarily; under Miri only the ones around the limit, which
+    // is the only place the answer can change.
+    let depths: Vec<usize> = if cfg!(miri) {
+        vec![0, limit - 3, limit - 2, limit - 1, limit]
+    } else {
+        (0..=limit).collect()
+    };
+
+    let mut deepest = None;
+    for n in depths {
+        let mut doc = key(b"next").repeat(n);
+        doc.extend_from_slice(&key(b"data"));
+        doc.extend_from_slice(array);
+
+        let reads = read(&doc);
+        let validates = validate_beve(&doc).is_ok();
+        let transcodes = beve_to_json(&doc).is_ok();
+        // The splitter's own verdict, which is how far it advanced: the reader
+        // behind it applies the limit again from zero, so an error alone would
+        // not say whose it was.
+        let mut feed = beve::Feed::values();
+        feed.push(&doc);
+        feed.end();
+        let _ = feed.next_value::<Value>();
+        let frames = feed.offset() == doc.len();
+
+        assert_eq!(
+            [validates, transcodes, frames],
+            [reads; 3],
+            "{name} under {n} containers: read {reads}, validate {validates}, \
+             transcode {transcodes}, frame {frames}"
+        );
+        if reads {
+            deepest = Some(n);
+        }
+    }
+    deepest
+}
+
+#[test]
+fn a_whole_block_read_is_charged_a_level_whether_copied_or_borrowed() {
+    // The destinations above reach the whole-block reads through their own
+    // impls, and whether `Cow` borrows depends on where the document landed.
+    // This asks each directly, at a depth set exactly, on a `u8` array, which
+    // every address can be borrowed from. Past the limit the copy and the
+    // borrow decline, and the element path they fall back to is what refuses;
+    // the byte slice has no fallback and refuses on its own, with the same
+    // error.
+    #[derive(Clone, Copy)]
+    enum Take {
+        Borrowed,
+        Copied,
+        Bytes,
+    }
+    struct Deep<'a> {
+        outer: u32,
+        take: Take,
+        took: &'a Cell<bool>,
+    }
+    impl<'de> beve::Read<'de> for Deep<'_> {
+        fn read<O: structio::Options>(
+            &mut self,
+            r: &mut beve::Reader<'de, O>,
+        ) -> Result<(), ErrorCode> {
+            if self.outer > 0 {
+                let (take, took) = (self.take, self.took);
+                let outer = self.outer - 1;
+                return r
+                    .read_seq(|r, _| Deep { outer, take, took }.read(r))
+                    .map(|_| ());
+            }
+            let mut out = Vec::<u8>::new();
+            let took = match self.take {
+                Take::Borrowed => r.try_slice::<u8>().is_some(),
+                Take::Copied => r.try_bulk(&mut out)?,
+                Take::Bytes => {
+                    r.read_bytes()?;
+                    true
+                }
+            };
+            self.took.set(took);
+            if took {
+                Ok(())
+            } else {
+                beve::Read::read(&mut out, r)
+            }
+        }
+    }
+
+    let limit = beve::reader::MAX_DEPTH;
+    for outer in [limit - 1, limit] {
+        let mut doc: Vec<u8> = std::iter::repeat_n([header::GENERIC_ARRAY, 1 << 2], outer as usize)
+            .flatten()
+            .collect();
+        doc.extend_from_slice(&to_beve(&vec![7u8]));
+        for take in [Take::Borrowed, Take::Copied, Take::Bytes] {
+            let took = &Cell::new(false);
+            let read = beve::read_into(&mut Deep { outer, take, took }, &doc).map_err(|e| e.code);
+            let fits = outer < limit;
+            // A big-endian host never borrows a block or copies one whole,
+            // whatever the width, so there both decline at every depth and the
+            // fallback reads; what the depth decides is then only whether that
+            // read succeeds. A byte slice has no byte order and is taken on
+            // either.
+            let can_take = matches!(take, Take::Bytes) || cfg!(target_endian = "little");
+            assert_eq!(took.get(), fits && can_take, "{outer} containers");
+            let refused = Err(ErrorCode::ExceededMaxDepth);
+            assert_eq!(
+                read,
+                if fits { Ok(()) } else { refused },
+                "{outer} containers"
+            );
+            assert_eq!(validate_beve(&doc).is_ok(), fits, "{outer} containers");
+        }
     }
 }
 

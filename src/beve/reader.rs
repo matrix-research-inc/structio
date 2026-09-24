@@ -398,6 +398,21 @@ impl<'de, O: Options> Reader<'de, O> {
         result
     }
 
+    /// Whether a container opened here fits under [`MAX_DEPTH`]: the test
+    /// [`enter`](Self::enter) makes, without the count.
+    ///
+    /// For the reads that take a typed array whole, which are a copy, a borrow
+    /// and a byte slice. A typed array costs a level however it is read, and
+    /// nothing in one recurses, so the level would be entered and left with
+    /// only a payload taken in between, and this test is the whole of the
+    /// charge. It leaves no depth to restore on any path out. Taken free, a
+    /// block would let reading accept a document one level deeper than
+    /// validating, transcoding or framing does.
+    #[inline(always)]
+    fn can_enter(&self) -> bool {
+        self.depth < MAX_DEPTH
+    }
+
     /// Leave a container [`enter`](Self::enter) counted.
     ///
     /// The two are balanced by the caller, on every exit, and the public
@@ -746,11 +761,17 @@ impl<'de, O: Options> Reader<'de, O> {
     ///
     /// Accepts a typed array of one-byte elements, of either signedness, and
     /// the aligned form of the same. A wider element type is not a run of
-    /// bytes and is reported rather than reinterpreted.
+    /// bytes and is reported rather than reinterpreted. The array costs a
+    /// nesting level, as it does read any other way.
     pub fn read_bytes(&mut self) -> PResult<&'de [u8]> {
         let h = self.head()?;
         if header::ty(h) != header::TY_TYPED_ARRAY {
             return Err(ErrorCode::ExpectedArray);
+        }
+        // Charged as `read_seq` charges a typed array, and refused at the
+        // point it refuses one: before the element type is looked at.
+        if !self.can_enter() {
+            return Err(ErrorCode::ExceededMaxDepth);
         }
         if header::sub(h) != header::CAT_OTHER {
             byte_elements(h)?;
@@ -1439,9 +1460,11 @@ impl<'de, O: Options> Reader<'de, O> {
     /// callers below from each having to know all three, and from coming to
     /// disagree about which of them is worth taking whole.
     ///
-    /// `None` for anything else, and for a preamble that does not parse: what
-    /// is wrong with it is the ordinary path's to report, so the cursor is the
-    /// caller's to put back.
+    /// `None` for anything else, for a preamble that does not parse, and for a
+    /// typed array with no nesting level left to charge it: what is wrong with
+    /// any of those is the ordinary path's to report, so the cursor is the
+    /// caller's to put back. A complex array is not charged, being the one
+    /// sequence no walk charges.
     ///
     /// `#[inline(always)]` because both callers are generic and are compiled
     /// into whichever crate reads a `Vec<f64>`, where this would otherwise be
@@ -1466,6 +1489,11 @@ impl<'de, O: Options> Reader<'de, O> {
         if header::ty(h) != header::TY_TYPED_ARRAY {
             return None;
         }
+        // Declined rather than refused, so the ordinary path, which charges
+        // the same level, is what reports it.
+        if !self.can_enter() {
+            return None;
+        }
         if header::sub(h) != header::CAT_OTHER {
             return Some((header::element_of(h), self.count().ok()?));
         }
@@ -1487,6 +1515,10 @@ impl<'de, O: Options> Reader<'de, O> {
     /// Consumes nothing when it declines, so the caller falls through to the
     /// ordinary element-by-element path with the cursor untouched. This is the
     /// path that makes a `Vec<f64>` of a million samples a single `memcpy`.
+    ///
+    /// A typed array costs a nesting level here exactly as it does on the
+    /// ordinary path, so one past [`MAX_DEPTH`] is declined and the ordinary
+    /// path is what refuses it.
     ///
     /// A type's own bulk read is the adapted one under
     /// [`Same`](crate::Same), which forwards
@@ -1600,6 +1632,10 @@ impl<'de, O: Options> Reader<'de, O> {
     ///   promises, but the language guarantees neither, which is why this
     ///   declines rather than fails.
     /// - The host is little endian, BEVE being a little-endian format.
+    ///
+    /// A borrow is also charged the nesting level the ordinary read charges a
+    /// typed array, so one past [`MAX_DEPTH`] declines, and the ordinary read
+    /// is what refuses it.
     ///
     /// ```
     /// use structio::beve;
