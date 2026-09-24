@@ -4,25 +4,23 @@ Notable changes to structio. The format follows [Keep a Changelog](https://keepa
 
 Before 1.0 the API is not frozen: a minor bump may break it, and what broke is listed here.
 
-## [Unreleased]
+## [0.7.0] - 2026-09-24
+
+### Changed
+
+- **A BEVE delimiter is never a value.** `validate_beve` accepted a document that was only a delimiter, which no reader could read and no stream framed. Everywhere a value belongs, every walk now refuses one as `InvalidHeader`; between streamed documents it is still a separator. **Breaking** for code expecting `UnsupportedFeature` for a delimiter from a `Value` read or `beve_to_json`, or relying on a delimiter as an unknown member's value being stepped over.
 
 ### Fixed
 
 - **A failed read no longer costs a reader that winds back and retries.** Every reader that entered a nesting level kept it on an error path, so a speculating reader lost a level per failed attempt and, after 256, had ordinary input refused as `ExceededMaxDepth`. A failed internally tagged read with a late tag could also leave its held members behind for the next object at the same depth, which then read them as its own.
 
-- **A BEVE float read as an integer, or a 128-bit float read at all, no longer reports an offset past the value.** Both are refused on the header before the payload is taken, so the cursor and `Error::index` stop just past the header, as every other type mismatch does.
+- **`json::Raw` checks string escapes.** `Raw::new`, `Raw::from_string` and a `Raw` field accepted `"\q"` or a lone `"\ud800"` and wrote it back out. They now refuse any escape the string reader refuses, with the same error. The number grammar is still not checked.
+
+- **A typed array read in one copy, borrowed, or read as a `&[u8]` is charged a nesting level, as every other walk charges it.** A document one level from the limit read with `from_beve` but failed `validate_beve`, `beve_to_json` and framing, and a framing failure ends a `Documents` or `Feed` stream.
 
 - **`-0` read into a `Value` lost its sign.** It became the integer `0`; it is now the float `-0.0`, as `-0.0` and `-0e0` already were and as an `f64` reads it.
 
-## Unreleased
-
-### Fixed
-
-- **`json::Raw` checks string escapes.** `Raw::new`, `Raw::from_string` and a `Raw` field accepted `"\q"` or a lone `"\ud800"` and wrote it back out. They now refuse any escape the string reader refuses, with the same error. The number grammar is still not checked.
-
-- **A BEVE delimiter is never a value.** `validate_beve` accepted a document that was only a delimiter, which no reader could read and no stream framed. Everywhere a value belongs, every walk now refuses one as `InvalidHeader` (reading a `Value` and `beve_to_json` said `UnsupportedFeature`); between streamed documents it is still a separator.
-
-- **A typed array read in one copy, borrowed, or read as a `&[u8]` is charged a nesting level, as every other walk charges it.** A document one level from the limit read with `from_beve` but failed `validate_beve`, `beve_to_json` and framing, and a framing failure ends a `Documents` or `Feed` stream.
+- **A BEVE float read as an integer, or a 128-bit float read at all, no longer reports an offset past the value.** Both are refused on the header before the payload is taken, so the cursor and `Error::index` stop just past the header, as every other type mismatch does.
 
 ## [0.6.0] - 2026-09-18
 
@@ -173,7 +171,8 @@ First release.
 - **Errors locate themselves.** `Error` carries a byte offset, `Error::display_with(input)` renders one with a line, column, and caret, and a `MissingKey` names the absent key.
 - `Parser::read_number_str` and `Writer::write_number_str`: a number's text, borrowed and written verbatim, for a fixed-point, decimal, bignum, or rational type. JSON only.
 
-[Unreleased]: https://github.com/stephenberry/structio/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/stephenberry/structio/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/stephenberry/structio/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/stephenberry/structio/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/stephenberry/structio/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/stephenberry/structio/compare/v0.3.2...v0.4.0
