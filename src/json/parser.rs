@@ -1317,26 +1317,42 @@ impl<'de, O: Options> Parser<'de, O> {
     /// Expand one escape starting at `i` (just past the backslash). Returns the
     /// index of the first byte after it.
     fn expand_escape(&self, i: usize, out: &mut Vec<u8>) -> PResult<usize> {
+        let (ch, next) = self.decode_escape(i)?;
+        // An ASCII character is its own one byte. Every single-character
+        // escape stands for one, and with `decode_escape` inlined each of
+        // those arms hands this test a constant.
+        if ch.is_ascii() {
+            out.push(ch as u8);
+        } else {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        }
+        Ok(next)
+    }
+
+    /// Decode one escape starting at `i` (just past the backslash): the
+    /// character it stands for, and the index of the first byte after it.
+    ///
+    /// The one statement of which escapes JSON has and what each means. The
+    /// reader expands through it and the checked walk only asks it whether an
+    /// escape is one, so what [`Raw`](crate::json::Raw) accepts and what a
+    /// string reader accepts cannot drift apart.
+    #[inline(always)]
+    fn decode_escape(&self, i: usize) -> PResult<(char, usize)> {
         let c = *self.bytes.get(i).ok_or(ErrorCode::UnexpectedEnd)?;
-        let simple = match c {
-            b'"' => b'"',
-            b'\\' => b'\\',
-            b'/' => b'/',
-            b'b' => 0x08,
-            b'f' => 0x0C,
-            b'n' => b'\n',
-            b'r' => b'\r',
-            b't' => b'\t',
-            b'u' => {
-                let (ch, next) = self.read_unicode_escape(i + 1)?;
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                return Ok(next);
-            }
+        let ch = match c {
+            b'"' => '"',
+            b'\\' => '\\',
+            b'/' => '/',
+            b'b' => '\u{8}',
+            b'f' => '\u{c}',
+            b'n' => '\n',
+            b'r' => '\r',
+            b't' => '\t',
+            b'u' => return self.read_unicode_escape(i + 1),
             _ => return Err(ErrorCode::InvalidEscape),
         };
-        out.push(simple);
-        Ok(i + 1)
+        Ok((ch, i + 1))
     }
 
     /// Decode `\uXXXX`, joining a surrogate pair when one is present.
@@ -1385,20 +1401,39 @@ impl<'de, O: Options> Parser<'de, O> {
     }
 
     /// Step past a string body whose opening quote is already consumed,
+    /// without materializing it or looking inside its escapes.
+    #[inline(always)]
+    fn skip_string_body(&mut self) -> PResult<()> {
+        self.walk_string_body::<false>()
+    }
+
+    /// Step past a string body whose opening quote is already consumed,
     /// without materializing it.
     ///
     /// One SWAR pass finds the closing quote, and finds a backslash or a
-    /// control character on the way for free, so the escape is stepped over and
+    /// control character on the way for free, so the escape is dealt with and
     /// the control character refused at no extra cost. The cursor stays on the
     /// body when this fails, so the error names the string rather than wherever
-    /// the scan gave up inside it.
-    fn skip_string_body(&mut self) -> PResult<()> {
+    /// the scan gave up inside it, which is also where a string reader leaves
+    /// it.
+    ///
+    /// `CHECK_ESCAPES` decides what dealing with an escape means. Off, the
+    /// backslash and the byte after it are stepped over, which is all it takes
+    /// to keep an escaped quote from ending the scan. On, the escape is decoded
+    /// by [`decode_escape`](Self::decode_escape) and the character thrown away,
+    /// so it is refused exactly where and exactly as reading the string would
+    /// refuse it. Only a string holding a backslash reaches either arm, so the
+    /// check costs the string without one nothing.
+    fn walk_string_body<const CHECK_ESCAPES: bool>(&mut self) -> PResult<()> {
         let mut i = self.idx;
         loop {
             match scan_string(self.bytes, i) {
                 Some((pos, b'"')) => {
                     self.idx = pos + 1;
                     return Ok(());
+                }
+                Some((pos, b'\\')) if CHECK_ESCAPES => {
+                    i = self.decode_escape(pos + 1)?.1;
                 }
                 Some((pos, b'\\')) => {
                     // Step over the backslash and whatever it escapes, so an
@@ -1419,7 +1454,35 @@ impl<'de, O: Options> Parser<'de, O> {
     // -----------------------------------------------------------------------
 
     /// Discard the next value, whatever it is.
+    ///
+    /// Structure is checked and content is not: a number is stepped over by
+    /// the bytes it may be spelled with rather than held to the grammar, and
+    /// an escape by its backslash rather than decoded, so `01` and `"\q"` both
+    /// go by unrefused. Nothing reads what this discards, and a value that is
+    /// read is refused by whatever reads it.
+    #[inline]
     pub fn skip_value(&mut self) -> PResult<()> {
+        self.walk_value::<false>()
+    }
+
+    /// Step over the next value, refusing any escape a string reader would
+    /// refuse, in any string inside it, keys included.
+    ///
+    /// The walk behind [`Raw`](crate::json::Raw), which keeps what it steps
+    /// over and so has to know it is JSON. Everything [`skip_value`] checks is
+    /// checked the same way; the escapes are the difference, and they cost only
+    /// the strings that have one. See
+    /// [`walk_string_body`](Self::walk_string_body).
+    ///
+    /// [`skip_value`]: Self::skip_value
+    #[inline]
+    pub(crate) fn skip_value_checked(&mut self) -> PResult<()> {
+        self.walk_value::<true>()
+    }
+
+    /// [`skip_value`](Self::skip_value), with what a string's escapes are held
+    /// to left to `CHECK_ESCAPES`, and passed down to every string inside.
+    fn walk_value<const CHECK_ESCAPES: bool>(&mut self) -> PResult<()> {
         self.skip_ws();
         match self.peek() {
             Some(b'{') => {
@@ -1431,9 +1494,9 @@ impl<'de, O: Options> Parser<'de, O> {
                     }
                     loop {
                         p.expect(b'"', ErrorCode::ExpectedQuote)?;
-                        p.skip_string_body()?;
+                        p.walk_string_body::<CHECK_ESCAPES>()?;
                         p.colon()?;
-                        p.skip_value()?;
+                        p.walk_value::<CHECK_ESCAPES>()?;
                         if !p.comma_or_close(b'}')? {
                             return Ok(());
                         }
@@ -1448,7 +1511,7 @@ impl<'de, O: Options> Parser<'de, O> {
                         return Ok(());
                     }
                     loop {
-                        p.skip_value()?;
+                        p.walk_value::<CHECK_ESCAPES>()?;
                         if !p.comma_or_close(b']')? {
                             return Ok(());
                         }
@@ -1458,7 +1521,7 @@ impl<'de, O: Options> Parser<'de, O> {
             // Everything that is not a container is a scalar, and there is one
             // skipper for those; the whitespace it assumes away is behind the
             // cursor already.
-            _ => self.skip_scalar(),
+            _ => self.walk_scalar::<CHECK_ESCAPES>(),
         }
     }
 
@@ -1475,13 +1538,22 @@ impl<'de, O: Options> Parser<'de, O> {
     /// grammar. Nothing here reads its value, and the two callers both have
     /// somewhere better for a malformed one to be caught: a skipped value is
     /// discarded, and a copied one is republished for whoever reads it next to
-    /// reject. See [`prettify`](crate::prettify).
+    /// reject. See [`prettify`](crate::prettify). An escape is stepped over
+    /// too, as [`skip_value`](Self::skip_value) steps over one.
     #[inline]
     pub(crate) fn skip_scalar(&mut self) -> PResult<()> {
+        self.walk_scalar::<false>()
+    }
+
+    /// [`skip_scalar`](Self::skip_scalar), with a string's escapes held to
+    /// whatever `CHECK_ESCAPES` says; see
+    /// [`walk_string_body`](Self::walk_string_body).
+    #[inline]
+    fn walk_scalar<const CHECK_ESCAPES: bool>(&mut self) -> PResult<()> {
         match self.peek() {
             Some(b'"') => {
                 self.idx += 1;
-                self.skip_string_body()
+                self.walk_string_body::<CHECK_ESCAPES>()
             }
             Some(b't') => self.expect_lit(b"true", ErrorCode::ExpectedTrue),
             Some(b'f') => self.expect_lit(b"false", ErrorCode::ExpectedFalse),

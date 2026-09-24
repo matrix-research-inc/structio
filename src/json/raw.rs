@@ -88,12 +88,17 @@ pub struct Raw<'de>(Cow<'de, str>);
 impl<'de> Raw<'de> {
     /// Take the one JSON value `s` spells, checking that it really is one.
     ///
-    /// The check is the one [`from_str`](crate::from_str) makes, under
-    /// [`Standard`](crate::Standard): the value has to be complete, and it has
-    /// to be the only thing in `s`. Trailing content fails rather than being
-    /// stored with the value, because a `Raw` carrying a tail would write that
-    /// tail back out into the middle of whatever document it lands in and
-    /// break it.
+    /// The check is everything [`from_str`](crate::from_str) checks reading
+    /// `s` into a [`Value`](crate::Value) under [`Standard`](crate::Standard),
+    /// except the number grammar, and it refuses what that read refuses with
+    /// the same code at the same offset. The value has to be complete and well
+    /// formed, with no control character inside a string and no escape in one,
+    /// key or value, that the string reader would not decode: `\q`, a `\u`
+    /// that is not four hex digits, and a surrogate without its other half
+    /// all fail. And it has to be the only thing in `s`. Trailing content
+    /// fails rather than being stored with the value, because a `Raw` carrying
+    /// a tail would write that tail back out into the middle of whatever
+    /// document it lands in and break it.
     ///
     /// ```
     /// use structio::{ErrorCode, json::Raw};
@@ -101,14 +106,18 @@ impl<'de> Raw<'de> {
     /// assert!(Raw::new(r#"{"a":[1,2]}"#).is_ok());
     /// assert_eq!(Raw::new(r#"{"a":}"#).unwrap_err().code, ErrorCode::UnexpectedCharacter);
     /// assert_eq!(Raw::new("1 2").unwrap_err().code, ErrorCode::TrailingContent);
+    /// assert_eq!(Raw::new(r#""\q""#).unwrap_err().code, ErrorCode::InvalidEscape);
+    /// assert_eq!(Raw::new(r#""\ud800""#).unwrap_err().code, ErrorCode::InvalidSurrogate);
     /// ```
     ///
     /// Whitespace on either side is dropped rather than refused, so `" 1 "`
     /// and `"1"` are the same `Raw`. Keeping it would put the caller's
     /// indentation inside a document laid out by someone else.
     ///
-    /// Nothing else is touched, and in particular this settles that `s` is one
-    /// value rather than that it is a value this crate would have produced. A
+    /// Nothing is decoded to be checked: an escape is refused or let through
+    /// and the span keeps it as it was spelled. So this settles that `s` is
+    /// one value rather than that it is a value this crate would have
+    /// produced, and the number grammar is the one place the two differ. A
     /// number is stepped over by its alphabet rather than held to the grammar,
     /// exactly as [`prettify`](crate::prettify()) steps over one, so `01` is
     /// accepted and stored as it was written. Holding it to the grammar would
@@ -311,6 +320,13 @@ impl fmt::Display for Raw<'_> {
 /// copied, and under the default policy nothing is allocated, the field being
 /// a subslice of the input.
 ///
+/// The walk checks what [`Raw::new`] checks, so a document is refused or not
+/// whatever type its value lands in, the number grammar aside. The one thing
+/// it does that skipping an unknown key does not is decode each escape it
+/// meets and throw the character away, because a skipped value is discarded
+/// and this one is kept and written out again. Only a string holding a
+/// backslash pays for that.
+///
 /// Under [`ALLOW_COMMENTS`](crate::Options::ALLOW_COMMENTS) the span may hold
 /// `//` and `/* */`. The document was allowed to carry those; the output is
 /// not, a comment being no part of what any writer here can emit, and a
@@ -334,14 +350,14 @@ impl fmt::Display for Raw<'_> {
 /// present.
 impl<'de> Read<'de> for Raw<'de> {
     fn read<O: Options>(&mut self, p: &mut Parser<'de, O>) -> PResult<()> {
-        // Skipped here rather than left to `skip_value`, which would skip it
+        // Skipped here rather than left to the walk, which would skip it
         // after `rest_str` had already taken it in: the span has to begin at
         // the value, not at the whitespace in front of it.
         p.skip_ws();
         let rest = p.rest_str();
         let start = p.position();
-        p.skip_value()?;
-        // `skip_value` stops where the value stopped, which is a token
+        p.skip_value_checked()?;
+        // The walk stops where the value stopped, which is a token
         // boundary and so a character boundary, as is the cursor `rest` was
         // taken at. See `Parser::rest_str`.
         let text = &rest[..p.position() - start];
@@ -363,7 +379,7 @@ impl<'de> Read<'de> for Raw<'de> {
             // `read_into` makes about a value it left partly written.
             self.0 = Cow::Owned(buf);
             if let Err(e) = stripped {
-                // Unreachable in practice: a span `skip_value` accepted holds
+                // Unreachable in practice: a span the walk accepted holds
                 // no unterminated string, no slash that begins no comment, and
                 // no whitespace holding two bare tokens apart, which are the
                 // three things the minifier refuses. If it ever does happen,
@@ -456,7 +472,7 @@ fn span_of(s: &str) -> Result<(usize, usize)> {
     let mut p = Parser::new(s);
     p.skip_ws();
     let start = p.position();
-    if let Err(code) = p.skip_value() {
+    if let Err(code) = p.skip_value_checked() {
         return Err(Error::new(code, p.position()));
     }
     let end = p.position();

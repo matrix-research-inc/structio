@@ -643,6 +643,103 @@ fn new_steps_over_a_number_by_its_alphabet() {
     );
 }
 
+/// The other half of that boundary: an escape is held to exactly what the
+/// string reader holds it to, because a `Raw` keeps the span it checked and
+/// writes it back out, and a span with `\q` in it is not JSON anywhere it
+/// lands. Down to the whole error, code and offset both, against the reader
+/// that would have refused the same text.
+#[test]
+fn new_refuses_an_escape_the_string_reader_refuses() {
+    for (s, code) in [
+        (r#""\q""#, ErrorCode::InvalidEscape),
+        (r#""\uZZZZ""#, ErrorCode::InvalidEscape),
+        (r#""\ud800""#, ErrorCode::InvalidSurrogate),
+        (r#""\udc00""#, ErrorCode::InvalidSurrogate),
+    ] {
+        let refused = Raw::new(s).unwrap_err();
+        assert_eq!(refused.code, code, "at {s}");
+        assert_eq!(Some(refused), from_str::<Value>(s).err(), "at {s}");
+    }
+
+    // Anywhere in the value, keys included, and after an escape that was
+    // fine: the check is the reader's, not a look at the first backslash.
+    for s in [
+        r#"["ok","\q"]"#,
+        r#"{"\q":1}"#,
+        r#"{"a":{"b":"x\ud800y"}}"#,
+        r#"["\n\q"]"#,
+        r#""\ud800\u0041""#,
+        r#""\ud800\udbff""#,
+        r#""\u00G0""#,
+        r#""\u12""#,
+        r#""\u12"#,
+        r#""\"#,
+        "  [1, \"\\x\"]  ",
+    ] {
+        let refused = Raw::new(s).unwrap_err();
+        assert_eq!(Some(refused), from_str::<Value>(s).err(), "at {s}");
+        assert_eq!(
+            Raw::from_string(s.to_owned()).unwrap_err(),
+            refused,
+            "at {s}"
+        );
+    }
+}
+
+#[test]
+fn a_raw_field_refuses_an_escape_the_string_reader_refuses() {
+    #[derive(Default, Debug)]
+    struct Forwarded<'a> {
+        r: Raw<'a>,
+        n: u8,
+    }
+    structio::json_object!(['a] Forwarded<'a> { r, n });
+
+    #[derive(Default, Debug)]
+    struct Decoded {
+        r: String,
+        n: u8,
+    }
+    structio::json_object!(Decoded { r, n });
+
+    // Whether a document is refused is the policy's call, not the schema's:
+    // the `Raw` field refuses these exactly where a `String` field does.
+    for (doc, code) in [
+        (r#"{"r":"\q","n":1}"#, ErrorCode::InvalidEscape),
+        (r#"{"r":"\ud800","n":1}"#, ErrorCode::InvalidSurrogate),
+    ] {
+        let refused = from_str::<Forwarded>(doc).unwrap_err();
+        assert_eq!(refused.code, code, "at {doc}");
+        assert_eq!(Some(refused), from_str::<Decoded>(doc).err(), "at {doc}");
+        assert_eq!(
+            from_str_with::<AllowComments, Forwarded>(doc)
+                .unwrap_err()
+                .code,
+            code,
+            "at {doc}"
+        );
+    }
+}
+
+#[test]
+fn a_valid_escape_is_accepted_and_kept_as_it_was_spelled() {
+    for s in [
+        r#""a\nb""#,
+        r#""caf\u00e9""#,
+        r#""\ud83d\ude00""#,
+        r#""a\/b""#,
+        r#""\"\\\b\f\r\t""#,
+        r#"{"\u00e9\n":["\ud83d\ude00","\/"]}"#,
+    ] {
+        assert_eq!(Raw::new(s).unwrap().as_str(), s, "at {s}");
+
+        let doc = format!(r#"{{"id":1,"payload":{s}}}"#);
+        let envelope: Envelope = from_str(&doc).unwrap();
+        assert_eq!(envelope.payload.as_str(), s, "at {s}");
+        assert_eq!(to_string(&envelope), doc);
+    }
+}
+
 #[test]
 fn new_unchecked_stores_the_span_as_it_was_given() {
     // No walk, so no trim and no refusal: what goes in is what gets written.
