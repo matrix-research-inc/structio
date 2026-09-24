@@ -12,6 +12,8 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **A BEVE float read as an integer, or a 128-bit float read at all, no longer reports an offset past the value.** Both are refused on the header before the payload is taken, so the cursor and `Error::index` stop just past the header, as every other type mismatch does.
 
+- **`-0` read into a `Value` lost its sign.** It became the integer `0`; it is now the float `-0.0`, as `-0.0` and `-0e0` already were and as an `f64` reads it.
+
 ## [0.6.0] - 2026-09-18
 
 ### Added

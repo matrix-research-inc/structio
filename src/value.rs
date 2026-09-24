@@ -35,10 +35,14 @@
 //! that the distinction survives a trip through text. That is the one place
 //! its text differs from a declared type's, whose `f64` writes `1`; it follows
 //! that a whole-valued `f64` arriving through [`to_value`] is classified as an
-//! integer, the text having lost what it was. `-0` is the integer zero. A
-//! non-finite float has no JSON form and cannot be stored: `From<f64>` yields
-//! [`Value::Null`] for one, and reading one, from a BEVE float or a JSON
-//! literal past `f64`'s range, is [`NumberOutOfRange`](ErrorCode::NumberOutOfRange).
+//! integer, the text having lost what it was. An integer token is stored as
+//! an integer only where one is faithful to it, and as a float otherwise: one
+//! past 64 bits, and `-0`, whose sign an integer zero has nowhere to hold. So
+//! `-0` reads as `-0.0`, as it does into an `f64`, and the `f64` `-0.0`, which
+//! the crate writes as `-0`, keeps its sign on the way in. A non-finite float
+//! has no JSON form and cannot be stored: `From<f64>` yields [`Value::Null`]
+//! for one, and reading one, from a BEVE float or a JSON literal past `f64`'s
+//! range, is [`NumberOutOfRange`](ErrorCode::NumberOutOfRange).
 //!
 //! # Comparison
 //!
@@ -175,17 +179,20 @@ impl Number {
 
     /// Parse the text of a JSON number token.
     ///
-    /// An integer that does not fit its 64-bit type is kept as a float rather
-    /// than refused, the way a `JSON.parse` would keep it.
+    /// An integer token becomes an integer only where one is faithful to it,
+    /// and otherwise a float rather than an error, the way a `JSON.parse`
+    /// would keep it: one that does not fit its 64-bit type, and `-0`, whose
+    /// sign an integer zero has nowhere to hold.
     fn from_token(s: &str) -> PResult<Self> {
         let is_float = s.bytes().any(|b| matches!(b, b'.' | b'e' | b'E'));
         if !is_float {
-            if let Some(rest) = s.strip_prefix('-') {
-                if let Ok(v) = rest.parse::<i64>().map(|v| -v) {
-                    return Ok(Number::from(v));
-                }
-                if let Ok(v) = s.parse::<i64>() {
-                    return Ok(Number::from(v));
+            if s.starts_with('-') {
+                // The zero `-0` parses to has lost its sign; the float parse
+                // below keeps it, as it does for `-0.0` and `-0e0`.
+                if let Ok(v) = s.parse::<i64>()
+                    && v < 0
+                {
+                    return Ok(Number(Repr::Signed(v)));
                 }
             } else if let Ok(v) = s.parse::<u64>() {
                 return Ok(Number(Repr::Unsigned(v)));
