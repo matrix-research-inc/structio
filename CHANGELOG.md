@@ -22,6 +22,8 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **A BEVE delimiter is never a value.** `validate_beve` accepted a document that was only a delimiter, which no reader could read and no stream framed. Everywhere a value belongs, every walk now refuses one as `InvalidHeader` (reading a `Value` and `beve_to_json` said `UnsupportedFeature`); between streamed documents it is still a separator.
 
+- **A typed array read in one copy, borrowed, or read as a `&[u8]` is charged a nesting level, as every other walk charges it.** A document one level from the limit read with `from_beve` but failed `validate_beve`, `beve_to_json` and framing, and a framing failure ends a `Documents` or `Feed` stream.
+
 ## [0.6.0] - 2026-09-18
 
 ### Added
