@@ -97,6 +97,11 @@ pub trait Read<'de>: Sized {
 /// The method is generic over the [write policy](crate::Options) rather than
 /// the trait being generic over it, so a bound on a container element stays
 /// `T: Write` instead of `T: Write<O>`.
+///
+/// A write recurses once per nesting level and has no depth limit. Reading is
+/// bounded by [`MAX_DEPTH`](crate::beve::MAX_DEPTH) because a document's depth
+/// is its sender's choice; a value being written is the program's own, so its
+/// depth is the caller's to bound, as it already is for dropping that value.
 #[diagnostic::on_unimplemented(
     note = "a type becomes writable by being declared with `structio::object!` or \
             `#[derive(Structio)]`, or by a `beve::Write` impl written by hand",
