@@ -68,6 +68,11 @@ pub trait Read<'de>: Sized {
 /// rather than discover it half way through.
 /// [`Raw`](crate::json::Raw) is the worked example, deciding with a probe pass
 /// whether its span can be laid out before laying out any of it.
+///
+/// A write recurses once per nesting level and has no depth limit. Reading is
+/// bounded by [`MAX_DEPTH`](crate::json::MAX_DEPTH) because a document's depth
+/// is its sender's choice; a value being written is the program's own, so its
+/// depth is the caller's to bound, as it already is for dropping that value.
 #[diagnostic::on_unimplemented(
     note = "a type becomes writable by being declared with `structio::object!` or \
             `#[derive(Structio)]`, or by a `json::Write` impl written by hand",
