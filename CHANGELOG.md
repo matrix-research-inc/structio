@@ -14,6 +14,12 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **`-0` read into a `Value` lost its sign.** It became the integer `0`; it is now the float `-0.0`, as `-0.0` and `-0e0` already were and as an `f64` reads it.
 
+## Unreleased
+
+### Fixed
+
+- **`json::Raw` checks string escapes.** `Raw::new`, `Raw::from_string` and a `Raw` field accepted `"\q"` or a lone `"\ud800"` and wrote it back out. They now refuse any escape the string reader refuses, with the same error. The number grammar is still not checked.
+
 ## [0.6.0] - 2026-09-18
 
 ### Added
