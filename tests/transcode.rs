@@ -273,12 +273,13 @@ fn an_object_with_wide_integer_keys_transcodes() {
 
 #[test]
 fn the_extensions_that_carry_nothing_are_refused() {
-    // Both state their own extent, so a reader steps over either. Neither is a
-    // value: a delimiter separates documents and the type tag is deprecated.
-    for ext in [header::EXT_DELIMITER, header::EXT_TYPE_TAG] {
-        let bytes = [(ext << 3) | header::TY_EXTENSION];
-        assert_eq!(code_of(&bytes), ErrorCode::UnsupportedFeature, "{ext}");
-    }
+    // The type tag states its own extent, so a reader steps over one, but it
+    // is deprecated and has no JSON form to take.
+    let tag = (header::EXT_TYPE_TAG << 3) | header::TY_EXTENSION;
+    assert_eq!(code_of(&[tag]), ErrorCode::UnsupportedFeature);
+    // A delimiter is not a value at all, so this refuses it as malformed, as
+    // every walk does where a value belongs.
+    assert_eq!(code_of(&[header::DELIMITER]), ErrorCode::InvalidHeader);
 }
 
 #[test]

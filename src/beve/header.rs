@@ -79,6 +79,21 @@ pub const OBJECT: u8 = TY_OBJECT;
 /// offers for separating documents in a stream. Assembled by hand because an
 /// extension carries its id in the five bits above the type rather than in the
 /// `sub` and `count` fields [`header`] takes.
+///
+/// It separates values and is never one. Between documents,
+/// [`Documents::values`](crate::beve::Documents::values) steps over it; where a
+/// value belongs, every walk that takes whatever value is there refuses it as
+/// [`InvalidHeader`](ErrorCode::InvalidHeader): validating, skipping, reading a
+/// [`Value`](crate::Value), transcoding and framing alike. Not
+/// [`UnsupportedFeature`](ErrorCode::UnsupportedFeature), which promises a
+/// well-formed construct this crate merely declines, where a document holding
+/// a delimiter in a value's place holds no value there at all. Had any one walk
+/// stepped over it as a value of no extent, the validator would pass a document
+/// that frames as nothing and that no reader can read.
+///
+/// A typed read that wanted a particular kind reports the mismatch instead,
+/// `ExpectedNumber` and the like, as it does for any header that is not what
+/// it wanted.
 pub const DELIMITER: u8 = TY_EXTENSION | (EXT_DELIMITER << 3);
 
 /// The matrix extension: a layout byte, then the extents and the data, each a

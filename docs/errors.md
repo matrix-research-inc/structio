@@ -151,8 +151,8 @@ Long lines are trimmed around the caret so the output stays readable. The input 
 
 | Code | Meaning |
 |---|---|
-| `InvalidHeader` | A header byte named a type, width, or extension that is not defined. |
-| `UnsupportedFeature` | A well-formed construct this crate does not decode: a 128-bit float, an extension beyond the four the specification defines, or, when transcoding, the delimiter or the deprecated type tag. |
+| `InvalidHeader` | A header byte named a type, width, or extension that is not defined, or was the delimiter where a value belongs. A delimiter separates documents and is never a value. |
+| `UnsupportedFeature` | A well-formed construct this crate does not decode: a 128-bit float, an extension beyond the four the specification defines, or, when transcoding, the deprecated type tag. |
 | `UnsupportedKeyType` | An object's keys were of a kind the destination cannot take, such as integer keys for a struct. |
 
 ### Type mismatches

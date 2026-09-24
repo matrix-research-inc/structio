@@ -20,6 +20,8 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **`json::Raw` checks string escapes.** `Raw::new`, `Raw::from_string` and a `Raw` field accepted `"\q"` or a lone `"\ud800"` and wrote it back out. They now refuse any escape the string reader refuses, with the same error. The number grammar is still not checked.
 
+- **A BEVE delimiter is never a value.** `validate_beve` accepted a document that was only a delimiter, which no reader could read and no stream framed. Everywhere a value belongs, every walk now refuses one as `InvalidHeader` (reading a `Value` and `beve_to_json` said `UnsupportedFeature`); between streamed documents it is still a separator.
+
 ## [0.6.0] - 2026-09-18
 
 ### Added

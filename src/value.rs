@@ -1022,6 +1022,8 @@ fn read_body<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Valu
         header::TY_EXTENSION => match header::ext_id(h) {
             header::EXT_COMPLEX => read_complex(r)?,
             header::EXT_MATRIX => read_matrix(r)?,
+            // Not a value at all. See `header::DELIMITER`.
+            header::EXT_DELIMITER => return Err(ErrorCode::InvalidHeader),
             _ => return Err(ErrorCode::UnsupportedFeature),
         },
         _ => return Err(ErrorCode::InvalidHeader),

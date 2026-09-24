@@ -42,9 +42,9 @@
 //! # What is not here
 //!
 //! The other two extensions carry no data of their own. The delimiter separates
-//! documents in a stream and is handled by [`beve::Documents`](crate::beve::Documents);
-//! the type tag is deprecated. Both are still stepped over correctly wherever
-//! they appear.
+//! documents in a stream and is handled by [`beve::Documents`](crate::beve::Documents),
+//! being no value at all; where a value belongs it is refused. The type tag is
+//! deprecated, and is still stepped over correctly wherever it appears.
 
 mod complex;
 pub(crate) mod matrix;

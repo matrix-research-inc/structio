@@ -555,7 +555,6 @@ fn an_unknown_member_is_stepped_over_whatever_it_holds() {
 fn an_unknown_member_holding_an_extension_is_stepped_over_too() {
     // None of these decode into a Rust type, but all of them state their own
     // extent, so a document carrying one stays readable for its other fields.
-    let delimiter = vec![header::header(header::TY_EXTENSION, 0, 0)];
 
     // A matrix: layout byte, extents as a typed array, data as a typed array.
     let mut matrix = vec![header::header(header::TY_EXTENSION, 0, 0) | (header::EXT_MATRIX << 3)];
@@ -574,12 +573,7 @@ fn an_unknown_member_holding_an_extension_is_stepped_over_too() {
     tag.push(0); // index 0
     tag.extend_from_slice(&to_beve(&7u8));
 
-    for (name, value) in [
-        ("delimiter", delimiter),
-        ("matrix", matrix),
-        ("complex", complex),
-        ("tag", tag),
-    ] {
+    for (name, value) in [("matrix", matrix), ("complex", complex), ("tag", tag)] {
         let doc = object(&[("a", to_beve(&1u32)), ("z", value), ("b", to_beve(&2u32))]);
         assert_eq!(
             from_beve_with::<SkipUnknown, Two>(&doc).unwrap(),
@@ -587,6 +581,21 @@ fn an_unknown_member_holding_an_extension_is_stepped_over_too() {
             "skipping {name}"
         );
     }
+}
+
+#[test]
+fn an_unknown_member_holding_a_delimiter_is_refused_rather_than_stepped_over() {
+    // A delimiter separates documents and is never a value, so a member whose
+    // value is one is malformed, whether or not anything wanted the member.
+    let doc = object(&[
+        ("a", to_beve(&1u32)),
+        ("z", vec![header::DELIMITER]),
+        ("b", to_beve(&2u32)),
+    ]);
+    assert_eq!(
+        from_beve_with::<SkipUnknown, Two>(&doc).unwrap_err().code,
+        ErrorCode::InvalidHeader
+    );
 }
 
 /// An aligned typed array, which nothing in this crate writes.
