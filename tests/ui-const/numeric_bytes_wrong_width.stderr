@@ -1,0 +1,4 @@
+error[E0080]: evaluation panicked: structio: a `NumericBytes` type whose declared element is not its own width
+--> $RUST/core/src/panic.rs
+--> $DIR/src/beve/writer.rs
+--> tests/ui-const/numeric_bytes_wrong_width.rs:20:5

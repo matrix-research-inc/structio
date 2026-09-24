@@ -1,0 +1,2 @@
+error[E0428]: the name `Info` is defined multiple times
+--> tests/ui-rustc/variant_named_twice.rs:11:1

@@ -1,0 +1,55 @@
+error[E0277]: the trait bound `Raw<'a>: structio::beve::Read<'_>` is not satisfied
+  --> tests/ui/raw_in_both_formats.rs:13:1
+   |
+13 | structio::object!(['a] Envelope<'a> { id, payload });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | |
+   | the trait `structio::beve::Read<'_>` is not implemented for `Raw<'a>`
+   | required by a bound introduced by this call
+   |
+   = note: a type becomes readable by being declared with `structio::object!` or `#[derive(Structio)]`, or by a `beve::Read` impl written by hand
+   = note: a declaration generates both directions unless it narrows to one: a struct that is only ever written is declared `object!(write_only ..)` or `#[structio(write_only)]`, and then nothing in it needs a read impl
+   = note: where the struct really is read, a stub whose body is `r.skip_value()` is legitimate there
+   = note: `Raw<'a>` implements similarly named trait `structio::json::Read`, but not `structio::beve::Read<'_>`
+   = help: the following other types implement trait `structio::beve::Read<'de>`:
+             $IMPLEMENTORS
+   = note: this error originates in the macro `$crate::__beve_read_impls` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Raw<'_>: structio::beve::Write` is not satisfied
+  --> tests/ui/raw_in_both_formats.rs:13:1
+   |
+13 | structio::object!(['a] Envelope<'a> { id, payload });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | |
+   | the trait `structio::beve::Write` is not implemented for `Raw<'_>`
+   | required by a bound introduced by this call
+   |
+   = note: a type becomes writable by being declared with `structio::object!` or `#[derive(Structio)]`, or by a `beve::Write` impl written by hand
+   = note: the direction axis narrows only to the write half -- there is no `read_only` -- so a type used in a struct that is only ever read still needs this impl
+   = note: there is no empty stub: a member that writes nothing truncates the object. `w.write_null()` with `is_null` returning `true` lets `SkipNull` drop the member
+   = note: `Raw<'_>` implements similarly named trait `structio::json::Write`, but not `structio::beve::Write`
+   = help: the following other types implement trait `structio::beve::Write`:
+             $IMPLEMENTORS
+note: required by a bound in `structio::beve::Writer::<'a, O>::member`
+  --> $DIR/src/beve/writer.rs
+   |
+   |     pub fn member<T: Write + ?Sized>(&mut self, key: &[u8], value: &T) {
+   |                      ^^^^^ required by this bound in `Writer::<'a, O>::member`
+   = note: this error originates in the macro `$crate::__beve_write_impls` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Raw<'_>: structio::beve::Write` is not satisfied
+  --> tests/ui/raw_in_both_formats.rs:13:1
+   |
+13 | structio::object!(['a] Envelope<'a> { id, payload });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | |
+   | the trait `structio::beve::Write` is not implemented for `Raw<'_>`
+   | required by a bound introduced by this call
+   |
+   = note: a type becomes writable by being declared with `structio::object!` or `#[derive(Structio)]`, or by a `beve::Write` impl written by hand
+   = note: the direction axis narrows only to the write half -- there is no `read_only` -- so a type used in a struct that is only ever read still needs this impl
+   = note: there is no empty stub: a member that writes nothing truncates the object. `w.write_null()` with `is_null` returning `true` lets `SkipNull` drop the member
+   = note: `Raw<'_>` implements similarly named trait `structio::json::Write`, but not `structio::beve::Write`
+   = help: the following other types implement trait `structio::beve::Write`:
+             $IMPLEMENTORS
+   = note: this error originates in the macro `$crate::__beve_write_impls` which comes from the expansion of the macro `structio::object` (in Nightly builds, run with -Z macro-backtrace for more info)

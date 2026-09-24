@@ -2,7 +2,7 @@
 
 A serializer is only worth its speed if the bytes are right. This is what is checked and how.
 
-Run it with `cargo test --release`, plus the opt-in exhaustive `f32` sweep described below.
+Run it with `cargo test --workspace --features derive`, once as it is and once with `--release`, plus the opt-in exhaustive `f32` sweep described below. Both flags are needed to reach everything: `--workspace` adds `structio-derive`'s own suite, and without the feature `tests/derive.rs`, the derive's half of `tests/write_only.rs` and the doc examples that use it are not compiled at all. Debug and release each catch what the other cannot, for the reason given under [Continuous integration](#continuous-integration).
 
 ## Numbers
 
@@ -20,7 +20,7 @@ Every one of the 4,278,190,078 finite non-zero values round-trips, and no decima
 
 ## Key lookup
 
-**Perfect hashing** is checked for exactness over hand-picked key sets covering every scheme in the ladder, plus 400 generated key sets of up to 40 keys.
+**Perfect hashing** is checked for exactness over hand-picked key sets, one or more for every scheme in the ladder and each asserted to land on the scheme it was picked for, plus 400 generated key sets of up to 40 keys. The assertion is what makes the coverage real: the generated sets reach the rarer rungs only by chance, and a hand-picked set that drifted onto a neighbouring rung would still pass an exactness check while its own scheme went untested.
 
 Both formats share one table but reach it through different entry points, since JSON has to find where a key ends and BEVE is told. Those two are asserted to resolve every key of every generated set to the same index, which is what guards against them drifting apart.
 
@@ -28,7 +28,7 @@ Both formats share one table but reach it through different entry points, since 
 
 **A wide object is checked for building at all, not only for hashing correctly.** The search for a perfect hash is not attempted past a width where one is unlikely to exist, because the const evaluator was otherwise spending its whole budget on objects it could not index, and enough of those in one crate has rustc refuse them with `constant evaluation is taking a long time`. `tests/keymap.rs` builds a 96-key map in `const` context, so the path a regression would slow down is one the test suite actually compiles rather than only calls at run time. It also pins the two halves of the guard: that a wide object whose keys *are* distinguishable still gets its hash, and that one whose keys are not still reads correctly under the fallback.
 
-**A `#[required]` field's bit is the same index**, so the mask is checked against what the readers actually set rather than only against the declaration: one case per marked field in each format, from documents that carry every other member. The case worth the trouble is the wide struct. A mark needs a bit only for itself, so a struct of more than 64 fields may still have one, and the field past the 64th is where an implementation would go wrong quietly -- a shift by 64 wraps to bit 0 on most machines, which would credit a marked field for a member that is not there. A 70-field struct is read from a document holding only its 65th member and required to refuse it, in both formats.
+**A `#[required]` field's bit is the same index**, so the mask is checked against what the readers actually set rather than only against the declaration: one case per marked field in each format, from documents that carry every other member. The case worth the trouble is the wide struct. A mark needs a bit only for itself, so a struct of more than 64 fields may still have one, and the field past the 64th is where an implementation would go wrong quietly -- a shift by 64 wraps to bit 0 on most machines, which would credit a marked field for a member that is not there. A 70-field struct is read from a document holding only its 65th member and required to refuse it, in both formats. Marking that field instead is a build error naming the limit, which `tests/ui-const/required_past_the_64th.rs` pins.
 
 ## Schema declarations
 
@@ -66,7 +66,7 @@ That a run of unit variants is stored as a BEVE string array is asserted against
 
 Reading into a value that already holds the same variant is checked to keep that payload's allocation, since a reader that replaced it wholesale would return the same value and defeat the point of reading into a reference. The BEVE side is pinned on the bytes as well as through the reader: the object form is written out literally in a test, because no writer here produces it for a variant carrying nothing.
 
-Four of the guarantees are compile-time, and none of them is in the suite, because asserting that something fails to build needs a second compilation and this crate has no dependency to run one. They hold by construction instead, and it is worth saying which construction. A `unit_enum!` whose variant carries a value has no rule in the macro that matches it. A `tagged_enum!` that leaves a variant out is refused by the compiler's own exhaustiveness check, which the generated `write` ends with a `match` over every declared variant to invoke. A variant with more than one field fails on the arity of the pattern the macro builds for it. And a declaration that names the same variant twice under two wire names is refused by a constant per name in a scope of its own, so the repeat is an `E0428`. All four were confirmed by hand against the messages they produce: the second names the variant that was left out, and the first is a `compile_error!` in as many words, since without one the failure is a `macro_rules!` matcher error pointed into this crate rather than at the declaration that caused it.
+Four of the guarantees are compile-time, so each is a compile-fail fixture run by `tests/ui.rs`: a program that must not build, beside the diagnostics it must fail with. It is worth saying which construction refuses each. A `unit_enum!` whose variant carries a value has no rule in the macro that matches it, and the macro's last rule is a `compile_error!` saying so in as many words, since without one the failure is a `macro_rules!` matcher error pointed into this crate rather than at the declaration that caused it; `tests/ui/unit_variant_with_a_value.rs` holds that message exactly. A `tagged_enum!` that leaves a variant out is refused by the compiler's own exhaustiveness check, which the generated `write` ends with a `match` over every declared variant to invoke, and the error names the variant that was left out. A variant with more than one field fails on the arity of the pattern the macro builds for it. And a declaration that names the same variant twice under two wire names is refused by a constant per name in a scope of its own, so the repeat is an `E0428`. Those three are worded by rustc rather than by this crate, so their fixtures in `tests/ui-rustc` pin the code, the message and where each points, and leave the rest of rustc's rendering free to change.
 
 ## The BEVE encoding
 
@@ -116,7 +116,7 @@ Two things about it are asserted because a correct-looking value would hide them
 
 There is a small amount, and all of it is checked under **Miri with strict provenance**. What may be reinterpreted as bytes, and back, is not prose: it is the `NumericBytes` bound, an unsafe trait carried by the fixed-width numbers and by `Complex` of one. See [design.md](design.md#three-soundness-notes).
 
-That trait is implementable from outside the crate, which is what lets an adapter over a foreign scalar reach the same block paths, so the obligation it carries is checked from outside too: `tests/blocks.rs` implements it for a `#[repr(transparent)]` newtype and runs the whole adapter through Miri. One of its four clauses does not need Miri at all -- that an element is the width its declared header names is a constant of a generic type, so an impl that disagrees is a build error rather than a silent misparse, reported when the crate is *built* rather than by `cargo check`.
+That trait is implementable from outside the crate, which is what lets an adapter over a foreign scalar reach the same block paths, so the obligation it carries is checked from outside too: `tests/blocks.rs` implements it for a `#[repr(transparent)]` newtype and runs the whole adapter through Miri. One of its four clauses does not need Miri at all -- that an element is the width its declared header names is a constant of a generic type, so an impl that disagrees is a build error rather than a silent misparse, reported when the crate is *built* rather than by `cargo check`. `tests/ui-const/numeric_bytes_wrong_width.rs` is such an impl, and pins the error.
 
 The blocks themselves:
 

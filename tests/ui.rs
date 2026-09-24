@@ -1,23 +1,27 @@
 //! Declarations the macros refuse, and the message each one gives.
 //!
-//! Two suites, split by how the refusal is rendered rather than by what it
-//! says: `tests/ui` for the ones a `compile_error!` produces, compared exactly,
-//! and `tests/ui-const` for the two that are a `panic!` in const evaluation,
-//! compared briefly. The second test below says why that split is forced.
+//! Three suites, split by how the refusal is rendered rather than by what it
+//! says. `tests/ui` holds the ones whose rendering is this crate's own -- a
+//! `compile_error!`, a `#[diagnostic::on_unimplemented]` note, a panic pointed
+//! at the declaration -- compared exactly. `tests/ui-const` holds the `panic!`s
+//! in const evaluation whose rendering reaches past the declaration, and
+//! `tests/ui-rustc` the declarations the macros accept and the compiler then
+//! refuses in its own words. Both are compared briefly, and the tests below
+//! say why each split is forced.
 //!
 //! These are programs that must not compile, so no ordinary test can reach
 //! them. What they hold in place is the wording: a refusal is only worth
 //! having if it says what to do instead, and a message nothing asserts is one
 //! a later edit can quietly turn back into "no rules expected `S`".
 //!
-//! The comparison is `nocompile`'s default `Exact` rather than `Brief`,
-//! because here the rendering *is* the product: `Brief` drops the `= note:`
-//! lines and the span art, which is most of what these fixtures exist to
-//! check.
+//! The first suite's comparison is `nocompile`'s default `Exact` rather than
+//! `Brief`, because there the rendering *is* the product: `Brief` drops the
+//! `= note:` lines and the span art, which is most of what those fixtures
+//! exist to check.
 //!
 //! `structio-derive` has its own suite for attributes the derive refuses
 //! before it expands anything. This one is the layer below, where a
-//! declaration has reached the macros. Nine of the fixtures' notes are the
+//! declaration has reached the macros. Eleven of the fixtures' notes are the
 //! `#[diagnostic::on_unimplemented]` text on `Read`, `ReadAs`, `ReadOwned`,
 //! `Write` and `WriteAs`, which nothing else asserts.
 //!
@@ -54,29 +58,67 @@ fn a_refused_declaration_says_what_to_do_instead() {
 /// The refusals that are a `panic!` in const evaluation rather than a
 /// `compile_error!`, compared under [`Brief`](nocompile::Mode::Brief).
 ///
-/// These two are the schema mistakes no macro matcher can catch, because both
-/// are a property of the whole key set rather than of any one declaration
-/// token: a name written twice, which would leave one field permanently
-/// unreachable, and an internal tag that is also a member of the payload it
-/// shares an object with, which a last-wins parser resolves by keeping the
-/// member and losing the variant. Neither is new here; what is new is that the
-/// aliases join that key set, so an alias can now make either mistake.
+/// Most are the schema mistakes no macro matcher can catch, because each is a
+/// property of the whole key set rather than of any one declaration token: a
+/// name written twice, which would leave one field permanently unreachable,
+/// and an internal tag that is also a member of the payload it shares an
+/// object with, as a field or as an alias of one, which a last-wins parser
+/// resolves by keeping the member and losing the variant. The other two are
+/// beyond a matcher for plainer reasons: a `#[required]` mark on a field past
+/// the 64th, which the `u64` mask has no bit for and `macro_rules!` cannot
+/// count to, and a `NumericBytes` impl whose declared element is not its own
+/// width, which only `size_of` can say.
 ///
-/// They cannot live in the suite above. A const-eval panic is rendered with a
-/// frame through `core`'s own source, and rustc prints that source only where
-/// the `rust-src` component is installed, so an `Exact` golden blessed on a
-/// full toolchain does not match a `--profile minimal` one and the fixture
-/// asserts the environment rather than the crate. `Brief` compares each
-/// diagnostic's code, primary message and location and drops the frame, which
-/// here costs nothing: the panic text and the declaration it is pointed at are
-/// the whole product, and the backtrace through `core` is not something this
-/// crate writes or should hold still.
+/// They cannot live in the first suite, for one of two reasons. A panic raised
+/// inside one of this crate's `const fn`s is rendered with a frame through
+/// `core`'s own source, and rustc prints that source only where the `rust-src`
+/// component is installed, so an `Exact` golden blessed on a full toolchain
+/// does not match a `--profile minimal` one and the fixture asserts the
+/// environment rather than the crate. And a panic in a constant of a generic
+/// type fires only once something instantiates it, so rustc follows it with
+/// the chain of constants and functions that led there, each quoted from this
+/// crate's own source, and an `Exact` golden would re-bless on a refactor of
+/// the reader that changed nothing a user sees. `Brief` compares each
+/// diagnostic's code, primary message and locations and drops the quoted
+/// source, which here costs nothing: the panic text and the declaration it is
+/// pointed at are the whole product, and neither the frame through `core` nor
+/// the reader's own lines are something this crate should hold still.
 #[test]
 #[cfg_attr(windows, ignore = "nocompile does not claim Windows support in v1")]
-fn a_refused_schema_says_what_to_do_instead() {
+fn a_const_refusal_says_what_to_do_instead() {
     let mut t = nocompile::cases!();
     t.dependency_path("structio", ".");
     t.mode(nocompile::Mode::Brief);
     t.compile_fail_dir("tests/ui-const");
+    t.assert();
+}
+
+/// The refusals the compiler words rather than this crate, compared under
+/// [`Brief`](nocompile::Mode::Brief).
+///
+/// Three of an enum declaration's guarantees are no message of this crate's:
+/// the macros accept the declaration and expand it into code the compiler then
+/// refuses. A variant the declaration leaves out is an `E0004` from the
+/// exhaustive `match` each `write` ends with, naming the variant. A variant of
+/// more than one field is an `E0023` from the patterns built for it, `(_)`
+/// saying nothing about how many fields there are. And one variant named twice
+/// under two wire names is an `E0428`, from a constant per name in a scope of
+/// its own, the names differing and so leaving the key table no repeat to
+/// find. What the crate promises is that each is refused, where, and for
+/// which variant; the wording is rustc's.
+///
+/// `Exact` would pin more than that. rustc follows the first two with a
+/// suggestion quoted from inside the macros' own source -- an arm to add to a
+/// `match`, a `_` to add to a pattern -- which is advice about code the user
+/// cannot edit, and the sort of rendering a rustc release changes without
+/// notice. `Brief` keeps the codes, the messages and where each points, which
+/// is all of it the crate can stand behind.
+#[test]
+#[cfg_attr(windows, ignore = "nocompile does not claim Windows support in v1")]
+fn a_refused_expansion_names_the_mistake() {
+    let mut t = nocompile::cases!();
+    t.dependency_path("structio", ".");
+    t.mode(nocompile::Mode::Brief);
+    t.compile_fail_dir("tests/ui-rustc");
     t.assert();
 }

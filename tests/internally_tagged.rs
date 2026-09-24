@@ -817,12 +817,13 @@ fn a_document_nested_past_the_limit_is_still_refused() {
 // The tag may not be a payload's field
 // -----------------------------------------------------------------------
 //
-// The collision itself is a compile error, so it cannot be asserted from here
-// without a compile-fail harness this crate does not carry. What these
-// pin is the other side: the shapes that look like collisions and are not,
-// which is where a check of this kind goes wrong. Each would stop compiling
-// if the comparison were made against Rust field names rather than wire keys,
-// or if unit variants were checked.
+// The collision itself is a compile error, so it is asserted by the
+// compile-fail fixtures `tests/ui-const/tag_is_a_field.rs` and
+// `alias_is_the_tag.rs` rather than from here. What these pin is the other
+// side: the shapes that look like collisions and are not, which is where a
+// check of this kind goes wrong. Each would stop compiling if the comparison
+// were made against Rust field names rather than wire keys, or if unit
+// variants were checked.
 
 #[derive(Default, PartialEq, Debug)]
 struct CamelPayload {

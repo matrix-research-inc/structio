@@ -208,25 +208,19 @@ fn a_narrow_float_keeps_the_digits_it_round_trips_through() {
 #[test]
 fn the_two_sixteen_bit_floats_widen_losslessly() {
     // Codes 0 and 1 under the float category are bfloat16 and float16; there
-    // is no 8-bit float for them to have been.
-    let bf16 = [
-        &[header::number(header::CAT_FLOAT, 0)][..],
-        &0x3FC0u16.to_le_bytes(),
-    ]
-    .concat();
+    // is no 8-bit float for them to have been. A number header is
+    // `0bWWW_CC_TTT`, so the two are 0x01 and 0x21, and the typed array of
+    // the second, type 4 rather than 1, is 0x24.
+    let bf16 = [&[0x01][..], &0x3FC0u16.to_le_bytes()].concat();
     assert_eq!(json_of(&bf16), "1.5");
 
-    let f16 = [
-        &[header::number(header::CAT_FLOAT, 1)][..],
-        &0x3E00u16.to_le_bytes(),
-    ]
-    .concat();
+    let f16 = [&[0x21][..], &0x3E00u16.to_le_bytes()].concat();
     assert_eq!(json_of(&f16), "1.5");
 
     // A typed array of them takes the same path, one element at a time.
     let run = [
-        &[header::array_of(header::CAT_FLOAT, 1)][..],
-        &size(2),
+        &[0x24][..],
+        &[2 << 2], // a one-byte size: the count, shifted left two
         &0x3E00u16.to_le_bytes(),
         &0xC000u16.to_le_bytes(),
     ]
@@ -237,13 +231,12 @@ fn the_two_sixteen_bit_floats_widen_losslessly() {
 #[test]
 fn the_aligned_form_reads_like_the_ordinary_one() {
     // `HEADER | NUMERIC_HEADER | SIZE | PADDING_LENGTH | PADDING | DATA`. The
-    // writer never emits this, but other implementations do.
+    // writer never emits this, but other implementations do. 0x5C is a typed
+    // array of the "other" category at code 2, `0b010_11_100`, and 0x54 the
+    // `u32` array header the plain form would have had, `0b010_10_100`.
     let aligned = [
-        &[
-            header::ALIGNED_ARRAY,
-            header::array_of(header::CAT_UNSIGNED, 2),
-        ][..],
-        &size(2),
+        &[0x5C, 0x54][..],
+        &[2 << 2],
         &[3, 0, 0, 0],
         &7u32.to_le_bytes(),
         &8u32.to_le_bytes(),
@@ -256,14 +249,10 @@ fn the_aligned_form_reads_like_the_ordinary_one() {
 #[test]
 fn an_object_with_wide_integer_keys_transcodes() {
     // A `u64`-keyed object, which no `object!` struct can be but another
-    // implementation may write.
-    let object = [
-        &[header::header(header::TY_OBJECT, header::CAT_UNSIGNED, 3)][..],
-        &size(1),
-        &u64::MAX.to_le_bytes(),
-        &[header::TRUE],
-    ]
-    .concat();
+    // implementation may write. An object is type 3, and its key type goes
+    // where a number header puts its own: 0x73 is `0b011_10_011`, unsigned
+    // keys at width code 3. 0x18 is `true`.
+    let object = [&[0x73][..], &[1 << 2], &u64::MAX.to_le_bytes(), &[0x18]].concat();
     assert_eq!(json_of(&object), r#"{"18446744073709551615":true}"#);
 }
 
@@ -273,13 +262,15 @@ fn an_object_with_wide_integer_keys_transcodes() {
 
 #[test]
 fn the_extensions_that_carry_nothing_are_refused() {
-    // The type tag states its own extent, so a reader steps over one, but it
-    // is deprecated and has no JSON form to take.
-    let tag = (header::EXT_TYPE_TAG << 3) | header::TY_EXTENSION;
-    assert_eq!(code_of(&[tag]), ErrorCode::UnsupportedFeature);
-    // A delimiter is not a value at all, so this refuses it as malformed, as
-    // every walk does where a value belongs.
-    assert_eq!(code_of(&[header::DELIMITER]), ErrorCode::InvalidHeader);
+    // An extension is type 6 in the low three bits with its id in the five
+    // above them, `0bIIIII_110`.
+    //
+    // The type tag, id 1, states its own extent, so a reader steps over one,
+    // but it is deprecated and has no JSON form to take.
+    assert_eq!(code_of(&[0x0E]), ErrorCode::UnsupportedFeature);
+    // A delimiter, id 0, is not a value at all, so this refuses it as
+    // malformed, as every walk does where a value belongs.
+    assert_eq!(code_of(&[0x06]), ErrorCode::InvalidHeader);
 }
 
 #[test]
@@ -324,16 +315,12 @@ fn a_matrix_layout_that_is_not_defined_is_refused_rather_than_guessed() {
 
 #[test]
 fn a_128_bit_float_is_refused() {
-    let bytes = [&[header::number(header::CAT_FLOAT, 4)][..], &[0u8; 16]].concat();
+    // Width code 4 under the float category, `0b100_00_001`.
+    let bytes = [&[0x81][..], &[0u8; 16]].concat();
     assert_eq!(code_of(&bytes), ErrorCode::UnsupportedFeature);
     // The refusal has to survive being an array element too, where the header
     // is read once for the whole run.
-    let run = [
-        &[header::array_of(header::CAT_FLOAT, 4)][..],
-        &size(1),
-        &[0u8; 16],
-    ]
-    .concat();
+    let run = [&[0x84][..], &[1 << 2], &[0u8; 16]].concat();
     assert_eq!(code_of(&run), ErrorCode::UnsupportedFeature);
 }
 

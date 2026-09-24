@@ -103,10 +103,8 @@ fn a_run_of_complex_numbers_is_one_header_and_one_block() {
     // the block a slice writes has to be the components laid end to end. At a
     // second width, since the copy is where a width could go wrong.
     let narrow = vec![Complex::new(-1.0f32, 0.5), Complex::new(2.0, -0.25)];
-    let mut want = vec![
-        header::COMPLEX,
-        header::complex_class(header::CAT_FLOAT, 2, header::COMPLEX_MANY),
-    ];
+    // 0x41 is that class header at width code 2, `f32`: 0b010_00_001.
+    let mut want = vec![0x1E, 0x41];
     want.extend(size(2));
     for z in &narrow {
         want.extend_from_slice(&z.re.to_le_bytes());
@@ -167,7 +165,7 @@ fn a_complex_array_is_not_confusable_with_a_numeric_one() {
     let run = vec![Complex::new(1.0f64, 2.0), Complex::new(3.0, 4.0)];
     let complex = to_beve(&run);
     let plain = to_beve(&vec![1.0f64, 2.0, 3.0, 4.0]);
-    assert_eq!(complex[1], header::number(header::CAT_FLOAT, 3));
+    assert_eq!(complex[1], 0x61);
     assert_eq!(
         complex[1],
         header::element_of(plain[0]),
@@ -458,9 +456,11 @@ fn a_struct_of_complex_fields_gets_the_run_form_too() {
 #[test]
 fn a_matrix_is_a_layout_byte_then_its_extents_then_its_data() {
     let m = Matrix::new(MatrixLayout::RowMajor, vec![2, 3], (0..6u8).collect()).unwrap();
-    let mut want = vec![0x16, header::LAYOUT_RIGHT];
-    // Extents: a typed array of one-byte unsigned integers.
-    want.push(header::array_of(header::CAT_UNSIGNED, 0));
+    // 0x16 is the matrix extension, id 2 above type 6, and layout 0 is
+    // `layout_right`.
+    let mut want = vec![0x16, 0];
+    // Extents: a typed array of one-byte unsigned integers, 0b000_10_100.
+    want.push(0x14);
     want.extend(size(2));
     want.extend_from_slice(&[2, 3]);
     // Data: whatever array the element type has.
@@ -500,17 +500,21 @@ fn extents_are_stored_at_the_narrowest_width_that_holds_them() {
     // Dimensions are small numbers standing in front of a payload that is not,
     // so eight bytes each would be most of a small matrix. Every reader widens,
     // so nothing but the bytes is at stake.
-    for (largest, code) in [(200usize, 0u8), (300, 1), (70_000, 2), (5_000_000_000, 3)] {
+    //
+    // An unsigned typed array is `0bWWW_10_100`, so the four widths are the
+    // width codes 0 to 3 in the top three bits.
+    for (largest, want) in [
+        (200usize, 0x14u8),
+        (300, 0x34),
+        (70_000, 0x54),
+        (5_000_000_000, 0x74),
+    ] {
         // A shape whose product is zero, so the dimension being measured can be
         // as large as it likes without the test having to hold that many
         // elements.
         let m = Matrix::new(MatrixLayout::RowMajor, vec![0, largest], Vec::<u8>::new()).unwrap();
         let bytes = to_beve(&m);
-        assert_eq!(
-            bytes[2],
-            header::array_of(header::CAT_UNSIGNED, code),
-            "extents up to {largest}"
-        );
+        assert_eq!(bytes[2], want, "extents up to {largest}");
         assert_eq!(from_beve::<Matrix<u8>>(&bytes).unwrap(), m);
     }
 }
