@@ -1,8 +1,6 @@
 error[E0004]: non-exhaustive patterns: `&Shape::Sides(_)` not covered
 --> tests/ui-rustc/variant_left_out.rs:13:1
 --> tests/ui-rustc/variant_left_out.rs:6:6
---> $DIR/src/macros.rs
 error[E0004]: non-exhaustive patterns: `&Shape::Sides(_)` not covered
 --> tests/ui-rustc/variant_left_out.rs:13:1
 --> tests/ui-rustc/variant_left_out.rs:6:6
---> $DIR/src/macros.rs

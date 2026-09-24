@@ -1,8 +1,2 @@
 error[E0080]: evaluation panicked: a #[required] field must be one of the first 64 declared: the mask that tracks them is a u64
 --> tests/ui-const/required_past_the_64th.rs:18:1
---> $DIR/src/traits.rs
---> $DIR/src/traits.rs
---> $DIR/src/json/parser.rs
---> $DIR/src/json/parser.rs
---> $DIR/src/json/parser.rs
---> $DIR/src/traits.rs

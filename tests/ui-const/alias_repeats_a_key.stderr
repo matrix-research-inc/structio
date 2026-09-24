@@ -1,4 +1,3 @@
 error[E0080]: evaluation panicked: structio: a declaration named the same key or variant twice, counting the aliases, which share the table with the names they stand in for
 --> tests/ui-const/alias_repeats_a_key.rs:9:1
---> $RUST/core/src/panic.rs
 --> tests/ui-const/alias_repeats_a_key.rs:9:1

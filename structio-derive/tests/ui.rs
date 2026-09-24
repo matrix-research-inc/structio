@@ -6,16 +6,8 @@
 //! checker: the derive refuses before it expands. That placement is the thing
 //! being tested, so the comparison stays `nocompile`'s default `Exact`, which
 //! keeps the span art a `Brief` run would drop.
-//!
-//! Skipped on Windows, where `nocompile` declines to claim support: it folds
-//! separators and strips `\r` under unit test, but its author has no Windows
-//! machine to confirm that on. Untested rather than known broken, so the test
-//! is `ignore`d there rather than compiled out -- `cargo test -- --ignored` on
-//! a Windows box is what would settle it. The other two CI platforms run the
-//! suite, and nothing about a rejected attribute is host-specific.
 
 #[test]
-#[cfg_attr(windows, ignore = "nocompile does not claim Windows support in v1")]
 fn misuse_is_refused_at_the_attribute() {
     let mut t = nocompile::cases!();
     t.dependency_path("structio", "..");

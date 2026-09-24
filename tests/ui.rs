@@ -6,8 +6,8 @@
 //! at the declaration -- compared exactly. `tests/ui-const` holds the `panic!`s
 //! in const evaluation whose rendering reaches past the declaration, and
 //! `tests/ui-rustc` the declarations the macros accept and the compiler then
-//! refuses in its own words. Both are compared briefly, and the tests below
-//! say why each split is forced.
+//! refuses in its own words. Both are compared under `BriefLocal`, and the
+//! tests below say why each split is forced.
 //!
 //! These are programs that must not compile, so no ordinary test can reach
 //! them. What they hold in place is the wording: a refusal is only worth
@@ -40,13 +40,11 @@
 //! The heading above it stays, because it names the trait, and the notes
 //! stay, because they are the product.
 //!
-//! Skipped under Miri, which cannot spawn the compiler these fixtures need,
-//! and on Windows, where `nocompile` declines to claim support.
+//! Skipped under Miri, which cannot spawn the compiler these fixtures need.
 
 #![cfg(not(miri))]
 
 #[test]
-#[cfg_attr(windows, ignore = "nocompile does not claim Windows support in v1")]
 fn a_refused_declaration_says_what_to_do_instead() {
     let mut t = nocompile::cases!();
     t.dependency_path("structio", ".");
@@ -56,7 +54,7 @@ fn a_refused_declaration_says_what_to_do_instead() {
 }
 
 /// The refusals that are a `panic!` in const evaluation rather than a
-/// `compile_error!`, compared under [`Brief`](nocompile::Mode::Brief).
+/// `compile_error!`, compared under [`BriefLocal`](nocompile::Mode::BriefLocal).
 ///
 /// Most are the schema mistakes no macro matcher can catch, because each is a
 /// property of the whole key set rather than of any one declaration token: a
@@ -78,23 +76,26 @@ fn a_refused_declaration_says_what_to_do_instead() {
 /// type fires only once something instantiates it, so rustc follows it with
 /// the chain of constants and functions that led there, each quoted from this
 /// crate's own source, and an `Exact` golden would re-bless on a refactor of
-/// the reader that changed nothing a user sees. `Brief` compares each
-/// diagnostic's code, primary message and locations and drops the quoted
-/// source, which here costs nothing: the panic text and the declaration it is
-/// pointed at are the whole product, and neither the frame through `core` nor
-/// the reader's own lines are something this crate should hold still.
+/// the reader that changed nothing a user sees. `Brief` alone is not enough
+/// for that second reason: it drops the quoted source but keeps a location per
+/// note, so the golden still lists which of this crate's files the chain
+/// passed through, and moving the reader's code between them re-blessed one.
+/// `BriefLocal` compares each diagnostic's code, primary message and the
+/// locations in the fixture, which here costs nothing: the panic text and the
+/// declaration it is pointed at are the whole product, and neither the frame
+/// through `core` nor the reader's own layout is something this crate should
+/// hold still.
 #[test]
-#[cfg_attr(windows, ignore = "nocompile does not claim Windows support in v1")]
 fn a_const_refusal_says_what_to_do_instead() {
     let mut t = nocompile::cases!();
     t.dependency_path("structio", ".");
-    t.mode(nocompile::Mode::Brief);
+    t.mode(nocompile::Mode::BriefLocal);
     t.compile_fail_dir("tests/ui-const");
     t.assert();
 }
 
 /// The refusals the compiler words rather than this crate, compared under
-/// [`Brief`](nocompile::Mode::Brief).
+/// [`BriefLocal`](nocompile::Mode::BriefLocal).
 ///
 /// Three of an enum declaration's guarantees are no message of this crate's:
 /// the macros accept the declaration and expand it into code the compiler then
@@ -111,14 +112,14 @@ fn a_const_refusal_says_what_to_do_instead() {
 /// suggestion quoted from inside the macros' own source -- an arm to add to a
 /// `match`, a `_` to add to a pattern -- which is advice about code the user
 /// cannot edit, and the sort of rendering a rustc release changes without
-/// notice. `Brief` keeps the codes, the messages and where each points, which
-/// is all of it the crate can stand behind.
+/// notice. `BriefLocal` keeps the codes, the messages and where each points in
+/// the declaration, which is all of it the crate can stand behind; where the
+/// macros' own expansion sits inside `src/macros.rs` is not part of it.
 #[test]
-#[cfg_attr(windows, ignore = "nocompile does not claim Windows support in v1")]
 fn a_refused_expansion_names_the_mistake() {
     let mut t = nocompile::cases!();
     t.dependency_path("structio", ".");
-    t.mode(nocompile::Mode::Brief);
+    t.mode(nocompile::Mode::BriefLocal);
     t.compile_fail_dir("tests/ui-rustc");
     t.assert();
 }
