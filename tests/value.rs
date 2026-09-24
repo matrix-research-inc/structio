@@ -59,7 +59,7 @@ fn numbers_classify_like_their_tokens() {
     let d = Value::from_json("[0,-0,18446744073709551615,-9223372036854775808,1e3,2.0]").unwrap();
     let items = d.as_array().unwrap();
     assert_eq!(items[0].as_u64(), Some(0));
-    assert_eq!(items[1].as_i64(), Some(0));
+    assert!(items[1].is_f64());
     assert_eq!(items[2].as_u64(), Some(u64::MAX));
     assert_eq!(items[2].as_i64(), None);
     assert_eq!(items[3].as_i64(), Some(i64::MIN));
@@ -78,6 +78,36 @@ fn numbers_classify_like_their_tokens() {
     assert_eq!(Number::from_f64(f64::INFINITY), None);
     assert_eq!(Value::from(-1i32).as_i64(), Some(-1));
     assert_eq!(Value::from(1i32).as_u64(), Some(1));
+}
+
+#[test]
+fn negative_zero_keeps_its_sign() {
+    // An integer zero has no sign, so `-0` is kept as the float `-0.0`, as
+    // `-0.0` and `-0e0` are and as a declared `f64` reads it.
+    for token in ["-0", "-0.0", "-0e0"] {
+        let v = Value::from_json(token).unwrap();
+        assert!(v.is_f64() && !v.is_u64() && !v.is_i64(), "{token}");
+        let f = v.as_f64().unwrap();
+        assert!(f == 0.0 && f.is_sign_negative(), "{token}");
+        assert_eq!(v.to_string(), "-0.0");
+        assert_eq!(Value::from_json(&v.to_string()).unwrap(), v);
+    }
+    assert!(Value::from_json("0").unwrap().is_u64());
+
+    let d = Value::from_json(r#"{"a":-0}"#).unwrap();
+    assert!(d["a"].as_f64().unwrap().is_sign_negative());
+    assert_eq!(d.to_string(), r#"{"a":-0.0}"#);
+    assert_eq!(Value::from_json(&d.to_string()).unwrap(), d);
+    assert_eq!(Value::from_beve(&d.to_beve()).unwrap(), d);
+
+    // The crate writes the `f64` `-0.0` as `-0`, so the sign survives both
+    // routes that go through that text.
+    let v = to_value(&-0.0f64).unwrap();
+    assert!(v.as_f64().unwrap().is_sign_negative());
+    let bytes = to_beve(&-0.0f64);
+    let transcoded = Value::from_json(&beve_to_json(&bytes).unwrap()).unwrap();
+    assert_eq!(transcoded, Value::from_beve(&bytes).unwrap());
+    assert!(transcoded.as_f64().unwrap().is_sign_negative());
 }
 
 #[test]
