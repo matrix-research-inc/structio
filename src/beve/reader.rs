@@ -607,6 +607,15 @@ impl<'de, O: Options> Reader<'de, O> {
             return Err(ErrorCode::ExpectedNumber);
         }
         let cat = header::sub(h);
+        // The header alone says a float is no integer, so it is refused before
+        // the payload is taken. Taking it first would leave the cursor, and
+        // the offset the entry point attaches, past the value rather than on
+        // it where every other type mismatch leaves them, and a caller that
+        // tries another reading without rewinding would start on the next
+        // value.
+        if cat == header::CAT_FLOAT {
+            return Err(ErrorCode::ExpectedInteger);
+        }
         let width = byte_width(cat, header::count(h)).ok_or(ErrorCode::InvalidHeader)?;
         let bytes = self.take(width)?;
         match cat {
@@ -687,6 +696,12 @@ impl<'de, O: Options> Reader<'de, O> {
         let cat = header::sub(h);
         let code = header::count(h);
         let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
+        // A 128-bit float is well formed and has no Rust type to land in. That
+        // too is known from the header, so it is refused before the payload is
+        // taken, for the reason `read_int` refuses a float there.
+        if cat == header::CAT_FLOAT && code == 4 {
+            return Err(ErrorCode::UnsupportedFeature);
+        }
         Ok((cat, code, self.take(width)?))
     }
 

@@ -10,6 +10,8 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **A failed read no longer costs a reader that winds back and retries.** Every reader that entered a nesting level kept it on an error path, so a speculating reader lost a level per failed attempt and, after 256, had ordinary input refused as `ExceededMaxDepth`. A failed internally tagged read with a late tag could also leave its held members behind for the next object at the same depth, which then read them as its own.
 
+- **A BEVE float read as an integer, or a 128-bit float read at all, no longer reports an offset past the value.** Both are refused on the header before the payload is taken, so the cursor and `Error::index` stop just past the header, as every other type mismatch does.
+
 ## [0.6.0] - 2026-09-18
 
 ### Added

@@ -379,10 +379,14 @@ fn a_float_field_takes_the_half_widths_it_will_never_write() {
 fn a_128_bit_float_is_reported_rather_than_guessed_at() {
     let mut bytes = vec![header::number(header::CAT_FLOAT, 4)];
     bytes.extend_from_slice(&[0u8; 16]);
-    assert_eq!(
-        from_beve::<f64>(&bytes).unwrap_err().code,
-        ErrorCode::UnsupportedFeature
-    );
+    // The header is enough to refuse it, so the offset is just past the header
+    // and not past the sixteen bytes nothing was going to read.
+    for e in [
+        from_beve::<f64>(&bytes).unwrap_err(),
+        from_beve::<f32>(&bytes).unwrap_err(),
+    ] {
+        assert_eq!((e.code, e.index), (ErrorCode::UnsupportedFeature, 1));
+    }
 }
 
 #[test]
@@ -415,6 +419,34 @@ fn the_wrong_kind_is_an_error_and_never_a_conversion() {
         from_beve::<u32>(&float).unwrap_err().code,
         ErrorCode::ExpectedInteger
     );
+}
+
+#[test]
+fn a_float_refused_as_an_integer_leaves_the_offset_on_it() {
+    // Every other mismatch is refused on the header, with the offset just past
+    // it. A float read as an integer is refused on its category rather than its
+    // type, and has to stop in the same place, not past the payload.
+    let float = to_beve(&1.5f64);
+    for e in [
+        from_beve::<u64>(&float).unwrap_err(),
+        from_beve::<i64>(&float).unwrap_err(),
+        from_beve::<u128>(&float).unwrap_err(),
+    ] {
+        assert_eq!((e.code, e.index), (ErrorCode::ExpectedInteger, 1));
+    }
+    assert_eq!(from_beve::<bool>(&float).unwrap_err().index, 1);
+    assert_eq!(from_beve::<String>(&float).unwrap_err().index, 1);
+
+    // The cursor itself, which a caller trying another reading starts from.
+    let mut r = beve::Reader::new(&float);
+    assert_eq!(r.read_u64(), Err(ErrorCode::ExpectedInteger));
+    assert_eq!(r.position(), 1);
+
+    // In a typed array the element's header is installed rather than read, so
+    // its payload begins where the array's count ends.
+    let floats = to_beve(&vec![1.5f64]);
+    let e = from_beve::<Vec<u32>>(&floats).unwrap_err();
+    assert_eq!((e.code, e.index), (ErrorCode::ExpectedInteger, 2));
 }
 
 #[test]
