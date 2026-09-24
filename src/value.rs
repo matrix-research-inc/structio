@@ -1000,16 +1000,17 @@ fn read_body<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Valu
         header::TY_TYPED_ARRAY => read_typed_array(r, h)?,
         header::TY_GENERIC_ARRAY => {
             let n = r.count()?;
-            r.enter()?;
-            // Each element is at least a header byte, so the input bounds the
-            // count; `cautious` bounds what that many are allowed to cost.
-            let mut items = Vec::with_capacity(cautious::<Value>(n.min(r.remaining())));
-            for _ in 0..n {
-                let h = r.head()?;
-                items.push(read_body(r, h)?);
-            }
-            r.leave();
-            Value::Array(items)
+            r.nested(|r| {
+                // Each element is at least a header byte, so the input bounds
+                // the count; `cautious` bounds what that many are allowed to
+                // cost.
+                let mut items = Vec::with_capacity(cautious::<Value>(n.min(r.remaining())));
+                for _ in 0..n {
+                    let h = r.head()?;
+                    items.push(read_body(r, h)?);
+                }
+                Ok(Value::Array(items))
+            })?
         }
         header::TY_EXTENSION => match header::ext_id(h) {
             header::EXT_COMPLEX => read_complex(r)?,
@@ -1051,30 +1052,35 @@ fn read_object<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Va
     let cat = header::sub(h);
     let width = key_width(h)?;
     let members = r.count()?;
-    r.enter()?;
-    // The count is known here, and an object's entries live in one vector, so
-    // reserving up front spares the doubling copies that filling it otherwise
-    // pays. `cautious` clips a dishonest count so a claimed member count
-    // cannot turn into an allocation the document never backs.
-    let mut map = Object::with_capacity(cautious::<(String, Value)>(members));
-    for _ in 0..members {
-        let key = match cat {
-            header::CAT_FLOAT => r.str_body()?.to_owned(),
-            // JSON has no key but a string, so an integer key becomes its
-            // digits, the form `ToJsonKey` writes one in.
-            header::CAT_SIGNED => sign_extend(le_u128(r.take(width)?), width).to_string(),
-            _ => le_u128(r.take(width)?).to_string(),
-        };
-        let h = r.head()?;
-        map.insert(key, read_body(r, h)?);
-    }
-    r.leave();
-    Ok(Value::Object(map))
+    r.nested(|r| {
+        // The count is known here, and an object's entries live in one vector,
+        // so reserving up front spares the doubling copies that filling it
+        // otherwise pays. `cautious` clips a dishonest count so a claimed
+        // member count cannot turn into an allocation the document never
+        // backs.
+        let mut map = Object::with_capacity(cautious::<(String, Value)>(members));
+        for _ in 0..members {
+            let key = match cat {
+                header::CAT_FLOAT => r.str_body()?.to_owned(),
+                // JSON has no key but a string, so an integer key becomes its
+                // digits, the form `ToJsonKey` writes one in.
+                header::CAT_SIGNED => sign_extend(le_u128(r.take(width)?), width).to_string(),
+                _ => le_u128(r.take(width)?).to_string(),
+            };
+            let h = r.head()?;
+            map.insert(key, read_body(r, h)?);
+        }
+        Ok(Value::Object(map))
+    })
 }
 
 fn read_typed_array<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Value> {
-    r.enter()?;
-    let items = match r.typed_head(h)? {
+    r.nested(|r| typed_items(r, h)).map(Value::Array)
+}
+
+/// [`read_typed_array`]'s elements, one level down.
+fn typed_items<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Vec<Value>> {
+    Ok(match r.typed_head(h)? {
         Typed::Bools(n) => {
             let payload = r.take(n.div_ceil(8))?;
             (0..n)
@@ -1099,9 +1105,7 @@ fn read_typed_array<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResu
                 .map(|chunk| read_number(cat, code, chunk).map(Value::Number))
                 .collect::<PResult<Vec<_>>>()?
         }
-    };
-    r.leave();
-    Ok(Value::Array(items))
+    })
 }
 
 /// A complex value as `[re, im]`, or an array of them.
@@ -1130,18 +1134,18 @@ fn read_complex<'de, O: Options>(r: &mut BeveReader<'de, O>) -> PResult<Value> {
 /// A matrix as the object both formats read one back from.
 fn read_matrix<'de, O: Options>(r: &mut BeveReader<'de, O>) -> PResult<Value> {
     let layout = MatrixLayout::from_byte(r.take(1)?[0]).ok_or(ErrorCode::InvalidMatrixLayout)?;
-    r.enter()?;
-    let mut map = Object::new();
-    map.insert(
-        "layout".to_owned(),
-        Value::String(layout.as_str().to_owned()),
-    );
-    let h = r.head()?;
-    map.insert("extents".to_owned(), read_body(r, h)?);
-    let h = r.head()?;
-    map.insert("value".to_owned(), read_body(r, h)?);
-    r.leave();
-    Ok(Value::Object(map))
+    r.nested(|r| {
+        let mut map = Object::new();
+        map.insert(
+            "layout".to_owned(),
+            Value::String(layout.as_str().to_owned()),
+        );
+        let h = r.head()?;
+        map.insert("extents".to_owned(), read_body(r, h)?);
+        let h = r.head()?;
+        map.insert("value".to_owned(), read_body(r, h)?);
+        Ok(Value::Object(map))
+    })
 }
 
 impl beve::Write for Value {

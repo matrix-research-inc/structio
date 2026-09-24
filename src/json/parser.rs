@@ -218,6 +218,11 @@ impl<'de, O: Options> Parser<'de, O> {
     /// a key the generated reader set behind its back, and have no way to know
     /// it was there. So the abandoning is what clears it, rather than a rule
     /// the abandoning reader has to remember.
+    ///
+    /// The other state a read keeps beside the cursor needs no winding back:
+    /// a failed read releases the nesting levels it entered, and drops any
+    /// late tag's members it was holding, on its way out. So a reader can fail
+    /// and retry as often as it likes without the depth limit drawing nearer.
     #[inline]
     pub fn rewind(&mut self, to: usize) {
         // Clamping is also what keeps `idx <= data.len()`, which every bounds
@@ -345,19 +350,41 @@ impl<'de, O: Options> Parser<'de, O> {
         })
     }
 
+    /// Count one more level of nesting, or refuse it past [`MAX_DEPTH`].
+    ///
+    /// A refusal leaves the count where it was, so that like every other
+    /// failure here it costs a reader that winds back and tries something else
+    /// nothing. See [`nested`](Self::nested).
     #[inline(always)]
     pub(crate) fn enter(&mut self) -> PResult<()> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            Err(ErrorCode::ExceededMaxDepth)
-        } else {
-            Ok(())
+        if self.depth >= MAX_DEPTH {
+            return Err(ErrorCode::ExceededMaxDepth);
         }
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Run `body` one level deeper, and come back up however it exits.
+    ///
+    /// The depth count is state that outlives a failed read, which the cursor
+    /// is not: [`rewind`](Self::rewind) puts the cursor back, but a level
+    /// entered and never left would stay counted, so a reader that speculates
+    /// and winds back would lose a level per failure and, some hundreds of
+    /// failures on, have ordinary input refused as too deep. So a failure
+    /// releases what it entered on the way out, and every container walk goes
+    /// through here rather than pairing `enter` and `leave` around `?`s that
+    /// would skip the `leave`.
+    #[inline(always)]
+    pub(crate) fn nested<R>(&mut self, body: impl FnOnce(&mut Self) -> PResult<R>) -> PResult<R> {
+        self.enter()?;
+        let result = body(self);
+        self.leave();
+        result
     }
 
     /// Leave a container [`enter`](Self::enter) counted.
     ///
-    /// The two are balanced by the caller, and the public
+    /// The two are balanced by the caller, on every exit, and the public
     /// `read_object_rest` / `finish_internally_tagged` pair takes its `enter`
     /// from whoever opened the object. A hand-written impl that calls one of
     /// those without having entered wraps the depth, and what that costs
@@ -414,16 +441,13 @@ impl<'de, O: Options> Parser<'de, O> {
         // and gone, under a policy that requires nothing.
         let open = self.idx;
         self.expect(b'{', ErrorCode::ExpectedBrace)?;
-        self.enter()?;
-        self.skip_ws();
-
-        if self.try_byte(b'}') {
-            self.leave();
-            return self.require_fields::<T>(0, open);
-        }
-
-        let seen = self.object_members::<T>(value)?;
-        self.leave();
+        let seen = self.nested(|p| {
+            p.skip_ws();
+            if p.try_byte(b'}') {
+                return Ok(0);
+            }
+            p.object_members::<T>(value)
+        })?;
         self.require_fields::<T>(seen, open)
     }
 
@@ -439,12 +463,22 @@ impl<'de, O: Options> Parser<'de, O> {
     /// a [`MissingKey`](ErrorCode::MissingKey) is reported against the object
     /// rather than against the byte that closed it, and this is called after
     /// the caller has walked past it. `enter` is the caller's too, and so is
-    /// balanced here by the `leave`.
+    /// balanced here by the `leave`, which is taken whether or not the members
+    /// read.
     pub fn read_object_rest<T: ReadObject<'de>>(
         &mut self,
         value: &mut T,
         open: usize,
     ) -> PResult<()> {
+        let seen = self.rest_members::<T>(value);
+        self.leave();
+        self.require_fields::<T>(seen?, open)
+    }
+
+    /// [`read_object_rest`](Self::read_object_rest) short of its `leave`, so
+    /// that a member failing to read cannot skip it.
+    #[inline(always)]
+    fn rest_members<T: ReadObject<'de>>(&mut self, value: &mut T) -> PResult<u64> {
         let mut seen = if self.comma_or_close(b'}')? {
             self.object_members::<T>(value)?
         } else {
@@ -453,8 +487,7 @@ impl<'de, O: Options> Parser<'de, O> {
         if let Some(run) = self.take_deferred() {
             seen |= self.deferred_members::<T>(value, run)?;
         }
-        self.leave();
-        self.require_fields::<T>(seen, open)
+        Ok(seen)
     }
 
     /// Consume the rest of an object that has no fields to fill: the form an
@@ -463,8 +496,17 @@ impl<'de, O: Options> Parser<'de, O> {
     /// The tag was the whole value, so anything after it is an unknown member
     /// and meets the policy that governs one. `{"type":"a"}` is the ordinary
     /// case and costs a single `comma_or_close`. The `enter` is the caller's,
-    /// and is balanced here.
+    /// and is balanced here, whether or not the members were acceptable.
     pub fn finish_internally_tagged(&mut self) -> PResult<()> {
+        let result = self.unknown_members();
+        self.leave();
+        result
+    }
+
+    /// [`finish_internally_tagged`](Self::finish_internally_tagged) short of
+    /// its `leave`, for [`read_object_rest`](Self::read_object_rest)'s reason.
+    #[inline(always)]
+    fn unknown_members(&mut self) -> PResult<()> {
         while self.comma_or_close(b'}')? {
             self.expect(b'"', ErrorCode::ExpectedQuote)?;
             if O::ERROR_ON_UNKNOWN_KEYS {
@@ -488,7 +530,6 @@ impl<'de, O: Options> Parser<'de, O> {
             }
             self.idx = resume;
         }
-        self.leave();
         Ok(())
     }
 
@@ -676,23 +717,23 @@ impl<'de, O: Options> Parser<'de, O> {
                 // that closed it.
                 let open = self.idx;
                 self.idx += 1;
-                self.enter()?;
-                self.skip_ws();
-                // The tag is the object's whole content, so no members names no
-                // variant exactly as two do.
-                if self.peek() == Some(b'}') {
-                    self.idx = open;
-                    return Err(ErrorCode::ExpectedVariant);
-                }
-                self.expect(b'"', ErrorCode::ExpectedQuote)?;
-                self.dispatch_variant(value, T::read_payload)?;
-                // A comma here is that second member.
-                if self.comma_or_close(b'}')? {
-                    self.idx = open;
-                    return Err(ErrorCode::ExpectedVariant);
-                }
-                self.leave();
-                Ok(())
+                self.nested(|p| {
+                    p.skip_ws();
+                    // The tag is the object's whole content, so no members
+                    // names no variant exactly as two do.
+                    if p.peek() == Some(b'}') {
+                        p.idx = open;
+                        return Err(ErrorCode::ExpectedVariant);
+                    }
+                    p.expect(b'"', ErrorCode::ExpectedQuote)?;
+                    p.dispatch_variant(value, T::read_payload)?;
+                    // A comma here is that second member.
+                    if p.comma_or_close(b'}')? {
+                        p.idx = open;
+                        return Err(ErrorCode::ExpectedVariant);
+                    }
+                    Ok(())
+                })
             }
             // A document that ended is not a document that held the wrong
             // thing, and every other reader here tells the two apart.
@@ -765,6 +806,30 @@ impl<'de, O: Options> Parser<'de, O> {
         // reported against the object, as it is for a struct.
         let open = self.idx;
         self.expect(b'{', ErrorCode::ExpectedBrace)?;
+        // The level entered below is left by the `read_object_rest` or
+        // `finish_internally_tagged` the generated arm ends in, and a failure
+        // may or may not have got that far. So rather than work out which,
+        // a failure puts back the depth it found, and drops any late-tag run
+        // it pushed: one left on the stack would be taken by the next object
+        // read at its depth, which would then read another object's members.
+        let depth = self.depth;
+        let runs = self.deferred.len();
+        let result = self.tagged_object::<T>(value, open);
+        if result.is_err() {
+            self.depth = depth;
+            self.deferred.truncate(runs);
+        }
+        result
+    }
+
+    /// [`read_internally_tagged`](Self::read_internally_tagged) past the
+    /// opening brace, which is `open`.
+    #[inline(always)]
+    fn tagged_object<T: ReadInternallyTagged<'de>>(
+        &mut self,
+        value: &mut T,
+        open: usize,
+    ) -> PResult<()> {
         self.enter()?;
         self.skip_ws();
 
@@ -826,23 +891,21 @@ impl<'de, O: Options> Parser<'de, O> {
     {
         self.skip_ws();
         self.expect(b'[', ErrorCode::ExpectedBracket)?;
-        self.enter()?;
-        self.skip_ws();
-
-        if self.try_byte(b']') {
-            self.leave();
-            return Ok(0);
-        }
-
-        let mut count = 0usize;
-        loop {
-            element(self, count)?;
-            count += 1;
-            if !self.comma_or_close(b']')? {
-                self.leave();
-                return Ok(count);
+        self.nested(|p| {
+            p.skip_ws();
+            if p.try_byte(b']') {
+                return Ok(0);
             }
-        }
+
+            let mut count = 0usize;
+            loop {
+                element(p, count)?;
+                count += 1;
+                if !p.comma_or_close(b']')? {
+                    return Ok(count);
+                }
+            }
+        })
     }
 
     /// Drive a JSON object as a map, calling `entry` with each key.
@@ -899,25 +962,23 @@ impl<'de, O: Options> Parser<'de, O> {
     {
         self.skip_ws();
         self.expect(b'{', ErrorCode::ExpectedBrace)?;
-        self.enter()?;
-        self.skip_ws();
-
-        if self.try_byte(b'}') {
-            self.leave();
-            return Ok(());
-        }
-
-        loop {
-            self.expect(b'"', ErrorCode::ExpectedQuote)?;
-            let at = self.idx;
-            let key = self.read_string_body()?;
-            self.colon()?;
-            entry(self, key, at)?;
-            if !self.comma_or_close(b'}')? {
-                self.leave();
+        self.nested(|p| {
+            p.skip_ws();
+            if p.try_byte(b'}') {
                 return Ok(());
             }
-        }
+
+            loop {
+                p.expect(b'"', ErrorCode::ExpectedQuote)?;
+                let at = p.idx;
+                let key = p.read_string_body()?;
+                p.colon()?;
+                entry(p, key, at)?;
+                if !p.comma_or_close(b'}')? {
+                    return Ok(());
+                }
+            }
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1363,38 +1424,36 @@ impl<'de, O: Options> Parser<'de, O> {
         match self.peek() {
             Some(b'{') => {
                 self.idx += 1;
-                self.enter()?;
-                self.skip_ws();
-                if self.try_byte(b'}') {
-                    self.leave();
-                    return Ok(());
-                }
-                loop {
-                    self.expect(b'"', ErrorCode::ExpectedQuote)?;
-                    self.skip_string_body()?;
-                    self.colon()?;
-                    self.skip_value()?;
-                    if !self.comma_or_close(b'}')? {
-                        self.leave();
+                self.nested(|p| {
+                    p.skip_ws();
+                    if p.try_byte(b'}') {
                         return Ok(());
                     }
-                }
+                    loop {
+                        p.expect(b'"', ErrorCode::ExpectedQuote)?;
+                        p.skip_string_body()?;
+                        p.colon()?;
+                        p.skip_value()?;
+                        if !p.comma_or_close(b'}')? {
+                            return Ok(());
+                        }
+                    }
+                })
             }
             Some(b'[') => {
                 self.idx += 1;
-                self.enter()?;
-                self.skip_ws();
-                if self.try_byte(b']') {
-                    self.leave();
-                    return Ok(());
-                }
-                loop {
-                    self.skip_value()?;
-                    if !self.comma_or_close(b']')? {
-                        self.leave();
+                self.nested(|p| {
+                    p.skip_ws();
+                    if p.try_byte(b']') {
                         return Ok(());
                     }
-                }
+                    loop {
+                        p.skip_value()?;
+                        if !p.comma_or_close(b']')? {
+                            return Ok(());
+                        }
+                    }
+                })
             }
             // Everything that is not a container is a scalar, and there is one
             // skipper for those; the whitespace it assumes away is behind the
