@@ -297,11 +297,18 @@ pub(crate) fn parse_i64(buf: &[u8], i: &mut usize) -> PResult<i64> {
 /// range; a minus sign in front of any other number is.
 ///
 /// The sign is looked for only once `parse_u64` has refused the byte it sits
-/// on, so a document of unsigned integers pays nothing for it.
+/// on, so a document of unsigned integers pays nothing for it on the way
+/// through. The cursor crosses into the out-of-line half by value, for the
+/// reason [`parse_u64_wide`] gives: handed over by reference, it would live on
+/// the stack for the whole of an array loop around this.
 #[inline(always)]
 pub(crate) fn parse_unsigned_u64(buf: &[u8], i: &mut usize) -> PResult<u64> {
     match parse_u64(buf, i) {
-        Err(_) if buf.get(*i) == Some(&b'-') => negative_unsigned(buf, i).map(|()| 0),
+        Err(_) if buf.get(*i) == Some(&b'-') => {
+            let (zero, at) = negative_unsigned(buf, *i);
+            *i = at;
+            zero.map(|()| 0)
+        }
         parsed => parsed,
     }
 }
@@ -309,13 +316,18 @@ pub(crate) fn parse_unsigned_u64(buf: &[u8], i: &mut usize) -> PResult<u64> {
 /// [`parse_unsigned_u64`] at 128 bits.
 pub(crate) fn parse_unsigned_u128(buf: &[u8], i: &mut usize) -> PResult<u128> {
     match parse_u128(buf, i) {
-        Err(_) if buf.get(*i) == Some(&b'-') => negative_unsigned(buf, i).map(|()| 0),
+        Err(_) if buf.get(*i) == Some(&b'-') => {
+            let (zero, at) = negative_unsigned(buf, *i);
+            *i = at;
+            zero.map(|()| 0)
+        }
         parsed => parsed,
     }
 }
 
-/// The rest of a token that starts with a minus sign, read for an unsigned
-/// type: consumed if it is a zero, and otherwise refused.
+/// The rest of a token whose minus sign is at `sign`, read for an unsigned
+/// type: accepted if it is a zero, and otherwise refused. Returns the outcome
+/// with where the cursor belongs, past the zero or on the refusal.
 ///
 /// A nonzero magnitude is [`NumberOutOfRange`](ErrorCode::NumberOutOfRange) at
 /// any width, reported at the sign, where a positive number past the type's
@@ -326,16 +338,12 @@ pub(crate) fn parse_unsigned_u128(buf: &[u8], i: &mut usize) -> PResult<u128> {
 /// the sign.
 #[cold]
 #[inline(never)]
-fn negative_unsigned(buf: &[u8], i: &mut usize) -> PResult<()> {
-    let sign = *i;
-    *i += 1;
-    match parse_u64(buf, i) {
-        Ok(0) => Ok(()),
-        Ok(_) | Err(ErrorCode::NumberOutOfRange) => {
-            *i = sign;
-            Err(ErrorCode::NumberOutOfRange)
-        }
-        Err(e) => Err(e),
+fn negative_unsigned(buf: &[u8], sign: usize) -> (PResult<()>, usize) {
+    let mut end = sign + 1;
+    match parse_u64(buf, &mut end) {
+        Ok(0) => (Ok(()), end),
+        Ok(_) | Err(ErrorCode::NumberOutOfRange) => (Err(ErrorCode::NumberOutOfRange), sign),
+        Err(e) => (Err(e), sign + 1),
     }
 }
 
