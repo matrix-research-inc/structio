@@ -111,6 +111,43 @@ fn negative_zero_keeps_its_sign() {
 }
 
 #[test]
+fn negative_zero_is_a_float_to_every_integer_route() {
+    // Keeping the sign makes `-0` a float, and a float is not narrowed to an
+    // integer, so a `Value` has no integer for it where a declared `i64` reads
+    // the same token as `0`. This is the documented contract, not an accident.
+    let v = Value::from_json("-0").unwrap();
+    assert_eq!(v.as_i64(), None);
+    assert_eq!(v.as_u64(), None);
+    assert!(!v.is_i64() && !v.is_u64());
+    assert_eq!(v.as_number().unwrap().as_i64(), None);
+    assert_eq!(
+        from_value::<i64>(&v).unwrap_err().code,
+        ErrorCode::InvalidNumber
+    );
+    assert_eq!(structio::from_str::<i64>("-0").unwrap(), 0);
+    assert!(from_value::<f64>(&v).unwrap().is_sign_negative());
+
+    // Its BEVE is the `f64` -0.0, not the integer 0 an `i64` writes.
+    let mut f64_neg_zero = vec![0x61];
+    f64_neg_zero.extend((-0.0f64).to_le_bytes());
+    assert_eq!(to_beve(&v), f64_neg_zero);
+
+    // The same holds in a member, which is where a document carries one.
+    #[derive(Default, Debug, PartialEq)]
+    struct Count {
+        a: i64,
+    }
+    structio::object!(Count { a });
+    let text = r#"{"a":-0}"#;
+    assert_eq!(structio::from_str::<Count>(text).unwrap(), Count { a: 0 });
+    let d = Value::from_json(text).unwrap();
+    assert_eq!(
+        from_value::<Count>(&d).unwrap_err().code,
+        ErrorCode::InvalidNumber
+    );
+}
+
+#[test]
 fn a_float_keeps_its_kind_through_text() {
     // The crate writes the `f64` 1.0 as `1`; a value writes `1.0`, so what
     // was a float reads back as one and the value compares equal to itself

@@ -4,6 +4,12 @@ Notable changes to structio. The format follows [Keep a Changelog](https://keepa
 
 Before 1.0 the API is not frozen: a minor bump may break it, and what broke is listed here.
 
+## [Unreleased]
+
+### Fixed
+
+- **The `Value` docs say what reading `-0` as `-0.0` costs.** Behaviour is 0.7.0's, unchanged: `as_i64`, `as_u64` and `is_i64` refuse it, `from_value` into an integer type refuses it while `from_str::<i64>("-0")` is `0`, and it writes to BEVE as an `f64` rather than the integer `0`. An integer past 64 bits, stored as a float, has always behaved the same way.
+
 ## [0.7.0] - 2026-09-24
 
 ### Changed
