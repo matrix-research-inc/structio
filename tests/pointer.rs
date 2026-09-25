@@ -519,3 +519,69 @@ fn the_reader_can_be_driven_by_hand() {
     r.read(&mut server).unwrap();
     assert_eq!(server, config().servers[0]);
 }
+
+// ---------------------------------------------------------------------------
+// Depth
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_sibling_stepped_over_is_measured_from_where_it_sits() {
+    // The pointer passes through `path` objects to one holding a deep member
+    // it steps over and then the null it names. The limit is the document's,
+    // so the sibling is measured from the depth it sits at, not from the top:
+    // the pointer takes the document exactly when validating does, however
+    // the depth is split between the path and the sibling.
+    let key = |name: &[u8]| [&[(name.len() as u8) << 2][..], name].concat();
+    let limit = beve::MAX_DEPTH as usize;
+    for path in [0, 1, limit / 2, limit - 2] {
+        for sibling in [limit - 1 - path, limit - path] {
+            let mut doc = Vec::new();
+            for _ in 0..path {
+                doc.extend_from_slice(&[header::OBJECT, 1 << 2]);
+                doc.extend_from_slice(&key(b"next"));
+            }
+            doc.extend_from_slice(&[header::OBJECT, 2 << 2]);
+            doc.extend_from_slice(&key(b"skip"));
+            for _ in 0..sibling {
+                doc.extend_from_slice(&[header::GENERIC_ARRAY, 1 << 2]);
+            }
+            doc.push(header::NULL);
+            doc.extend_from_slice(&key(b"keep"));
+            doc.push(header::NULL);
+
+            let pointer = format!("{}/keep", "/next".repeat(path));
+            let pointed = from_beve_at::<Option<u8>>(&doc, &pointer).map_err(|e| e.code);
+            let validated = beve::validate(&doc).map_err(|e| e.code);
+            let containers = path + 1 + sibling;
+            assert_eq!(
+                pointed.is_ok(),
+                containers <= limit,
+                "{containers} containers"
+            );
+            assert_eq!(pointed.err(), validated.err(), "{containers} containers");
+        }
+    }
+}
+
+#[test]
+fn a_hand_driven_seek_measures_from_where_the_reader_stands() {
+    // `limit` arrays around one more: too deep as a document, so the pointer
+    // read that measures the document refuses it. A hand-driven reader
+    // measures from where it stands, as `skip_value` does, so after a seek
+    // halfway down the rest is only half the limit deep.
+    let limit = beve::MAX_DEPTH as usize;
+    let mut doc: Vec<u8> = std::iter::repeat_n([header::GENERIC_ARRAY, 1 << 2], limit + 1)
+        .flatten()
+        .collect();
+    doc.push(header::NULL);
+    let half = "/0".repeat(limit / 2);
+
+    let whole = beve::validate(&doc).unwrap_err().code;
+    assert_eq!(whole, ErrorCode::ExceededMaxDepth);
+    let pointed = from_beve_at::<structio::Value>(&doc, &half).unwrap_err();
+    assert_eq!(pointed.code, whole);
+
+    let mut r = beve::Reader::new(&doc);
+    r.seek(&half).unwrap();
+    r.skip_value().unwrap();
+}

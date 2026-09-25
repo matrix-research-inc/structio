@@ -498,3 +498,56 @@ fn the_limit_stays_where_it_was() {
         assert_ne!(code, ErrorCode::ExceededMaxDepth);
     }
 }
+
+#[test]
+fn a_seek_leaves_the_limit_where_it_was() {
+    // A seek counts the containers on its path while it walks them, so the
+    // siblings it steps over are measured from where they sit, and then puts
+    // the depth back, on success as on failure. The object the pointer names
+    // sits at the limit exactly, so a single level kept by any attempt would
+    // have the next one refused as too deep.
+    let outer = beve::MAX_DEPTH as usize - 1;
+    let doc = beve_of(&format!(
+        r#"{}{{"a":"x"}}{}"#,
+        "[".repeat(outer),
+        "]".repeat(outer)
+    ));
+    let path = "/0".repeat(outer);
+    let named = format!("{path}/a");
+    let missing = format!("{path}/b");
+    let number = |r: &mut beve::Reader<'_>| beve::Read::read(&mut 0u32, r);
+
+    // The seek fails, at the very end of the path.
+    assert_eq!(
+        beve_retried(&doc, |r| r.seek(&missing)),
+        ErrorCode::NoSuchValue
+    );
+    // The seek succeeds and the read after it fails.
+    let code = beve_retried(&doc, |r| r.seek(&named).and_then(|()| number(r)));
+    assert_ne!(code, ErrorCode::ExceededMaxDepth);
+    // The same path in two seeks.
+    let code = beve_retried(&doc, |r| {
+        r.seek(&path)?;
+        r.seek("/a")?;
+        number(r)
+    });
+    assert_ne!(code, ErrorCode::ExceededMaxDepth);
+
+    // And a reader that keeps its place between the two, winding back only
+    // the second, still reads the value after all of that.
+    let mut r = beve::Reader::new(&doc);
+    r.seek(&path).unwrap();
+    let inside = r.position();
+    for n in 0..ATTEMPTS {
+        r.seek("/a").unwrap();
+        let code = number(&mut r).unwrap_err();
+        assert_ne!(code, ErrorCode::ExceededMaxDepth, "attempt {n}");
+        r.rewind(inside);
+        assert_eq!(r.seek("/b"), Err(ErrorCode::NoSuchValue), "attempt {n}");
+        r.rewind(inside);
+    }
+    r.seek("/a").unwrap();
+    let mut text = String::new();
+    beve::Read::read(&mut text, &mut r).unwrap();
+    assert_eq!(text, "x");
+}

@@ -517,6 +517,9 @@ impl<'de, O: Options> Reader<'de, O> {
         if header::ty(inner) != header::TY_TYPED_ARRAY || header::sub(inner) == header::CAT_OTHER {
             return Err(ErrorCode::InvalidHeader);
         }
+        // Refused on the header, before the count, as `typed_head` refuses an
+        // unaligned array of the same element type.
+        fixed_width(inner)?;
         let n = self.count()?;
         let pad = self.take(1)?[0] as usize;
         self.drop_bytes(pad)?;
@@ -558,7 +561,14 @@ impl<'de, O: Options> Reader<'de, O> {
                 }
                 _ => Err(ErrorCode::InvalidHeader),
             },
-            _ => Ok(Typed::Fixed(h, self.count()?)),
+            // An element type the format does not define is known from the
+            // header, so it is refused before the count is taken, as a lone
+            // number of that type is, and a borrowed `&[u8]`, which reads no
+            // count before deciding, stops in the same place.
+            _ => {
+                fixed_width(h)?;
+                Ok(Typed::Fixed(h, self.count()?))
+            }
         }
     }
 
@@ -652,6 +662,10 @@ impl<'de, O: Options> Reader<'de, O> {
         match self.head()? {
             header::TRUE => Ok(true),
             header::FALSE => Ok(false),
+            // A null is a value and not a boolean. Anything else of the null
+            // and boolean type is no value at all, as every other walk says.
+            header::NULL => Err(ErrorCode::ExpectedBool),
+            h if header::ty(h) == header::TY_NULL_BOOL => Err(ErrorCode::InvalidHeader),
             _ => Err(ErrorCode::ExpectedBool),
         }
     }
@@ -676,6 +690,10 @@ impl<'de, O: Options> Reader<'de, O> {
             return Err(ErrorCode::ExpectedNumber);
         }
         let cat = header::sub(h);
+        // A width the format does not define makes the header no number at
+        // all, of either kind, so that is settled first, as `number_body`
+        // settles it and as every walk that is not after an integer does.
+        let width = byte_width(cat, header::count(h)).ok_or(ErrorCode::InvalidHeader)?;
         // The header alone says a float is no integer, so it is refused before
         // the payload is taken. Taking it first would leave the cursor, and
         // the offset the entry point attaches, past the value rather than on
@@ -685,7 +703,6 @@ impl<'de, O: Options> Reader<'de, O> {
         if cat == header::CAT_FLOAT {
             return Err(ErrorCode::ExpectedInteger);
         }
-        let width = byte_width(cat, header::count(h)).ok_or(ErrorCode::InvalidHeader)?;
         let bytes = self.take(width)?;
         match cat {
             header::CAT_UNSIGNED => Ok(Int::Unsigned(le_u128(bytes))),
@@ -764,13 +781,9 @@ impl<'de, O: Options> Reader<'de, O> {
         }
         let cat = header::sub(h);
         let code = header::count(h);
-        let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
-        // A 128-bit float is well formed and has no Rust type to land in. That
-        // too is known from the header, so it is refused before the payload is
-        // taken, for the reason `read_int` refuses a float there.
-        if cat == header::CAT_FLOAT && code == 4 {
-            return Err(ErrorCode::UnsupportedFeature);
-        }
+        // A 128-bit float is refused here too, on the header, for the reason
+        // `read_int` refuses a float before taking the payload.
+        let width = header::decodable_width(cat, code)?;
         Ok((cat, code, self.take(width)?))
     }
 
@@ -832,14 +845,18 @@ impl<'de, O: Options> Reader<'de, O> {
             let n = self.count()?;
             return self.take(n);
         }
-        // The aligned form states its element type in a second header, and
-        // pads the payload so a reader can point at it directly.
-        if header::count(h) != header::OTHER_ALIGNED {
-            return Err(ErrorCode::ExpectedBytes);
+        match header::count(h) {
+            // The aligned form states its element type in a second header, and
+            // pads the payload so a reader can point at it directly.
+            header::OTHER_ALIGNED => {
+                let (inner, n) = self.aligned_head()?;
+                byte_elements(inner)?;
+                self.take(n)
+            }
+            header::OTHER_BOOL | header::OTHER_STRING => Err(ErrorCode::ExpectedBytes),
+            // No form at all, as `typed_head` says of it.
+            _ => Err(ErrorCode::InvalidHeader),
         }
-        let (inner, n) = self.aligned_head()?;
-        byte_elements(inner)?;
-        self.take(n)
     }
 
     // -----------------------------------------------------------------------
@@ -860,6 +877,10 @@ impl<'de, O: Options> Reader<'de, O> {
         if header::ty(h) != header::TY_OBJECT {
             return Err(ErrorCode::ExpectedObject);
         }
+        // A key width the format does not define makes the header no object at
+        // all, which is settled before what its keys are, as `read_int`
+        // settles a number's width before its kind.
+        key_width(h)?;
         if header::sub(h) != header::CAT_FLOAT {
             // Categories 1 and 2 are integer keys, which no `object!` struct
             // has: its keys are names.
@@ -1051,6 +1072,8 @@ impl<'de, O: Options> Reader<'de, O> {
                 Ok(())
             }
             header::TY_OBJECT => {
+                // Width before kind, as `read_object` has it.
+                key_width(h)?;
                 if header::sub(h) != header::CAT_FLOAT {
                     // Integer keys, which no enum has: its variants are names.
                     return Err(ErrorCode::UnsupportedKeyType);
@@ -1110,6 +1133,8 @@ impl<'de, O: Options> Reader<'de, O> {
         if header::ty(h) != header::TY_OBJECT {
             return Err(ErrorCode::ExpectedObject);
         }
+        // Width before kind, as `read_object` has it.
+        key_width(h)?;
         if header::sub(h) != header::CAT_FLOAT {
             // Integer keys, which no enum has: its tag is a name.
             return Err(ErrorCode::UnsupportedKeyType);
@@ -1913,12 +1938,50 @@ impl<'de, O: Options> Reader<'de, O> {
     /// stepped over whole, and one that is a typed array is not stepped over
     /// at all: an element of it is found by multiplying.
     ///
+    /// A hand-driven reader measures depth from where it stands, so a seek
+    /// leaves the reader's depth as it found it and the value it lands on is
+    /// read relative to where the caller stood; [`beve::from_slice_at`] is
+    /// what measures the whole document.
+    ///
     /// See [`beve::from_slice_at`] for the pointer syntax and what each
     /// failure means.
     ///
     /// [JSON Pointer]: https://www.rfc-editor.org/rfc/rfc6901
     /// [`beve::from_slice_at`]: crate::beve::from_slice_at
     pub fn seek(&mut self, pointer: &str) -> PResult<()> {
+        let levels = self.walk(pointer)?;
+        self.depth -= levels;
+        Ok(())
+    }
+
+    /// Read the value `pointer` names into `value`, giving back the levels
+    /// the walk to it counted however the read exits.
+    ///
+    /// [`seek`](Self::seek) with the levels kept for the read, so the value is
+    /// measured at the depth it sits at in the document.
+    pub(crate) fn read_at<T: Read<'de>>(&mut self, pointer: &str, value: &mut T) -> PResult<()> {
+        let levels = self.walk(pointer)?;
+        let result = value.read(self);
+        self.depth -= levels;
+        result
+    }
+
+    /// Move onto the value `pointer` names, and report how many levels the
+    /// containers passed through were counted. A failure counts none: the
+    /// depth goes back to what it was, as a failed read's does.
+    fn walk(&mut self, pointer: &str) -> PResult<u32> {
+        let depth = self.depth;
+        match self.descend_path(pointer) {
+            Ok(()) => Ok(self.depth - depth),
+            Err(code) => {
+                self.depth = depth;
+                Err(code)
+            }
+        }
+    }
+
+    /// The walk [`walk`](Self::walk) puts the depth back around.
+    fn descend_path(&mut self, pointer: &str) -> PResult<()> {
         if pointer.is_empty() {
             return Ok(());
         }
@@ -1937,7 +2000,11 @@ impl<'de, O: Options> Reader<'de, O> {
     }
 
     /// Move from the container at the cursor onto the member or element
-    /// `token` names.
+    /// `token` names, counting the container a level.
+    ///
+    /// The level is entered and not left: the cursor ends inside the
+    /// container, and [`walk`](Self::walk) is what puts the depth back if a
+    /// later step fails.
     fn descend(&mut self, token: &str) -> PResult<()> {
         let h = self.head()?;
         match header::ty(h) {
@@ -1947,6 +2014,9 @@ impl<'de, O: Options> Reader<'de, O> {
                 // reported as one even where the document runs out first.
                 let i = index(token)?;
                 let n = self.count()?;
+                // Before the siblings are stepped over, so that each is
+                // measured from the depth it sits at.
+                self.enter()?;
                 if i >= n {
                     return Err(ErrorCode::NoSuchValue);
                 }
@@ -1991,6 +2061,7 @@ impl<'de, O: Options> Reader<'de, O> {
         };
 
         let members = self.count()?;
+        self.enter()?;
         for _ in 0..members {
             let hit = match wanted {
                 Key::Str(t) => {
@@ -2015,7 +2086,11 @@ impl<'de, O: Options> Reader<'de, O> {
     /// and the header the element would have carried had it been written on
     /// its own is installed, exactly as the array driver does. Only the string
     /// form has to be walked, its elements not all being the same size.
+    ///
+    /// It costs a level although nothing in it recurses, because
+    /// [`read_seq`](Self::read_seq) charges one and the two have to agree.
     fn descend_typed(&mut self, h: u8, i: usize) -> PResult<()> {
+        self.enter()?;
         let form = self.typed_head(h)?;
         let (Typed::Bools(n) | Typed::Strings(n) | Typed::Fixed(_, n)) = form;
         if i >= n {
@@ -2085,7 +2160,7 @@ fn check_escapes(token: &str) -> PResult<()> {
 /// Decoding the token into a buffer first would mean allocating on every
 /// comparison, and there are as many comparisons as the object has members.
 /// Walking the two at once costs neither. Escapes are already known to be well
-/// formed, [`check_escapes`] having run over this token in [`Reader::seek`].
+/// formed, [`check_escapes`] having run over this token on the way down.
 fn token_eq(token: &str, key: &[u8]) -> bool {
     let t = token.as_bytes();
     let mut i = 0;
@@ -2152,10 +2227,18 @@ pub(crate) fn key_width(h: u8) -> PResult<usize> {
     }
 }
 
+/// Bytes one element of the fixed-width typed array headed by `h` occupies.
+///
+/// A width the format does not define is an `InvalidHeader`, as it is for a
+/// lone number of that width.
+pub(crate) fn fixed_width(h: u8) -> PResult<usize> {
+    byte_width(header::sub(h), header::count(h)).ok_or(ErrorCode::InvalidHeader)
+}
+
 /// Bytes a fixed-width payload of `n` elements described by `h` occupies.
 pub(crate) fn payload_len(h: u8, n: usize) -> PResult<usize> {
-    let width = byte_width(header::sub(h), header::count(h)).ok_or(ErrorCode::InvalidHeader)?;
-    n.checked_mul(width).ok_or(ErrorCode::UnexpectedEnd)
+    n.checked_mul(fixed_width(h)?)
+        .ok_or(ErrorCode::UnexpectedEnd)
 }
 
 /// Bytes of payload behind a complex value's preamble, as
@@ -2172,7 +2255,11 @@ pub(crate) fn complex_payload(width: usize, pairs: Option<usize>) -> PResult<usi
 }
 
 /// Confirm a typed array holds one-byte integers.
+///
+/// An element type the format does not define is no array of anything, and is
+/// refused as every other walk refuses it rather than as the wrong kind.
 fn byte_elements(h: u8) -> PResult<()> {
+    fixed_width(h)?;
     match header::sub(h) {
         header::CAT_SIGNED | header::CAT_UNSIGNED if header::count(h) == 0 => Ok(()),
         _ => Err(ErrorCode::ExpectedBytes),

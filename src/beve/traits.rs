@@ -102,6 +102,8 @@ pub trait Read<'de>: Sized {
 /// bounded by [`MAX_DEPTH`](crate::beve::MAX_DEPTH) because a document's depth
 /// is its sender's choice; a value being written is the program's own, so its
 /// depth is the caller's to bound, as it already is for dropping that value.
+/// [docs/design.md](https://github.com/stephenberry/structio/blob/main/docs/design.md#depth-is-the-callers-to-bound)
+/// has why.
 #[diagnostic::on_unimplemented(
     note = "a type becomes writable by being declared with `structio::object!` or \
             `#[derive(Structio)]`, or by a `beve::Write` impl written by hand",
