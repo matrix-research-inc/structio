@@ -443,12 +443,13 @@ impl<'de, O: Options> Reader<'de, O> {
     ///
     /// An installed header is state beside the cursor, like the depth count,
     /// and it outlives a failed read the same way. A read that refuses a
-    /// header it only peeked at, as [`Matrix`](crate::Matrix) does, leaves it
-    /// installed, and whatever is read next, after a [`rewind`](Self::rewind)
-    /// or not, takes it as its own header and reads the bytes after it as a
-    /// value of that type. So every walk that installs one goes through here,
-    /// as every container walk goes through [`nested`](Self::nested), rather
-    /// than clearing it after a loop that a `?` can leave early.
+    /// header it only looked at, as a hand-written impl that refuses whatever
+    /// [`try_null`](Self::try_null) declines does, leaves it installed, and
+    /// whatever is read next, after a [`rewind`](Self::rewind) or not, takes it
+    /// as its own header and reads the bytes after it as a value of that type.
+    /// So every walk that installs one goes through here, as every container
+    /// walk goes through [`nested`](Self::nested), rather than clearing it
+    /// after a loop that a `?` can leave early.
     ///
     /// Where the value begins is recorded beside the header, for as long as
     /// the read lasts, which is what lets `rewind` put the header back when a
@@ -636,7 +637,13 @@ impl<'de, O: Options> Reader<'de, O> {
             {
                 Ok(None)
             }
-            Some(_) => Err(ErrorCode::ExpectedComplex),
+            // Taken before it is refused, as an installed header is above, so
+            // the cursor stops just past it where every other type mismatch
+            // leaves it.
+            Some(_) => {
+                self.head()?;
+                Err(ErrorCode::ExpectedComplex)
+            }
             None => Err(ErrorCode::UnexpectedEnd),
         }
     }

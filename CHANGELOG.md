@@ -20,6 +20,8 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **A failed BEVE element read no longer leaves its header behind.** An element of a typed array refused without taking its header, as `Matrix` refuses one, left that header installed, so after a `rewind` the next read took it as its own: a retry failed differently, and a number could read one byte early without an error. `rewind` onto an element also puts its header back, so a reader can try one type and then another on an element.
 
+- **`Matrix`, `Complex` and `()` report a BEVE value of the wrong kind just past its header,** as every other reader does, rather than on the header. `()` also refuses an undefined null or boolean header as `InvalidHeader`, as every other walk does.
+
 ## [0.7.0] - 2026-09-24
 
 ### Changed

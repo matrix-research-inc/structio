@@ -332,41 +332,66 @@ fn a_block_read_whole_fails_the_same_way_every_time() {
     }
 }
 
+/// A null and nothing else, refusing anything else on a look through
+/// `try_null` without taking its header: the refusal a hand-written reader can
+/// make that leaves the header a typed array installed where it was.
+#[derive(Debug, Default)]
+struct OnlyNull;
+
+impl<'de> beve::Read<'de> for OnlyNull {
+    fn read<O: Options>(&mut self, r: &mut beve::Reader<'de, O>) -> Result<(), ErrorCode> {
+        if r.try_null()? {
+            Ok(())
+        } else {
+            Err(ErrorCode::ExpectedNull)
+        }
+    }
+}
+
 #[test]
 fn a_failed_element_leaves_no_header_behind() {
-    // A matrix looks at the header in front of it and refuses a number, a
-    // boolean, a string or a complex element without taking it. So the header
-    // each of these arrays installed for its first element is still installed
-    // when the read fails, and whatever was read next took it as its own: the
-    // same read failed differently the second time, a sequence was refused as
-    // not being one, and a number was read, without an error, from bytes
-    // starting at the array's own header.
+    // `OnlyNull` refuses a number, a boolean, a string or a complex element
+    // without taking its header, as `Matrix` once did. So the header each of
+    // these arrays installed for its first element is still installed when the
+    // read fails, and whatever was read next took it as its own: the same read
+    // failed differently the second time, a sequence was refused as not being
+    // one, and a number was read, without an error, from bytes starting at the
+    // array's own header. A matrix, which takes the header before refusing it,
+    // is the ordinary case beside it.
     for doc in [
         to_beve(&vec![1.5f64, 2.5]),
         to_beve(&vec![true, false]),
         to_beve(&vec!["a".to_string()]),
         to_beve(&vec![Complex::new(1.5f64, -1.5)]),
     ] {
-        beve_retried(&doc, |r| {
-            beve::Read::read(&mut Vec::<Matrix<f64>>::new(), r)
-        });
-
-        let wrong = |r: &mut beve::Reader<'_>| {
-            let start = r.position();
-            r.read(&mut Vec::<Matrix<f64>>::new()).unwrap_err();
-            r.rewind(start);
-        };
-        let mut r = beve::Reader::new(&doc);
-        wrong(&mut r);
-        let mut v = Value::Null;
-        r.read(&mut v).unwrap();
-        r.finish().unwrap();
-        assert_eq!(v, from_beve::<Value>(&doc).unwrap());
-
-        let mut r = beve::Reader::new(&doc);
-        wrong(&mut r);
-        assert_eq!(r.read(&mut 0.0f64), Err(ErrorCode::ExpectedNumber));
+        leaves_no_header::<OnlyNull>(&doc);
+        leaves_no_header::<Matrix<f64>>(&doc);
     }
+}
+
+/// Fail to read `doc` as a sequence of `T`, and require the retries, a `Value`
+/// read after one and a number read after one to find the array as it was.
+fn leaves_no_header<T>(doc: &[u8])
+where
+    T: Default + for<'de> beve::Read<'de>,
+{
+    beve_retried(doc, |r| beve::Read::read(&mut Vec::<T>::new(), r));
+
+    let wrong = |r: &mut beve::Reader<'_>| {
+        let start = r.position();
+        r.read(&mut Vec::<T>::new()).unwrap_err();
+        r.rewind(start);
+    };
+    let mut r = beve::Reader::new(doc);
+    wrong(&mut r);
+    let mut v = Value::Null;
+    r.read(&mut v).unwrap();
+    r.finish().unwrap();
+    assert_eq!(v, from_beve::<Value>(doc).unwrap());
+
+    let mut r = beve::Reader::new(doc);
+    wrong(&mut r);
+    assert_eq!(r.read(&mut 0.0f64), Err(ErrorCode::ExpectedNumber));
 }
 
 /// The first of `A` and `B` that reads, trying `A` and winding back to try `B`:

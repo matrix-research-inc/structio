@@ -14,6 +14,8 @@ One `Error` covers both formats, and it does not record which one it came from. 
 
 The offset is a byte offset into the input you passed. It is attached once, at the public entry point, from the cursor position at the moment the parse stopped. Inside the hot paths only the bare `ErrorCode` travels, so `Result<(), ErrorCode>` stays register sized and `?` costs a test and a branch.
 
+In BEVE a value of the wrong kind is refused on its header, and the offset is just past that header. An element of a typed array has no header in the input, the array implying it, so its offset is where the element begins. `ExpectedVariant` is the exception: it is one refusal however the value fails to name a variant, so it always points at the value's header.
+
 **The offset indexes a buffer you must still be holding.** It is a position, not a copy of anything, so an `Error` that outlives its document knows an offset into a string nobody has any more. That is the normal shape when a parse happens behind an API that returns a domain error: the buffer goes out of scope at the end of the function and the offset goes with it. Render at the parse site with `display_with` and carry the `String`, or keep the input alive as long as the error. The `key` below is the part that stays meaningful either way.
 
 ## Two error currencies, and why

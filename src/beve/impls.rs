@@ -171,10 +171,14 @@ impl Write for bool {
 impl<'de> Read<'de> for () {
     #[inline]
     fn read<O: Options>(&mut self, r: &mut Reader<'de, O>) -> PResult<()> {
-        if r.try_null()? {
-            Ok(())
-        } else {
-            Err(ErrorCode::ExpectedNull)
+        // Taken before it is refused, as `read_bool` takes it: a mismatch
+        // stops just past the header, and a header of the null and boolean
+        // type that is no value at all is `InvalidHeader`, as every walk says.
+        match r.head()? {
+            header::NULL => Ok(()),
+            header::TRUE | header::FALSE => Err(ErrorCode::ExpectedNull),
+            h if header::ty(h) == header::TY_NULL_BOOL => Err(ErrorCode::InvalidHeader),
+            _ => Err(ErrorCode::ExpectedNull),
         }
     }
 }
