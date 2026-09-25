@@ -3,20 +3,30 @@
 //!
 //! `rewind` is the documented way to abandon a read, and it restores the
 //! cursor. The readers keep state beside the cursor, though: the nesting count
-//! that enforces `MAX_DEPTH`, and the stack of late-tag runs an internally
-//! tagged object reads after its payload. Neither can be wound back by an
-//! offset, so a failure has to put both back itself. When it did not, the
+//! that enforces `MAX_DEPTH`, the stack of late-tag runs an internally tagged
+//! object reads after its payload, and, in BEVE, the header a typed array
+//! installs for the element being read. None of those can be wound back by an
+//! offset, so a failure has to put them back itself. When it did not, the
 //! count went up a level per failure and the same document turned from
-//! `UnknownVariant` into `ExceededMaxDepth` on the 257th attempt, and a run
-//! left on the stack was taken by the next object at its depth, which then
-//! read another object's members as its own.
+//! `UnknownVariant` into `ExceededMaxDepth` on the 257th attempt, a run left on
+//! the stack was taken by the next object at its depth, which then read another
+//! object's members as its own, and a header left installed was taken by the
+//! next read as its own, which then read a number one byte early.
 //!
 //! So each case here fails the same way several times over the limit's worth
-//! of attempts, in both formats, through every reader that enters a level.
+//! of attempts, in each format that has the reader: the object, enum,
+//! sequence, map, `Value`, skipping and internally tagged readers, and the
+//! ones behind `Matrix`, `Complex`, `Cow<[T]>`, JSON's `Raw` and BEVE's
+//! whole-block reads, byte slices and validation.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
-use structio::{ErrorCode, Options, Value, beve, json, to_beve};
+use structio::beve::header;
+use structio::json::Raw;
+use structio::{
+    Complex, ErrorCode, Matrix, MatrixLayout, Options, Value, beve, from_beve, json, to_beve,
+};
 
 /// More attempts than the nesting limit, so a count that leaked even one level
 /// per failure would reach it.
@@ -66,6 +76,12 @@ fn beve_retried(
 
 fn beve_of(json: &str) -> Vec<u8> {
     to_beve(&Value::from_json(json).unwrap())
+}
+
+/// `doc` short of its last `n` bytes, so a read fails on the last value it
+/// reaches with every container around that value open.
+fn cut(doc: &[u8], n: usize) -> &[u8] {
+    &doc[..doc.len() - n]
 }
 
 /// Retry reading a fresh `T` from `json`, in both formats, and return the two
@@ -245,6 +261,197 @@ fn a_late_tag_that_failed_leaves_no_run_for_the_next_object() {
 }
 
 #[test]
+fn a_matrix_a_complex_number_and_a_raw_span_fail_the_same_way_every_time() {
+    // The object form of a matrix, failing on an element of its data, two
+    // levels down.
+    retried::<Matrix<f64>>(r#"{"layout":"layout_right","extents":[2],"value":[1,"x"]}"#);
+    // The extension form takes a level of its own, around the two arrays in
+    // it. Cut inside the data, which is a typed array read in one copy.
+    let m = Matrix::new(MatrixLayout::RowMajor, vec![2], vec![1.5f64, 2.5]).unwrap();
+    let doc = to_beve(&vec![m]);
+    beve_retried(cut(&doc, 1), |r| {
+        beve::Read::read(&mut Vec::<Matrix<f64>>::new(), r)
+    });
+    // And read element by element, where the stored width is not the one
+    // asked for.
+    beve_retried(cut(&doc, 1), |r| {
+        beve::Read::read(&mut Vec::<Matrix<f32>>::new(), r)
+    });
+
+    // A complex number in its array form, alone and in a sequence.
+    retried::<Complex<f64>>(r#"[1,"x"]"#);
+    retried::<Vec<Complex<f64>>>(r#"[[1,2],[3,"x"]]"#);
+
+    // `Raw` takes its span with the walk that checks escapes, which is a
+    // reader of its own.
+    assert_eq!(
+        json_retried(r#"{"a":[1,"\q"]}"#, |p| json::Read::read(
+            &mut Raw::default(),
+            p
+        )),
+        ErrorCode::InvalidEscape
+    );
+}
+
+#[test]
+fn a_block_read_whole_fails_the_same_way_every_time() {
+    // A `Cow<[T]>` that cannot borrow is a `Vec` read by another name, which
+    // in JSON is always.
+    let text = r#"[[1,2],[3,"x"]]"#;
+    json_retried(text, |p| {
+        json::Read::read(&mut Vec::<Cow<'_, [f64]>>::new(), p)
+    });
+    beve_retried(&beve_of(text), |r| {
+        beve::Read::read(&mut Vec::<Cow<'_, [f64]>>::new(), r)
+    });
+
+    // In BEVE a typed array is copied, borrowed or sliced whole, each with
+    // one level open around it and the payload cut short.
+    let floats = to_beve(&vec![vec![1.5f64, 2.5], vec![3.5, 4.5]]);
+    assert_eq!(
+        beve_retried(cut(&floats, 1), |r| beve::Read::read(
+            &mut Vec::<Vec<f64>>::new(),
+            r
+        )),
+        ErrorCode::UnexpectedEnd
+    );
+    beve_retried(cut(&floats, 1), |r| {
+        beve::Read::read(&mut Vec::<Cow<'_, [f64]>>::new(), r)
+    });
+    let bytes = to_beve(&vec![vec![1u8, 2], vec![3, 4]]);
+    beve_retried(cut(&bytes, 1), |r| {
+        beve::Read::read(&mut Vec::<&[u8]>::new(), r)
+    });
+
+    // The same arrays as a `Value` and under validation, the extension form of
+    // a matrix among them.
+    let m = Matrix::new(MatrixLayout::RowMajor, vec![2], vec![1.5f64, 2.5]).unwrap();
+    for doc in [floats, bytes, to_beve(&vec![m])] {
+        beve_retried(cut(&doc, 1), |r| beve::Read::read(&mut Value::Null, r));
+        beve_retried(cut(&doc, 1), |r| r.validate_value());
+    }
+}
+
+#[test]
+fn a_failed_element_leaves_no_header_behind() {
+    // A matrix looks at the header in front of it and refuses a number, a
+    // boolean, a string or a complex element without taking it. So the header
+    // each of these arrays installed for its first element is still installed
+    // when the read fails, and whatever was read next took it as its own: the
+    // same read failed differently the second time, a sequence was refused as
+    // not being one, and a number was read, without an error, from bytes
+    // starting at the array's own header.
+    for doc in [
+        to_beve(&vec![1.5f64, 2.5]),
+        to_beve(&vec![true, false]),
+        to_beve(&vec!["a".to_string()]),
+        to_beve(&vec![Complex::new(1.5f64, -1.5)]),
+    ] {
+        beve_retried(&doc, |r| {
+            beve::Read::read(&mut Vec::<Matrix<f64>>::new(), r)
+        });
+
+        let wrong = |r: &mut beve::Reader<'_>| {
+            let start = r.position();
+            r.read(&mut Vec::<Matrix<f64>>::new()).unwrap_err();
+            r.rewind(start);
+        };
+        let mut r = beve::Reader::new(&doc);
+        wrong(&mut r);
+        let mut v = Value::Null;
+        r.read(&mut v).unwrap();
+        r.finish().unwrap();
+        assert_eq!(v, from_beve::<Value>(&doc).unwrap());
+
+        let mut r = beve::Reader::new(&doc);
+        wrong(&mut r);
+        assert_eq!(r.read(&mut 0.0f64), Err(ErrorCode::ExpectedNumber));
+    }
+}
+
+/// The first of `A` and `B` that reads, trying `A` and winding back to try `B`:
+/// a speculating reader like [`Maybe`], met at an element of a typed array
+/// rather than at a whole value.
+#[derive(Debug, PartialEq)]
+enum Either<A, B> {
+    A(A),
+    B(B),
+}
+
+impl<A: Default, B> Default for Either<A, B> {
+    fn default() -> Self {
+        Either::A(A::default())
+    }
+}
+
+impl<'de, A, B> beve::Read<'de> for Either<A, B>
+where
+    A: beve::Read<'de> + Default,
+    B: beve::Read<'de> + Default,
+{
+    fn read<O: Options>(&mut self, r: &mut beve::Reader<'de, O>) -> Result<(), ErrorCode> {
+        let at = r.position();
+        let mut a = A::default();
+        if a.read(r).is_ok() {
+            *self = Either::A(a);
+            return Ok(());
+        }
+        r.rewind(at);
+        let mut b = B::default();
+        b.read(r)?;
+        *self = Either::B(b);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_reader_speculating_on_an_element_winds_back_onto_its_header() {
+    // The first try takes the header the array installed and then refuses it,
+    // and the element's bytes do not hold that header, so winding back to the
+    // element has to put it back: the second try would otherwise read the
+    // element's first byte as its header. Every form a typed array's elements
+    // take is here, each failing the first try on its header alone.
+    let doc = to_beve(&vec![1.5f64, 2.5]);
+    assert_eq!(
+        from_beve::<Vec<Either<String, f64>>>(&doc).unwrap(),
+        [Either::B(1.5), Either::B(2.5)]
+    );
+    let doc = to_beve(&vec![true, false]);
+    assert_eq!(
+        from_beve::<Vec<Either<f64, bool>>>(&doc).unwrap(),
+        [Either::B(true), Either::B(false)]
+    );
+    let strings = to_beve(&vec!["a".to_string(), "bc".to_string()]);
+    let expected = [Either::B("a".to_string()), Either::B("bc".to_string())];
+    assert_eq!(
+        from_beve::<Vec<Either<f64, String>>>(&strings).unwrap(),
+        expected
+    );
+    let doc = to_beve(&vec![Complex::new(1.5f64, -1.5)]);
+    assert_eq!(
+        from_beve::<Vec<Either<f64, Complex<f64>>>>(&doc).unwrap(),
+        [Either::B(Complex::new(1.5, -1.5))]
+    );
+
+    // A failed try that then steps over the element, as `Maybe` does.
+    assert_eq!(
+        from_beve::<Vec<Maybe>>(&strings).unwrap(),
+        [Maybe(None), Maybe(None)]
+    );
+
+    // A stream of a typed array's elements reads each through a reader of its
+    // own, with the header installed from the start.
+    let mut feed = beve::Feed::array();
+    feed.push(&strings);
+    feed.end();
+    let mut read = Vec::new();
+    while let Some(v) = feed.next_value::<Either<f64, String>>() {
+        read.push(v.unwrap());
+    }
+    assert_eq!(read, expected);
+}
+
+#[test]
 fn the_limit_stays_where_it_was() {
     // A container one past the limit is refused, and the refusal must not
     // itself take a level, or each attempt would find the limit one level
@@ -266,4 +473,28 @@ fn the_limit_stays_where_it_was() {
     let at = format!("{}x{}", "[".repeat(limit), "]".repeat(limit));
     let code = json_retried(&at, |p| json::Read::read(&mut Value::Null, p));
     assert_ne!(code, ErrorCode::ExceededMaxDepth);
+
+    // The same in BEVE, where a typed array costs a level as well, so each
+    // case is here once with generic arrays all the way down and once with a
+    // typed array as the innermost of them.
+    let limit = beve::MAX_DEPTH as usize;
+    let arrays =
+        |n: usize, leaf: &[u8]| [[header::GENERIC_ARRAY, 1 << 2].repeat(n), leaf.to_vec()].concat();
+    let typed = to_beve(&vec![1.5f64]);
+    for over in [arrays(limit + 1, &[header::NULL]), arrays(limit, &typed)] {
+        assert_eq!(
+            beve_retried(&over, |r| r.skip_value()),
+            ErrorCode::ExceededMaxDepth
+        );
+        assert_eq!(
+            beve_retried(&over, |r| beve::Read::read(&mut Value::Null, r)),
+            ErrorCode::ExceededMaxDepth
+        );
+    }
+    for at in [arrays(limit, &to_beve("four")), arrays(limit - 1, &typed)] {
+        let code = beve_retried(cut(&at, 1), |r| beve::Read::read(&mut Value::Null, r));
+        assert_ne!(code, ErrorCode::ExceededMaxDepth);
+        let code = beve_retried(cut(&at, 1), |r| r.skip_value());
+        assert_ne!(code, ErrorCode::ExceededMaxDepth);
+    }
 }

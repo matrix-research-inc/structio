@@ -133,6 +133,11 @@ pub struct Reader<'de, O: Options = Standard> {
     /// The header the next value must be read with, when it carries none of
     /// its own. See the module docs.
     implied: Option<u8>,
+    /// Where the value `implied` was last installed for begins, and that
+    /// header, kept after the value's read has taken it so that
+    /// [`rewind`](Reader::rewind) back onto the value can put it back. See
+    /// [`implying`](Reader::implying).
+    installed: Option<(usize, u8)>,
     /// Members of internally tagged objects that came before their tag, to
     /// be read once the ones after it are: a stack, since an object whose tag
     /// is late can hold a member whose tag is late too. Empty, and never
@@ -182,6 +187,7 @@ impl<'de, O: Options> Reader<'de, O> {
             error_key: None,
             deferred: Vec::new(),
             implied: None,
+            installed: None,
             options: PhantomData,
         }
     }
@@ -203,6 +209,7 @@ impl<'de, O: Options> Reader<'de, O> {
             error_key: None,
             deferred: Vec::new(),
             implied: Some(implied),
+            installed: Some((0, implied)),
             options: PhantomData,
         }
     }
@@ -281,14 +288,32 @@ impl<'de, O: Options> Reader<'de, O> {
     /// assert_eq!(r.position(), start);
     /// ```
     /// Any key [`set_error_key`](Self::set_error_key) left is dropped, for
-    /// the reason [`json::Parser::rewind`](crate::json::Parser::rewind) gives,
-    /// and nothing else needs winding back, for the reason it gives too.
+    /// the reason [`json::Parser::rewind`](crate::json::Parser::rewind) gives.
+    ///
+    /// Winding back onto an element of a typed array puts back the header the
+    /// array installed for it. The element's bytes do not hold that header, so
+    /// an attempt that took it and failed would otherwise leave the next one to
+    /// read the element's first byte as its header: a reader that speculates on
+    /// an element, trying a number and then a string, is as free to wind back
+    /// and retry as one that speculates on a whole value.
+    ///
+    /// Nothing else needs winding back, for the reason `json::Parser::rewind`
+    /// gives, and an installed header is taken back the same way: a failed
+    /// read leaves none behind for whatever is read next.
     #[inline]
     pub fn rewind(&mut self, to: usize) {
         // Clamping is also what keeps `pos <= data.len()`, which every bounds
         // test in here is written against.
         self.pos = to.min(self.pos);
         self.error_key = None;
+        // Asked for by name, rather than landed on by clamping, so a forward
+        // `to` stays the no-op it is documented to be.
+        if let Some((at, h)) = self.installed
+            && to == at
+            && self.pos == at
+        {
+            self.implied = Some(h);
+        }
     }
 
     /// Confirm the document ended where the value did.
@@ -411,6 +436,41 @@ impl<'de, O: Options> Reader<'de, O> {
     #[inline(always)]
     fn can_enter(&self) -> bool {
         self.depth < MAX_DEPTH
+    }
+
+    /// Read the value at the cursor with `h` installed as its header, and take
+    /// the header back however the read exits.
+    ///
+    /// An installed header is state beside the cursor, like the depth count,
+    /// and it outlives a failed read the same way. A read that refuses a
+    /// header it only peeked at, as [`Matrix`](crate::Matrix) does, leaves it
+    /// installed, and whatever is read next, after a [`rewind`](Self::rewind)
+    /// or not, takes it as its own header and reads the bytes after it as a
+    /// value of that type. So every walk that installs one goes through here,
+    /// as every container walk goes through [`nested`](Self::nested), rather
+    /// than clearing it after a loop that a `?` can leave early.
+    ///
+    /// Where the value begins is recorded beside the header, for as long as
+    /// the read lasts, which is what lets `rewind` put the header back when a
+    /// read that took it winds back to try again. The record `body` found is
+    /// restored on the way out, since a complex number's components are read
+    /// inside the read of the element that holds them.
+    #[inline(always)]
+    fn implying<R>(&mut self, h: u8, body: impl FnOnce(&mut Self) -> PResult<R>) -> PResult<R> {
+        let outer = self.installed;
+        self.install(h);
+        let result = body(self);
+        self.implied = None;
+        self.installed = outer;
+        result
+    }
+
+    /// Install `h` as the header of the value at the cursor, which carries
+    /// none of its own.
+    #[inline(always)]
+    fn install(&mut self, h: u8) {
+        self.implied = Some(h);
+        self.installed = Some((self.pos, h));
     }
 
     /// Leave a container [`enter`](Self::enter) counted.
@@ -579,14 +639,8 @@ impl<'de, O: Options> Reader<'de, O> {
         re: &mut T,
         im: &mut T,
     ) -> PResult<()> {
-        self.implied = Some(elem);
-        re.read(self)?;
-        self.implied = Some(elem);
-        im.read(self)?;
-        // As `run` does: an installed header that nothing consumed must not
-        // outlive the value it was installed for.
-        self.implied = None;
-        Ok(())
+        self.implying(elem, |r| re.read(r))?;
+        self.implying(elem, |r| im.read(r))
     }
 
     // -----------------------------------------------------------------------
@@ -1414,14 +1468,13 @@ impl<'de, O: Options> Reader<'de, O> {
                 let base = self.pos;
                 for i in 0..n {
                     let bit = (self.data[base + (i >> 3)] >> (i & 7)) & 1;
-                    self.implied = Some(if bit == 1 {
+                    let h = if bit == 1 {
                         header::TRUE
                     } else {
                         header::FALSE
-                    });
-                    element(self, i)?;
+                    };
+                    self.implying(h, |r| element(r, i))?;
                 }
-                self.implied = None;
                 self.pos = base + bytes;
                 Ok(n)
             }
@@ -1443,10 +1496,8 @@ impl<'de, O: Options> Reader<'de, O> {
         F: FnMut(&mut Self, usize) -> PResult<()>,
     {
         for i in 0..n {
-            self.implied = Some(elem);
-            element(self, i)?;
+            self.implying(elem, |r| element(r, i))?;
         }
-        self.implied = None;
         Ok(n)
     }
 
@@ -1545,10 +1596,10 @@ impl<'de, O: Options> Reader<'de, O> {
     /// [`rewind`](Self::rewind), which drops any error key the declined
     /// attempt left, for the same reason: a hook that swallowed a failed read
     /// of a generated type is holding a key it did not set. What is not put
-    /// back is the implied element header and the depth, which no correct
-    /// implementation moves: both are restored by the walks that set them, and
-    /// only a `read_bulk` that swallowed an error could return here with
-    /// either disturbed.
+    /// back is the depth and any installed element header, which no correct
+    /// implementation moves: the walks that set either restore it on every
+    /// exit, errors included, so even a `read_bulk` that swallowed an error
+    /// returns here with both as they were.
     ///
     /// [`Self::write_slice_with`]: crate::beve::Writer::write_slice_with
     pub fn try_bulk_with<A: ReadAs<'de, T>, T>(&mut self, out: &mut Vec<T>) -> PResult<bool> {
@@ -1977,7 +2028,7 @@ impl<'de, O: Options> Reader<'de, O> {
                 // The cursor stays on the payload: a packed boolean is its
                 // header and nothing else, so there is nothing after it to
                 // point at.
-                self.implied = Some(if (byte >> (i & 7)) & 1 == 1 {
+                self.install(if (byte >> (i & 7)) & 1 == 1 {
                     header::TRUE
                 } else {
                     header::FALSE
@@ -1988,7 +2039,7 @@ impl<'de, O: Options> Reader<'de, O> {
                 for _ in 0..i {
                     self.skip_str::<false>()?;
                 }
-                self.implied = Some(header::STRING);
+                self.install(header::STRING);
                 Ok(())
             }
             Typed::Fixed(h, _) => {
@@ -1998,7 +2049,7 @@ impl<'de, O: Options> Reader<'de, O> {
                 // reason a typed array is cheap to reach into.
                 self.drop_bytes(i.checked_mul(width).ok_or(ErrorCode::UnexpectedEnd)?)?;
                 self.have(width)?;
-                self.implied = Some(header::element_of(h));
+                self.install(header::element_of(h));
                 Ok(())
             }
         }
