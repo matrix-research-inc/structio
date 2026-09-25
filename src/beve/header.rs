@@ -251,6 +251,24 @@ pub const fn byte_width(cat: u8, count: u8) -> Option<usize> {
     }
 }
 
+/// [`byte_width`] for a walk that decodes the number rather than stepping over
+/// it.
+///
+/// A width the format does not define is
+/// [`InvalidHeader`](ErrorCode::InvalidHeader), as it is to every walk. A
+/// 128-bit float is well formed and has no Rust type to land in, so it is
+/// [`UnsupportedFeature`](ErrorCode::UnsupportedFeature) here, where a walk
+/// that only measures it steps over it. Both are known from the header, so a
+/// decoding walk asks this before it takes the payload, and every one of them
+/// stops in the same place.
+pub(crate) const fn decodable_width(cat: u8, count: u8) -> PResult<usize> {
+    match byte_width(cat, count) {
+        None => Err(ErrorCode::InvalidHeader),
+        Some(_) if cat == CAT_FLOAT && count == 4 => Err(ErrorCode::UnsupportedFeature),
+        Some(width) => Ok(width),
+    }
+}
+
 // --- Compressed unsigned integers ------------------------------------------
 
 /// Largest size the codec can express: 2^62 - 1.
