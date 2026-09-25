@@ -65,7 +65,7 @@ Two failures are kept apart. A well-formed pointer that names nothing the docume
 
 The bytes after the value named are never looked at, so unlike `from_beve` this does not require the document to end where the value does. If that matters, validate first.
 
-The depth limit is the document's, not the value's. Every container the pointer passes through is counted as reading the whole document would count it, and so is everything stepped over on the way, so a value too deep for `from_beve` to reach is too deep to reach through a pointer.
+The depth limit is the document's, not the value's. Every container the pointer passes through is counted as reading the whole document would count it, and so is everything stepped over on the way, so a value too deep for `from_beve` to reach is too deep to reach through a pointer. A hand-driven `Reader::seek` measures from where the reader stands instead, as everything on a hand-driven reader does.
 
 ## Checking a document without decoding it
 

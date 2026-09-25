@@ -8,7 +8,7 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 ### Changed
 
-- **A pointer read is charged the containers it passes through.** `from_beve_at` and `Reader::seek` counted no level for the path, and stepped over siblings as if from the top, so the depth limit applied from the value named rather than to the document. They now count every container on the way, and a document every other walk refuses as too deep is refused here too. `rewind` to where a `seek` began gives back its levels. **Breaking** for a document past the limit that was readable through a pointer.
+- **A pointer read is charged the containers it passes through.** `from_beve_at` and `Reader::seek` counted no level for the path, and stepped over siblings as if from the top, so the depth limit applied from the value named rather than to the document. `from_beve_at` now counts every container on the way, and a document every other walk refuses as too deep is refused here too. A hand-driven `seek` measures siblings on the path the same way but leaves the reader's depth as it found it. **Breaking** for a document past the limit that was readable through a pointer.
 
 ## [0.7.0] - 2026-09-24
 

@@ -562,3 +562,26 @@ fn a_sibling_stepped_over_is_measured_from_where_it_sits() {
         }
     }
 }
+
+#[test]
+fn a_hand_driven_seek_measures_from_where_the_reader_stands() {
+    // `limit` arrays around one more: too deep as a document, so the pointer
+    // read that measures the document refuses it. A hand-driven reader
+    // measures from where it stands, as `skip_value` does, so after a seek
+    // halfway down the rest is only half the limit deep.
+    let limit = beve::MAX_DEPTH as usize;
+    let mut doc: Vec<u8> = std::iter::repeat_n([header::GENERIC_ARRAY, 1 << 2], limit + 1)
+        .flatten()
+        .collect();
+    doc.push(header::NULL);
+    let half = "/0".repeat(limit / 2);
+
+    let whole = beve::validate(&doc).unwrap_err().code;
+    assert_eq!(whole, ErrorCode::ExceededMaxDepth);
+    let pointed = from_beve_at::<structio::Value>(&doc, &half).unwrap_err();
+    assert_eq!(pointed.code, whole);
+
+    let mut r = beve::Reader::new(&doc);
+    r.seek(&half).unwrap();
+    r.skip_value().unwrap();
+}

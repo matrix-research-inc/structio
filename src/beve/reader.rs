@@ -69,14 +69,6 @@ struct Deferred {
     depth: u32,
 }
 
-/// A [`seek`](Reader::seek) that left the cursor inside containers: where it
-/// began, and the depth the reader was at before it counted them.
-#[derive(Clone, Copy)]
-struct Sought {
-    from: usize,
-    depth: u32,
-}
-
 /// The most memory a reservation made on a count from the wire may claim
 /// before the elements have been read. A count the input can hold is still
 /// only a count: a hostile document one megabyte long can claim a million
@@ -147,11 +139,6 @@ pub struct Reader<'de, O: Options = Standard> {
     /// allocated, until a late tag is found. See
     /// [`read_internally_tagged`](Reader::read_internally_tagged).
     deferred: Vec<Deferred>,
-    /// The seeks still holding the levels they counted, innermost last, so
-    /// that winding back past where one began gives its levels back. Empty,
-    /// and never allocated, until a hand-driven seek descends. See
-    /// [`rewind`](Reader::rewind).
-    sought: Vec<Sought>,
     /// `fn() -> O` rather than `O`, so the reader's auto traits follow what it
     /// actually holds rather than a policy type it never contains.
     options: PhantomData<fn() -> O>,
@@ -194,7 +181,6 @@ impl<'de, O: Options> Reader<'de, O> {
             depth: 0,
             error_key: None,
             deferred: Vec::new(),
-            sought: Vec::new(),
             implied: None,
             options: PhantomData,
         }
@@ -216,7 +202,6 @@ impl<'de, O: Options> Reader<'de, O> {
             depth: 0,
             error_key: None,
             deferred: Vec::new(),
-            sought: Vec::new(),
             implied: Some(implied),
             options: PhantomData,
         }
@@ -297,23 +282,13 @@ impl<'de, O: Options> Reader<'de, O> {
     /// ```
     /// Any key [`set_error_key`](Self::set_error_key) left is dropped, for
     /// the reason [`json::Parser::rewind`](crate::json::Parser::rewind) gives,
-    /// and the nesting a read counts needs no winding back, for the reason it
-    /// gives too. The one exception is [`seek`](Self::seek), which ends inside
-    /// the containers it counted rather than past them, so no exit of its own
-    /// could give them back: winding back to where a seek began, or before,
-    /// gives back the levels it counted.
+    /// and nothing else needs winding back, for the reason it gives too.
     #[inline]
     pub fn rewind(&mut self, to: usize) {
         // Clamping is also what keeps `pos <= data.len()`, which every bounds
         // test in here is written against.
         self.pos = to.min(self.pos);
         self.error_key = None;
-        while let Some(seek) = self.sought.last()
-            && self.pos <= seek.from
-        {
-            self.depth = seek.depth;
-            self.sought.pop();
-        }
     }
 
     /// Confirm the document ended where the value did.
@@ -1887,15 +1862,10 @@ impl<'de, O: Options> Reader<'de, O> {
     /// stepped over whole, and one that is a typed array is not stepped over
     /// at all: an element of it is found by multiplying.
     ///
-    /// Every container the pointer passes through counts against
-    /// [`MAX_DEPTH`], as reading it would, and stays counted while the cursor
-    /// is inside it. So the value is read at the depth it sits at, and a
-    /// sibling stepped over on the way is measured from there too: a document
-    /// too deep to read whole is too deep to read through a pointer, wherever
-    /// on the path the excess lies. A seek that fails gives back what it
-    /// counted, and a [`rewind`](Self::rewind) to where a seek began gives
-    /// back what a successful one counted, so a reader can seek, read, wind
-    /// back and seek again without the limit drawing nearer.
+    /// A hand-driven reader measures depth from where it stands, so a seek
+    /// leaves the reader's depth as it found it and the value it lands on is
+    /// read relative to where the caller stood; [`beve::from_slice_at`] is
+    /// what measures the whole document.
     ///
     /// See [`beve::from_slice_at`] for the pointer syntax and what each
     /// failure means.
@@ -1903,20 +1873,16 @@ impl<'de, O: Options> Reader<'de, O> {
     /// [JSON Pointer]: https://www.rfc-editor.org/rfc/rfc6901
     /// [`beve::from_slice_at`]: crate::beve::from_slice_at
     pub fn seek(&mut self, pointer: &str) -> PResult<()> {
-        let from = self.pos;
-        let depth = self.depth;
-        if self.walk(pointer)? > 0 {
-            self.sought.push(Sought { from, depth });
-        }
+        let levels = self.walk(pointer)?;
+        self.depth -= levels;
         Ok(())
     }
 
     /// Read the value `pointer` names into `value`, giving back the levels
     /// the walk to it counted however the read exits.
     ///
-    /// [`seek`](Self::seek) and a read, for a reader that is done once the
-    /// value is: nothing will wind back past the seek, so there is no record
-    /// of it to keep.
+    /// [`seek`](Self::seek) with the levels kept for the read, so the value is
+    /// measured at the depth it sits at in the document.
     pub(crate) fn read_at<T: Read<'de>>(&mut self, pointer: &str, value: &mut T) -> PResult<()> {
         let levels = self.walk(pointer)?;
         let result = value.read(self);
