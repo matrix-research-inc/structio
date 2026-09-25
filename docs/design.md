@@ -164,7 +164,9 @@ Three costs, none fatal and none zero. A bounded write monomorphizes a second co
 
 It is not built because nothing needs it yet, and the part that would get fixed wrong is the entry-point surface rather than the mechanism: whether a bounded writer is a policy, a constructor or a destination type of its own is a question one real fixed-buffer caller settles in a sentence and this file cannot. A `no_std` build is the same conversation, and would land with it: the crate is std-only today, and it is the io halves and the hash-map impls that depend on it.
 
-**Depth is the caller's to bound.** A write recurses once per nesting level, with no counter and no limit, so a value deep enough overflows the stack, which aborts rather than panics. Reading has a limit, `json::MAX_DEPTH` and `beve::MAX_DEPTH` at 256 levels, because a document's depth is chosen by whoever sent it. A value being written was built by the program, and its depth is the program's to bound, as it already is for every other walk over it: a `Value`'s `Drop`, `Clone`, `PartialEq` and `Debug` each recurse once per level too, so a counter in the writer alone would not make such a value safe to hold. Anything this crate read is within the read limit and writes back out in modest stack. A program that builds values of unbounded depth, a recursive structure or a tree grown from user-controlled steps, owns that bound, exactly as it does for dropping them.
+### Depth is the caller's to bound
+
+A write recurses once per nesting level and nothing bounds it, so a value deep enough overflows the stack, which aborts rather than panics. The only count a writer keeps is the indentation level `json::Writer` needs for `PRETTY`, which nothing compares against a limit; `beve::Writer` keeps none. Reading has a limit, `json::MAX_DEPTH` and `beve::MAX_DEPTH` at 256 levels, because a document's depth is chosen by whoever sent it. A value being written was built by the program, and its depth is the program's to bound, as it already is for every other walk over it: a `Value`'s `Drop`, `Clone`, `PartialEq` and `Debug` each recurse once per level too, so a counter in the writer alone would not make such a value safe to hold. Anything this crate read is within the read limit and writes back out in modest stack. A program that builds values of unbounded depth, a recursive structure or a tree grown from user-controlled steps, owns that bound, exactly as it does for dropping them.
 
 ## Enums are tagged by name
 
@@ -403,6 +405,8 @@ What is left on the table: Glaze's copy of zmij splits digits with SSE/NEON intr
 **No `json_to_beve`.** See above. `beve_to_json` covers the direction that needs no lookahead.
 
 **A write cannot fail, and a bounded one is not offered.** See [Writing cannot fail](#writing-cannot-fail). Allocation failure aborts, as it does anywhere in Rust that reaches `Vec::reserve`, and an adapter holding a value it cannot encode can only panic, which under `panic = "abort"` is the same thing. The mechanism for fixing both is settled and small; what is missing is a caller with a fixed buffer to settle the surface.
+
+**A write has no depth limit.** Reading refuses a document nested past `MAX_DEPTH`, 256 levels; a write recurses as deep as the value does, and one deep enough overflows the stack. See [Depth is the caller's to bound](#depth-is-the-callers-to-bound).
 
 **Third-party types need an adapter or a wrapper.** Rust's orphan rule. A per-field [adapter](schemas.md#types-you-do-not-own) covers most of it without deforming the struct; a newtype is still needed when the foreign type has no `Default`. See the README.
 

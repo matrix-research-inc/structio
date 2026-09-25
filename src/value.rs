@@ -44,6 +44,18 @@
 //! for one, and reading one, from a BEVE float or a JSON literal past `f64`'s
 //! range, is [`NumberOutOfRange`](ErrorCode::NumberOutOfRange).
 //!
+//! An integer token stored as a float, `-0` or one past 64 bits, is then a
+//! float to everything that asks, a float not being narrowed to an integer:
+//! [`as_i64`](Value::as_i64) and [`as_u64`](Value::as_u64) are `None` for it,
+//! [`is_i64`](Value::is_i64) is false, [`from_value`] into an integer type
+//! refuses it, and it is written to BEVE as an `f64`. So both read differently
+//! through a `Value` than straight into an integer: a signed integer reads
+//! `-0` as `0`, and an `i128` or a `u128` holds a token past 64 bits exactly.
+//! A `Value` holding `-0.0` cannot tell whether the document spelled it `-0`
+//! or `-0.0`, so it has no integer to hand back. A document that may carry
+//! either and is bound for an integer is better read into that integer than
+//! walked as a `Value`.
+//!
 //! # Comparison
 //!
 //! A [`Value`] compares equal to a primitive when it holds that kind and that
@@ -145,6 +157,9 @@ impl Number {
     }
 
     /// The value as an `i64`, if it is an integer in range.
+    ///
+    /// A float is not one, however whole, so this is `None` for a document's
+    /// `-0`, which is held as `-0.0`. See [Numbers](self#numbers).
     pub fn as_i64(&self) -> Option<i64> {
         match self.0 {
             Repr::Unsigned(v) => i64::try_from(v).ok(),
@@ -689,6 +704,9 @@ impl Value {
     }
 
     /// The number as an `i64`, if it is an integer in range.
+    ///
+    /// A float is not one, however whole, so this is `None` for a document's
+    /// `-0`, which is held as `-0.0`. See [Numbers](self#numbers).
     pub fn as_i64(&self) -> Option<i64> {
         self.as_number().and_then(|n| n.as_i64())
     }
@@ -862,6 +880,11 @@ pub fn to_value<T: json::Write + ?Sized>(value: &T) -> Result<Value> {
 /// The document is written as JSON and read as `T` would be from text, so a
 /// key the type does not declare is refused exactly as it would be from a
 /// file. [`from_value_with`] takes another policy.
+///
+/// The text is the value's own, so a number reads as the kind the value
+/// holds. A signed integer type therefore refuses a document's `-0`, which the
+/// value holds as `-0.0`, though it reads that document itself as `0`. See
+/// [Numbers](self#numbers).
 pub fn from_value<T>(doc: &Value) -> Result<T>
 where
     T: json::ReadOwned,
@@ -999,7 +1022,7 @@ fn read_body<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Valu
         header::TY_NUMBER => {
             let cat = header::sub(h);
             let code = header::count(h);
-            let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
+            let width = header::decodable_width(cat, code)?;
             Value::Number(read_number(cat, code, r.take(width)?)?)
         }
         header::TY_STRING => Value::String(r.str_body()?.to_owned()),
@@ -1108,6 +1131,12 @@ fn typed_items<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Ve
             let cat = header::sub(elem);
             let code = header::count(elem);
             let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
+            // An element that cannot be decoded is refused before the payload
+            // is taken, where a typed read refuses the first one. An empty
+            // array has none to refuse.
+            if n > 0 {
+                header::decodable_width(cat, code)?;
+            }
             let payload = r.take(payload_len(elem, n)?)?;
             payload
                 .chunks_exact(width)
@@ -1122,6 +1151,10 @@ fn read_complex<'de, O: Options>(r: &mut BeveReader<'de, O>) -> PResult<Value> {
     let (class, width, pairs) = r.complex_head()?;
     let cat = header::sub(class);
     let code = header::count(class);
+    // As for a typed array: refused before the payload unless there is none.
+    if pairs != Some(0) {
+        header::decodable_width(cat, code)?;
+    }
     let payload = r.take(complex_payload(width, pairs)?)?;
     let pair = |z: &[u8]| -> PResult<Value> {
         Ok(Value::Array(vec![
@@ -1185,7 +1218,7 @@ impl<'de> beve::Read<'de> for Number {
         }
         let cat = header::sub(h);
         let code = header::count(h);
-        let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
+        let width = header::decodable_width(cat, code)?;
         *self = read_number(cat, code, r.take(width)?)?;
         Ok(())
     }

@@ -225,7 +225,7 @@ fn body<O: Options>(r: &mut Reader<'_>, w: &mut Writer<'_, O>, h: u8) -> PResult
         header::TY_NUMBER => {
             let cat = header::sub(h);
             let code = header::count(h);
-            let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
+            let width = header::decodable_width(cat, code)?;
             let bytes = r.take(width)?;
             number(w, cat, code, bytes)?;
         }
@@ -264,6 +264,10 @@ fn complex<O: Options>(r: &mut Reader<'_>, w: &mut Writer<'_, O>) -> PResult<()>
     let (class, width, pairs) = r.complex_head()?;
     let cat = header::sub(class);
     let code = header::count(class);
+    // As for a typed array: refused before the payload unless there is none.
+    if pairs != Some(0) {
+        header::decodable_width(cat, code)?;
+    }
     // Taken whole and walked in place, as a typed array is and for the same
     // reasons: fewer bounds checks, and a bogus count cannot drag this through
     // millions of iterations before the input runs out.
@@ -446,6 +450,12 @@ fn typed_array<O: Options>(r: &mut Reader<'_>, w: &mut Writer<'_, O>, h: u8) -> 
                 let cat = header::sub(elem);
                 let code = header::count(elem);
                 let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
+                // An element that cannot be decoded is refused before the
+                // payload is taken, where a typed read refuses the first one.
+                // An empty array has none to refuse.
+                if n > 0 {
+                    header::decodable_width(cat, code)?;
+                }
                 let payload = r.take(payload_len(elem, n)?)?;
                 // `chunks_exact` panics on a zero width; `byte_width` returns at
                 // least one byte for every header it accepts at all.
