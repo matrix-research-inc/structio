@@ -189,7 +189,7 @@ impl<O: Options> Writer<'static, O> {
 /// a protocol header, or the frames already queued behind it. Those bytes are
 /// the one part of the buffer the call was never meant to touch, and an unwind
 /// is in contract rather than a caller's bug, since a
-/// [`WriteAs`](crate::beve::WriteAs) adapter whose target has values it cannot
+/// [`WriteAs`] adapter whose target has values it cannot
 /// encode is told to write a substitute or panic.
 ///
 /// So `out` comes back holding the whole buffer if `write` returned, and

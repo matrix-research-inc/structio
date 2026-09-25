@@ -221,7 +221,7 @@ pub fn prettify_into_with<O: Options>(input: &str, out: &mut String) -> Result<(
 /// of its own has nowhere to put that: an offset into a span of a larger
 /// document names the wrong byte of that document, so the code travels and the
 /// offset is dropped. See
-/// [docs/errors.md](https://github.com/stephenberry/structio/blob/main/docs/errors.md#two-error-currencies-and-why)
+/// [docs/errors.md](https://github.com/matrix-research-inc/structio/blob/main/docs/errors.md#two-error-currencies-and-why)
 /// for why the seam is there.
 ///
 /// This is the one member of the `prettify` family not also re-exported at the
