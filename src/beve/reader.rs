@@ -1887,12 +1887,50 @@ impl<'de, O: Options> Reader<'de, O> {
     /// stepped over whole, and one that is a typed array is not stepped over
     /// at all: an element of it is found by multiplying.
     ///
+    /// A hand-driven reader measures depth from where it stands, so a seek
+    /// leaves the reader's depth as it found it and the value it lands on is
+    /// read relative to where the caller stood; [`beve::from_slice_at`] is
+    /// what measures the whole document.
+    ///
     /// See [`beve::from_slice_at`] for the pointer syntax and what each
     /// failure means.
     ///
     /// [JSON Pointer]: https://www.rfc-editor.org/rfc/rfc6901
     /// [`beve::from_slice_at`]: crate::beve::from_slice_at
     pub fn seek(&mut self, pointer: &str) -> PResult<()> {
+        let levels = self.walk(pointer)?;
+        self.depth -= levels;
+        Ok(())
+    }
+
+    /// Read the value `pointer` names into `value`, giving back the levels
+    /// the walk to it counted however the read exits.
+    ///
+    /// [`seek`](Self::seek) with the levels kept for the read, so the value is
+    /// measured at the depth it sits at in the document.
+    pub(crate) fn read_at<T: Read<'de>>(&mut self, pointer: &str, value: &mut T) -> PResult<()> {
+        let levels = self.walk(pointer)?;
+        let result = value.read(self);
+        self.depth -= levels;
+        result
+    }
+
+    /// Move onto the value `pointer` names, and report how many levels the
+    /// containers passed through were counted. A failure counts none: the
+    /// depth goes back to what it was, as a failed read's does.
+    fn walk(&mut self, pointer: &str) -> PResult<u32> {
+        let depth = self.depth;
+        match self.descend_path(pointer) {
+            Ok(()) => Ok(self.depth - depth),
+            Err(code) => {
+                self.depth = depth;
+                Err(code)
+            }
+        }
+    }
+
+    /// The walk [`walk`](Self::walk) puts the depth back around.
+    fn descend_path(&mut self, pointer: &str) -> PResult<()> {
         if pointer.is_empty() {
             return Ok(());
         }
@@ -1911,7 +1949,11 @@ impl<'de, O: Options> Reader<'de, O> {
     }
 
     /// Move from the container at the cursor onto the member or element
-    /// `token` names.
+    /// `token` names, counting the container a level.
+    ///
+    /// The level is entered and not left: the cursor ends inside the
+    /// container, and [`walk`](Self::walk) is what puts the depth back if a
+    /// later step fails.
     fn descend(&mut self, token: &str) -> PResult<()> {
         let h = self.head()?;
         match header::ty(h) {
@@ -1921,6 +1963,9 @@ impl<'de, O: Options> Reader<'de, O> {
                 // reported as one even where the document runs out first.
                 let i = index(token)?;
                 let n = self.count()?;
+                // Before the siblings are stepped over, so that each is
+                // measured from the depth it sits at.
+                self.enter()?;
                 if i >= n {
                     return Err(ErrorCode::NoSuchValue);
                 }
@@ -1965,6 +2010,7 @@ impl<'de, O: Options> Reader<'de, O> {
         };
 
         let members = self.count()?;
+        self.enter()?;
         for _ in 0..members {
             let hit = match wanted {
                 Key::Str(t) => {
@@ -1989,7 +2035,11 @@ impl<'de, O: Options> Reader<'de, O> {
     /// and the header the element would have carried had it been written on
     /// its own is installed, exactly as the array driver does. Only the string
     /// form has to be walked, its elements not all being the same size.
+    ///
+    /// It costs a level although nothing in it recurses, because
+    /// [`read_seq`](Self::read_seq) charges one and the two have to agree.
     fn descend_typed(&mut self, h: u8, i: usize) -> PResult<()> {
+        self.enter()?;
         let form = self.typed_head(h)?;
         let (Typed::Bools(n) | Typed::Strings(n) | Typed::Fixed(_, n)) = form;
         if i >= n {
@@ -2059,7 +2109,7 @@ fn check_escapes(token: &str) -> PResult<()> {
 /// Decoding the token into a buffer first would mean allocating on every
 /// comparison, and there are as many comparisons as the object has members.
 /// Walking the two at once costs neither. Escapes are already known to be well
-/// formed, [`check_escapes`] having run over this token in [`Reader::seek`].
+/// formed, [`check_escapes`] having run over this token on the way down.
 fn token_eq(token: &str, key: &[u8]) -> bool {
     let t = token.as_bytes();
     let mut i = 0;

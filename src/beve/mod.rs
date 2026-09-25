@@ -198,6 +198,12 @@ where
 /// malformed past the value it names is still read from successfully. Use
 /// [`validate`] first where that matters.
 ///
+/// The [depth limit](MAX_DEPTH) is the document's, not the value's: the
+/// containers the pointer passes through are counted as reading the whole
+/// document would count them, so a value too deep to read that way is too
+/// deep to read here. What lies past the value is neither looked at nor
+/// measured.
+///
 /// A well-formed pointer naming something the document does not hold is
 /// [`NoSuchValue`]; a pointer that is not well formed is [`InvalidPointer`].
 ///
@@ -247,7 +253,7 @@ where
     T: Read<'de>,
 {
     let mut r = Reader::<O>::with_options(input);
-    match r.seek(pointer).and_then(|()| value.read(&mut r)) {
+    match r.read_at(pointer, value) {
         Ok(()) => Ok(()),
         Err(code) => Err(Error::with_key(code, r.position(), r.error_key())),
     }
