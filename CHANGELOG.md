@@ -4,6 +4,14 @@ Notable changes to structio. The format follows [Keep a Changelog](https://keepa
 
 Before 1.0 the API is not frozen: a minor bump may break it, and what broke is listed here.
 
+## [Unreleased]
+
+### Fixed
+
+- **A BEVE float header of undefined width read as an integer is `InvalidHeader` again, not `ExpectedInteger`.** Every other walk already said `InvalidHeader`; a regression in 0.7.0, where the float was refused before its width was checked.
+
+- **A BEVE null or boolean header of undefined form read as a `bool` is `InvalidHeader`, not `ExpectedBool`,** as every other walk reports it.
+
 ## [0.7.0] - 2026-09-24
 
 ### Changed

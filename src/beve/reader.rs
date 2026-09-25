@@ -598,6 +598,10 @@ impl<'de, O: Options> Reader<'de, O> {
         match self.head()? {
             header::TRUE => Ok(true),
             header::FALSE => Ok(false),
+            // A null is a value and not a boolean. Anything else of the null
+            // and boolean type is no value at all, as every other walk says.
+            header::NULL => Err(ErrorCode::ExpectedBool),
+            h if header::ty(h) == header::TY_NULL_BOOL => Err(ErrorCode::InvalidHeader),
             _ => Err(ErrorCode::ExpectedBool),
         }
     }
@@ -622,6 +626,10 @@ impl<'de, O: Options> Reader<'de, O> {
             return Err(ErrorCode::ExpectedNumber);
         }
         let cat = header::sub(h);
+        // A width the format does not define makes the header no number at
+        // all, of either kind, so that is settled first, as `number_body`
+        // settles it and as every walk that is not after an integer does.
+        let width = byte_width(cat, header::count(h)).ok_or(ErrorCode::InvalidHeader)?;
         // The header alone says a float is no integer, so it is refused before
         // the payload is taken. Taking it first would leave the cursor, and
         // the offset the entry point attaches, past the value rather than on
@@ -631,7 +639,6 @@ impl<'de, O: Options> Reader<'de, O> {
         if cat == header::CAT_FLOAT {
             return Err(ErrorCode::ExpectedInteger);
         }
-        let width = byte_width(cat, header::count(h)).ok_or(ErrorCode::InvalidHeader)?;
         let bytes = self.take(width)?;
         match cat {
             header::CAT_UNSIGNED => Ok(Int::Unsigned(le_u128(bytes))),

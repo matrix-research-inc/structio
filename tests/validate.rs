@@ -374,9 +374,114 @@ fn an_undefined_null_or_boolean_header_is_not_a_value() {
             ErrorCode::InvalidHeader,
             "{h:#010b}"
         );
+        // A reader that wanted a boolean finds a header of the right type that
+        // is no value at all, not a value of the wrong kind.
+        for e in [
+            from_beve::<bool>(&[h]).unwrap_err(),
+            from_beve::<Option<bool>>(&[h]).unwrap_err(),
+            from_beve::<Value>(&[h]).unwrap_err(),
+            beve_to_json(&[h]).unwrap_err(),
+        ] {
+            assert_eq!(
+                (e.code, e.index),
+                (ErrorCode::InvalidHeader, 1),
+                "{h:#010b}"
+            );
+        }
     }
     for h in [header::NULL, header::FALSE, header::TRUE] {
         validate_beve(&[h]).unwrap();
+    }
+}
+
+#[test]
+fn an_undefined_float_width_is_not_a_value_in_any_walk() {
+    // A float has five widths, codes 0 to 4. Codes 5 to 7 describe no number,
+    // so a reader that wanted an integer has not met a float it can refuse by
+    // kind: it has met a header with no extent, as every other walk has. The
+    // refusal is on the header, so the offset is just past it.
+    type Walk = fn(&[u8]) -> structio::Result<()>;
+    let integers: [(&str, Walk); 12] = [
+        ("u8", |b| from_beve::<u8>(b).map(drop)),
+        ("u16", |b| from_beve::<u16>(b).map(drop)),
+        ("u32", |b| from_beve::<u32>(b).map(drop)),
+        ("u64", |b| from_beve::<u64>(b).map(drop)),
+        ("u128", |b| from_beve::<u128>(b).map(drop)),
+        ("i8", |b| from_beve::<i8>(b).map(drop)),
+        ("i16", |b| from_beve::<i16>(b).map(drop)),
+        ("i32", |b| from_beve::<i32>(b).map(drop)),
+        ("i64", |b| from_beve::<i64>(b).map(drop)),
+        ("i128", |b| from_beve::<i128>(b).map(drop)),
+        ("Option<u64>", |b| from_beve::<Option<u64>>(b).map(drop)),
+        ("pointer u64", |b| {
+            beve::from_slice_at::<u64>(b, "").map(drop)
+        }),
+    ];
+    let floats: [(&str, Walk); 3] = [
+        ("f32", |b| from_beve::<f32>(b).map(drop)),
+        ("f64", |b| from_beve::<f64>(b).map(drop)),
+        ("Option<f64>", |b| from_beve::<Option<f64>>(b).map(drop)),
+    ];
+    let whatever_is_there: [(&str, Walk); 5] = [
+        ("Value", |b| from_beve::<Value>(b).map(drop)),
+        ("pointer Value", |b| {
+            beve::from_slice_at::<Value>(b, "").map(drop)
+        }),
+        ("validate", validate_beve),
+        ("transcode", |b| beve_to_json(b).map(drop)),
+        ("skip", |b| {
+            // The same bytes as an unknown member's value, stepped over. The
+            // offset is taken back to the value's own, the member's key being
+            // the four bytes in front of it.
+            let mut doc = vec![header::OBJECT, 1 << 2, 1 << 2, b'z'];
+            doc.extend_from_slice(b);
+            from_beve_with::<SkipUnknown, Inner>(&doc)
+                .map(drop)
+                .map_err(|e| structio::Error {
+                    index: e.index - 4,
+                    ..e
+                })
+        }),
+    ];
+    for code in 5..8 {
+        let mut doc = vec![header::number(header::CAT_FLOAT, code)];
+        doc.extend_from_slice(&[0; 16]);
+        for (name, walk) in integers.iter().chain(&floats).chain(&whatever_is_there) {
+            let e = walk(&doc).unwrap_err();
+            assert_eq!(
+                (e.code, e.index),
+                (ErrorCode::InvalidHeader, 1),
+                "{name}, code {code}"
+            );
+        }
+        // The cursor itself, which a caller trying another reading starts from.
+        let mut r = beve::Reader::new(&doc);
+        assert_eq!(r.read_i64(), Err(ErrorCode::InvalidHeader), "code {code}");
+        assert_eq!(r.position(), 1, "code {code}");
+        // The framer reports against the value's start rather than past its
+        // header, as it does for every refusal, so only its code is compared.
+        let mut docs = beve::Documents::values(&doc[..]);
+        let e = docs.next_value::<u64>().unwrap().unwrap_err();
+        assert_eq!(e.as_parse().unwrap().code, ErrorCode::InvalidHeader);
+    }
+
+    // Code 4 is a width the format defines, a 128-bit float, which no reader
+    // here has a type for and the validator steps over. A reader still refuses
+    // it on the header, by kind for an integer and as unsupported for a float.
+    let mut f128 = vec![header::number(header::CAT_FLOAT, 4)];
+    f128.extend_from_slice(&[0; 16]);
+    validate_beve(&f128).unwrap();
+    for (name, walk) in integers {
+        let e = walk(&f128).unwrap_err();
+        assert_eq!((e.code, e.index), (ErrorCode::ExpectedInteger, 1), "{name}");
+    }
+    for (name, walk) in floats {
+        let e = walk(&f128).unwrap_err();
+        assert_eq!(
+            (e.code, e.index),
+            (ErrorCode::UnsupportedFeature, 1),
+            "{name}"
+        );
     }
 }
 
