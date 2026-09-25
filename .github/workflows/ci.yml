@@ -38,12 +38,13 @@ jobs:
 
       # Debug catches the debug_assert!s guarding the numeric kernels; release
       # is what anyone actually runs, and the two disagree often enough in a
-      # crate this arithmetic-heavy to be worth both.
+      # crate this arithmetic-heavy to be worth both. The derive is a second
+      # crate behind a feature, and its parity and UI tests run only with it on,
+      # so both profiles run the whole workspace with it. The plain `cargo test`
+      # is the one run without it, which is the crate a dependent gets by default.
       - run: cargo test
-      - run: cargo test --release
-      # The derive is a second crate behind a feature; its parity and UI tests
-      # run only with it on.
       - run: cargo test --workspace --features derive
+      - run: cargo test --release --workspace --features derive
 
       # Benches and examples are not run here (the benchmark takes minutes),
       # but they are part of the crate and have to keep compiling.
