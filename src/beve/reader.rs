@@ -69,6 +69,14 @@ struct Deferred {
     depth: u32,
 }
 
+/// A [`seek`](Reader::seek) that left the cursor inside containers: where it
+/// began, and the depth the reader was at before it counted them.
+#[derive(Clone, Copy)]
+struct Sought {
+    from: usize,
+    depth: u32,
+}
+
 /// The most memory a reservation made on a count from the wire may claim
 /// before the elements have been read. A count the input can hold is still
 /// only a count: a hostile document one megabyte long can claim a million
@@ -139,6 +147,11 @@ pub struct Reader<'de, O: Options = Standard> {
     /// allocated, until a late tag is found. See
     /// [`read_internally_tagged`](Reader::read_internally_tagged).
     deferred: Vec<Deferred>,
+    /// The seeks still holding the levels they counted, innermost last, so
+    /// that winding back past where one began gives its levels back. Empty,
+    /// and never allocated, until a hand-driven seek descends. See
+    /// [`rewind`](Reader::rewind).
+    sought: Vec<Sought>,
     /// `fn() -> O` rather than `O`, so the reader's auto traits follow what it
     /// actually holds rather than a policy type it never contains.
     options: PhantomData<fn() -> O>,
@@ -181,6 +194,7 @@ impl<'de, O: Options> Reader<'de, O> {
             depth: 0,
             error_key: None,
             deferred: Vec::new(),
+            sought: Vec::new(),
             implied: None,
             options: PhantomData,
         }
@@ -202,6 +216,7 @@ impl<'de, O: Options> Reader<'de, O> {
             depth: 0,
             error_key: None,
             deferred: Vec::new(),
+            sought: Vec::new(),
             implied: Some(implied),
             options: PhantomData,
         }
@@ -282,13 +297,23 @@ impl<'de, O: Options> Reader<'de, O> {
     /// ```
     /// Any key [`set_error_key`](Self::set_error_key) left is dropped, for
     /// the reason [`json::Parser::rewind`](crate::json::Parser::rewind) gives,
-    /// and nothing else needs winding back, for the reason it gives too.
+    /// and the nesting a read counts needs no winding back, for the reason it
+    /// gives too. The one exception is [`seek`](Self::seek), which ends inside
+    /// the containers it counted rather than past them, so no exit of its own
+    /// could give them back: winding back to where a seek began, or before,
+    /// gives back the levels it counted.
     #[inline]
     pub fn rewind(&mut self, to: usize) {
         // Clamping is also what keeps `pos <= data.len()`, which every bounds
         // test in here is written against.
         self.pos = to.min(self.pos);
         self.error_key = None;
+        while let Some(seek) = self.sought.last()
+            && self.pos <= seek.from
+        {
+            self.depth = seek.depth;
+            self.sought.pop();
+        }
     }
 
     /// Confirm the document ended where the value did.
@@ -1862,12 +1887,59 @@ impl<'de, O: Options> Reader<'de, O> {
     /// stepped over whole, and one that is a typed array is not stepped over
     /// at all: an element of it is found by multiplying.
     ///
+    /// Every container the pointer passes through counts against
+    /// [`MAX_DEPTH`], as reading it would, and stays counted while the cursor
+    /// is inside it. So the value is read at the depth it sits at, and a
+    /// sibling stepped over on the way is measured from there too: a document
+    /// too deep to read whole is too deep to read through a pointer, wherever
+    /// on the path the excess lies. A seek that fails gives back what it
+    /// counted, and a [`rewind`](Self::rewind) to where a seek began gives
+    /// back what a successful one counted, so a reader can seek, read, wind
+    /// back and seek again without the limit drawing nearer.
+    ///
     /// See [`beve::from_slice_at`] for the pointer syntax and what each
     /// failure means.
     ///
     /// [JSON Pointer]: https://www.rfc-editor.org/rfc/rfc6901
     /// [`beve::from_slice_at`]: crate::beve::from_slice_at
     pub fn seek(&mut self, pointer: &str) -> PResult<()> {
+        let from = self.pos;
+        let depth = self.depth;
+        if self.walk(pointer)? > 0 {
+            self.sought.push(Sought { from, depth });
+        }
+        Ok(())
+    }
+
+    /// Read the value `pointer` names into `value`, giving back the levels
+    /// the walk to it counted however the read exits.
+    ///
+    /// [`seek`](Self::seek) and a read, for a reader that is done once the
+    /// value is: nothing will wind back past the seek, so there is no record
+    /// of it to keep.
+    pub(crate) fn read_at<T: Read<'de>>(&mut self, pointer: &str, value: &mut T) -> PResult<()> {
+        let levels = self.walk(pointer)?;
+        let result = value.read(self);
+        self.depth -= levels;
+        result
+    }
+
+    /// Move onto the value `pointer` names, and report how many levels the
+    /// containers passed through were counted. A failure counts none: the
+    /// depth goes back to what it was, as a failed read's does.
+    fn walk(&mut self, pointer: &str) -> PResult<u32> {
+        let depth = self.depth;
+        match self.descend_path(pointer) {
+            Ok(()) => Ok(self.depth - depth),
+            Err(code) => {
+                self.depth = depth;
+                Err(code)
+            }
+        }
+    }
+
+    /// The walk [`walk`](Self::walk) puts the depth back around.
+    fn descend_path(&mut self, pointer: &str) -> PResult<()> {
         if pointer.is_empty() {
             return Ok(());
         }
@@ -1886,7 +1958,11 @@ impl<'de, O: Options> Reader<'de, O> {
     }
 
     /// Move from the container at the cursor onto the member or element
-    /// `token` names.
+    /// `token` names, counting the container a level.
+    ///
+    /// The level is entered and not left: the cursor ends inside the
+    /// container, and [`walk`](Self::walk) is what puts the depth back if a
+    /// later step fails.
     fn descend(&mut self, token: &str) -> PResult<()> {
         let h = self.head()?;
         match header::ty(h) {
@@ -1896,6 +1972,9 @@ impl<'de, O: Options> Reader<'de, O> {
                 // reported as one even where the document runs out first.
                 let i = index(token)?;
                 let n = self.count()?;
+                // Before the siblings are stepped over, so that each is
+                // measured from the depth it sits at.
+                self.enter()?;
                 if i >= n {
                     return Err(ErrorCode::NoSuchValue);
                 }
@@ -1940,6 +2019,7 @@ impl<'de, O: Options> Reader<'de, O> {
         };
 
         let members = self.count()?;
+        self.enter()?;
         for _ in 0..members {
             let hit = match wanted {
                 Key::Str(t) => {
@@ -1964,7 +2044,11 @@ impl<'de, O: Options> Reader<'de, O> {
     /// and the header the element would have carried had it been written on
     /// its own is installed, exactly as the array driver does. Only the string
     /// form has to be walked, its elements not all being the same size.
+    ///
+    /// It costs a level although nothing in it recurses, because
+    /// [`read_seq`](Self::read_seq) charges one and the two have to agree.
     fn descend_typed(&mut self, h: u8, i: usize) -> PResult<()> {
+        self.enter()?;
         let form = self.typed_head(h)?;
         let (Typed::Bools(n) | Typed::Strings(n) | Typed::Fixed(_, n)) = form;
         if i >= n {
@@ -2034,7 +2118,7 @@ fn check_escapes(token: &str) -> PResult<()> {
 /// Decoding the token into a buffer first would mean allocating on every
 /// comparison, and there are as many comparisons as the object has members.
 /// Walking the two at once costs neither. Escapes are already known to be well
-/// formed, [`check_escapes`] having run over this token in [`Reader::seek`].
+/// formed, [`check_escapes`] having run over this token on the way down.
 fn token_eq(token: &str, key: &[u8]) -> bool {
     let t = token.as_bytes();
     let mut i = 0;

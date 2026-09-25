@@ -267,3 +267,58 @@ fn the_limit_stays_where_it_was() {
     let code = json_retried(&at, |p| json::Read::read(&mut Value::Null, p));
     assert_ne!(code, ErrorCode::ExceededMaxDepth);
 }
+
+#[test]
+fn a_pointer_gives_back_every_level_it_passed_through() {
+    // A seek ends inside the containers it counted, so no exit of its own can
+    // give them back. A failed seek gives back what it had counted by then, and
+    // winding back to where a successful one began gives back the rest. The
+    // object the pointer names sits at the limit exactly, so a single level
+    // kept by any attempt would have the next one refused as too deep.
+    let outer = beve::MAX_DEPTH as usize - 1;
+    let doc = beve_of(&format!(
+        r#"{}{{"a":"x"}}{}"#,
+        "[".repeat(outer),
+        "]".repeat(outer)
+    ));
+    let path = "/0".repeat(outer);
+    let named = format!("{path}/a");
+    let text = |r: &mut beve::Reader<'_>| beve::Read::read(&mut String::new(), r);
+    let number = |r: &mut beve::Reader<'_>| beve::Read::read(&mut 0u32, r);
+
+    // The pointer is sound and reaches a string.
+    let mut r = beve::Reader::new(&doc);
+    r.seek(&named).unwrap();
+    text(&mut r).unwrap();
+
+    // The seek fails, at the very end of the path.
+    let missing = format!("{path}/b");
+    assert_eq!(
+        beve_retried(&doc, |r| r.seek(&missing)),
+        ErrorCode::NoSuchValue
+    );
+    // The seek succeeds and the read after it fails.
+    let code = beve_retried(&doc, |r| r.seek(&named).and_then(|()| number(r)));
+    assert_ne!(code, ErrorCode::ExceededMaxDepth);
+    // The same path in two seeks, each holding its own levels.
+    let code = beve_retried(&doc, |r| {
+        r.seek(&path)?;
+        r.seek("/a")?;
+        number(r)
+    });
+    assert_ne!(code, ErrorCode::ExceededMaxDepth);
+
+    // Winding back to between the two gives back the second seek's levels and
+    // keeps the first's, which the object is still inside.
+    let mut r = beve::Reader::new(&doc);
+    r.seek(&path).unwrap();
+    let inside = r.position();
+    for n in 0..ATTEMPTS {
+        r.seek("/a").unwrap();
+        let code = number(&mut r).unwrap_err();
+        assert_ne!(code, ErrorCode::ExceededMaxDepth, "attempt {n}");
+        r.rewind(inside);
+    }
+    r.seek("/a").unwrap();
+    text(&mut r).unwrap();
+}

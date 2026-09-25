@@ -4,6 +4,12 @@ Notable changes to structio. The format follows [Keep a Changelog](https://keepa
 
 Before 1.0 the API is not frozen: a minor bump may break it, and what broke is listed here.
 
+## [Unreleased]
+
+### Changed
+
+- **A pointer read is charged the containers it passes through.** `from_beve_at` and `Reader::seek` counted no level for the path, and stepped over siblings as if from the top, so the depth limit applied from the value named rather than to the document. They now count every container on the way, and a document every other walk refuses as too deep is refused here too. `rewind` to where a `seek` began gives back its levels. **Breaking** for a document past the limit that was readable through a pointer.
+
 ## [0.7.0] - 2026-09-24
 
 ### Changed

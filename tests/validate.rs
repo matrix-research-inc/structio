@@ -13,8 +13,8 @@ use std::collections::{HashMap, VecDeque};
 
 use structio::beve::header;
 use structio::{
-    Complex, ErrorCode, SkipUnknown, Value, beve, beve_to_json, from_beve, from_beve_with, to_beve,
-    validate_beve,
+    Complex, ErrorCode, SkipUnknown, Value, beve, beve_to_json, from_beve, from_beve_at,
+    from_beve_with, to_beve, validate_beve,
 };
 
 #[derive(Default, Debug, PartialEq)]
@@ -462,8 +462,17 @@ macro_rules! chains {
             data: $data,
         }
         structio::object!($name { next, data });
+        impl Leaf for $name {
+            type Data = $data;
+        }
     )*};
 }
+
+/// A chain type's leaf, which is what a pointer to `/data` reads.
+trait Leaf: beve::ReadOwned {
+    type Data: beve::ReadOwned;
+}
+
 chains! {
     VecF64: Vec<f64>,
     VecF32: Vec<f32>,
@@ -499,11 +508,13 @@ fn every_walk_takes_a_typed_array_leaf_to_the_same_depth() {
     // level validating, transcoding and framing charge it, or a document one
     // level from the limit reads and is then refused by the others, framing
     // included, which ends a stream at the first such record. So each
-    // destination is taken to its deepest document by every walk, and all four
-    // have to agree at every depth. The element path is here for all three of
-    // its forms, numbers, packed booleans and strings. A complex array is the
-    // control: it is the one sequence no walk charges, so the bulk copy that
-    // takes it must not charge it either.
+    // destination is taken to its deepest document by every walk, and all five
+    // have to agree at every depth, the fifth being a pointer to the leaf,
+    // which walks the chain rather than reading it and so has to charge the
+    // levels it passes through itself. The element path is here for all three
+    // of its forms, numbers, packed booleans and strings. A complex array is
+    // the control: it is the one sequence no walk charges, so the bulk copy
+    // that takes it must not charge it either.
     let limit = beve::reader::MAX_DEPTH as usize;
     // The chain, the leaf's object and the array; a complex array costs none.
     let typed = Some(limit - 2);
@@ -517,32 +528,51 @@ fn every_walk_takes_a_typed_array_leaf_to_the_same_depth() {
     let bools = to_beve(&vec![true]);
     let strings = to_beve(&vec!["a".to_string()]);
     let pairs = to_beve(&vec![Complex::new(1.5f64, -1.5)]);
-    let cow = |d: &[u8]| from_beve::<CowF64>(d).is_ok();
-    let bytes = |d: &[u8]| from_beve::<BytesU8>(d).is_ok();
+    let cow = Reads {
+        whole: |d| from_beve::<CowF64>(d).is_ok(),
+        at: |d, p| from_beve_at::<Cow<[f64]>>(d, p).is_ok(),
+    };
+    let bytes = Reads {
+        whole: |d| from_beve::<BytesU8>(d).is_ok(),
+        at: |d, p| from_beve_at::<&[u8]>(d, p).is_ok(),
+    };
 
-    assert_eq!(deepest("Vec<f64>", &f64s, reads::<VecF64>), typed);
-    assert_eq!(deepest("Vec<f32>", &f32s, reads::<VecF32>), typed);
-    assert_eq!(deepest("Vec<u32>", &u32s, reads::<VecU32>), typed);
-    assert_eq!(deepest("Vec<i64>", &i64s, reads::<VecI64>), typed);
-    assert_eq!(deepest("Vec<u8>", &u8s, reads::<VecU8>), typed);
+    assert_eq!(deepest("Vec<f64>", &f64s, reads::<VecF64>()), typed);
+    assert_eq!(deepest("Vec<f32>", &f32s, reads::<VecF32>()), typed);
+    assert_eq!(deepest("Vec<u32>", &u32s, reads::<VecU32>()), typed);
+    assert_eq!(deepest("Vec<i64>", &i64s, reads::<VecI64>()), typed);
+    assert_eq!(deepest("Vec<u8>", &u8s, reads::<VecU8>()), typed);
     assert_eq!(deepest("Cow<[f64]>", &f64s, cow), typed);
     assert_eq!(deepest("&[u8]", &u8s, bytes), typed);
-    assert_eq!(deepest("VecDeque<f64>", &f64s, reads::<DequeF64>), typed);
-    assert_eq!(deepest("[f64; 1]", &f64s, reads::<ArrayF64>), typed);
-    assert_eq!(deepest("Vec<bool>", &bools, reads::<VecBool>), typed);
-    assert_eq!(deepest("Vec<String>", &strings, reads::<VecString>), typed);
-    let deepest_complex = deepest("Vec<Complex<f64>>", &pairs, reads::<VecComplex>);
+    assert_eq!(deepest("VecDeque<f64>", &f64s, reads::<DequeF64>()), typed);
+    assert_eq!(deepest("[f64; 1]", &f64s, reads::<ArrayF64>()), typed);
+    assert_eq!(deepest("Vec<bool>", &bools, reads::<VecBool>()), typed);
+    assert_eq!(
+        deepest("Vec<String>", &strings, reads::<VecString>()),
+        typed
+    );
+    let deepest_complex = deepest("Vec<Complex<f64>>", &pairs, reads::<VecComplex>());
     assert_eq!(deepest_complex, complex);
 }
 
-fn reads<T: beve::ReadOwned>(doc: &[u8]) -> bool {
-    from_beve::<T>(doc).is_ok()
+/// Two ways to read a chain's leaf: the whole chain, and the leaf alone
+/// through the pointer that names it.
+struct Reads {
+    whole: fn(&[u8]) -> bool,
+    at: fn(&[u8], &str) -> bool,
 }
 
-/// The deepest chain around `{"data": array}` that `read` accepts, having
-/// required validating, transcoding and framing to accept exactly the same
-/// chains.
-fn deepest(name: &str, array: &[u8], read: fn(&[u8]) -> bool) -> Option<usize> {
+fn reads<T: Leaf>() -> Reads {
+    Reads {
+        whole: |d| from_beve::<T>(d).is_ok(),
+        at: |d, p| from_beve_at::<T::Data>(d, p).is_ok(),
+    }
+}
+
+/// The deepest chain around `{"data": array}` that `read` accepts whole,
+/// having required validating, transcoding, framing and reading the leaf
+/// through a pointer to accept exactly the same chains.
+fn deepest(name: &str, array: &[u8], read: Reads) -> Option<usize> {
     let key = |name: &[u8; 4]| [&[header::OBJECT, 1 << 2, 4 << 2][..], name].concat();
     let limit = beve::reader::MAX_DEPTH as usize;
     // Every depth ordinarily; under Miri only the ones around the limit, which
@@ -559,7 +589,7 @@ fn deepest(name: &str, array: &[u8], read: fn(&[u8]) -> bool) -> Option<usize> {
         doc.extend_from_slice(&key(b"data"));
         doc.extend_from_slice(array);
 
-        let reads = read(&doc);
+        let reads = (read.whole)(&doc);
         let validates = validate_beve(&doc).is_ok();
         let transcodes = beve_to_json(&doc).is_ok();
         // The splitter's own verdict, which is how far it advanced: the reader
@@ -570,12 +600,15 @@ fn deepest(name: &str, array: &[u8], read: fn(&[u8]) -> bool) -> Option<usize> {
         feed.end();
         let _ = feed.next_value::<Value>();
         let frames = feed.offset() == doc.len();
+        // The pointer walks the chain rather than reading it, so the levels it
+        // passes through are charged by the walk itself.
+        let pointed = (read.at)(&doc, &format!("{}/data", "/next".repeat(n)));
 
         assert_eq!(
-            [validates, transcodes, frames],
-            [reads; 3],
+            [validates, transcodes, frames, pointed],
+            [reads; 4],
             "{name} under {n} containers: read {reads}, validate {validates}, \
-             transcode {transcodes}, frame {frames}"
+             transcode {transcodes}, frame {frames}, pointer {pointed}"
         );
         if reads {
             deepest = Some(n);
