@@ -18,7 +18,9 @@ use core::marker::PhantomData;
 use crate::error::{ErrorCode, PResult};
 use crate::json::traits::{Read, ReadArray, ReadEnum, ReadInternallyTagged, ReadObject};
 use crate::num::atof::{parse_float, scan_number};
-use crate::num::atoi::{parse_i64, parse_u64, reject_float_tail};
+use crate::num::atoi::{
+    parse_i64, parse_u128, parse_unsigned_u64, parse_unsigned_u128, reject_float_tail,
+};
 use crate::options::{Options, Standard};
 use crate::swar::{escape_mask, find_byte, first_match, load_u64, needs_escape};
 use crate::traits::{Fields, Keys, Variants, resolve_key, resolve_variant};
@@ -1050,9 +1052,12 @@ impl<'de, O: Options> Parser<'de, O> {
     /// signed reader stops being inlined the moment anything downstream of it
     /// grows, and the array read loses about a fifth of its throughput without
     /// any source change nearby to explain it.
+    ///
+    /// `-0` reads as `0`, as it does into a signed type. A minus sign in front
+    /// of any other number is [`NumberOutOfRange`](ErrorCode::NumberOutOfRange).
     #[inline(always)]
     pub fn read_u64(&mut self) -> PResult<u64> {
-        let v = parse_u64(self.bytes, &mut self.idx)?;
+        let v = parse_unsigned_u64(self.bytes, &mut self.idx)?;
         reject_float_tail(self.bytes, self.idx)?;
         Ok(v)
     }
@@ -1077,62 +1082,34 @@ impl<'de, O: Options> Parser<'de, O> {
         parse_float::<f32>(self.bytes, &mut self.idx)
     }
 
-    /// Parse a 128-bit unsigned integer.
-    ///
-    /// Wide integers are rare, so this is a straightforward digit loop rather
-    /// than the SWAR path the 64-bit case uses.
+    /// Parse a 128-bit unsigned integer, taking a sign as
+    /// [`read_u64`](Self::read_u64) does.
     pub fn read_u128(&mut self) -> PResult<u128> {
-        let n = self.bytes.len();
-        let mut i = self.idx;
-        if i >= n || !self.bytes[i].is_ascii_digit() {
-            return Err(ErrorCode::ExpectedNumber);
-        }
-        if self.bytes[i] == b'0' {
-            i += 1;
-            if i < n && self.bytes[i].is_ascii_digit() {
-                return Err(ErrorCode::InvalidNumber);
-            }
-            self.idx = i;
-            reject_float_tail(self.bytes, i)?;
-            return Ok(0);
-        }
-        let mut v: u128 = 0;
-        while i < n {
-            let c = self.bytes[i].wrapping_sub(b'0');
-            if c >= 10 {
-                break;
-            }
-            v = v
-                .checked_mul(10)
-                .and_then(|x| x.checked_add(c as u128))
-                .ok_or(ErrorCode::NumberOutOfRange)?;
-            i += 1;
-        }
-        self.idx = i;
-        reject_float_tail(self.bytes, i)?;
+        let v = parse_unsigned_u128(self.bytes, &mut self.idx)?;
+        reject_float_tail(self.bytes, self.idx)?;
         Ok(v)
     }
 
     /// Parse a 128-bit signed integer.
     pub fn read_i128(&mut self) -> PResult<i128> {
         let negative = self.peek() == Some(b'-');
-        if negative {
-            self.idx += 1;
-        }
-        let magnitude = self.read_u128()?;
-        if negative {
+        self.idx += negative as usize;
+        let magnitude = parse_u128(self.bytes, &mut self.idx)?;
+        let v = if negative {
             // `i128::MIN` has no positive counterpart, so compare before
             // negating.
             if magnitude > (i128::MAX as u128) + 1 {
                 return Err(ErrorCode::NumberOutOfRange);
             }
-            Ok((magnitude as i128).wrapping_neg())
+            (magnitude as i128).wrapping_neg()
         } else {
             if magnitude > i128::MAX as u128 {
                 return Err(ErrorCode::NumberOutOfRange);
             }
-            Ok(magnitude as i128)
-        }
+            magnitude as i128
+        };
+        reject_float_tail(self.bytes, self.idx)?;
+        Ok(v)
     }
 
     /// Borrow a number's text out of the input, without converting it.
