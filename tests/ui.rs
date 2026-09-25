@@ -115,6 +115,17 @@ fn a_const_refusal_says_what_to_do_instead() {
 /// notice. `BriefLocal` keeps the codes, the messages and where each points in
 /// the declaration, which is all of it the crate can stand behind; where the
 /// macros' own expansion sits inside `src/macros.rs` is not part of it.
+///
+/// It keeps them once per diagnostic rustc emits, though, and the macros
+/// expand a declaration into a reader and a writer for each format, more than
+/// one of which meets the same mistake. So a golden also pins how many times
+/// each is reported: `variant_with_two_fields` holds its `E0023` four times
+/// and its `E0061` twice, and `variant_left_out` its `E0004` twice. That
+/// count is not a promise, and a rustc that reported one of them fewer times,
+/// or a change to the macros that met a variant in one place more, would
+/// re-bless a golden with nothing the user sees having changed. `nocompile`
+/// has no mode that compares the distinct diagnostics rather than every one,
+/// so the count is pinned along with them.
 #[test]
 fn a_refused_expansion_names_the_mistake() {
     let mut t = nocompile::cases!();
