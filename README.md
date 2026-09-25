@@ -208,6 +208,8 @@ No comparison against `serde_json` has been run, so please do not infer one.
 
 **Foreign types need an adapter or a wrapper.** Rust's orphan rule means you cannot describe a type from another crate the way you can specialize `glz::meta` for any C++ type. A field can name an [adapter](docs/schemas.md#types-you-do-not-own) that says how its type is read and written, which keeps the type out of your API; a newtype is still the answer when the foreign type has no `Default`, or when it appears in many structs, and declared with [`transparent!`](docs/schemas.md#a-wrapper-that-is-not-on-the-wire) it adds nothing to the document.
 
+**No depth limit on writing.** Reading refuses a document nested past 256 levels, because its depth is the sender's choice. A value being written is the program's own, so its depth is the program's to bound, as it already is for dropping that value; one deep enough overflows the stack. [docs/design.md](docs/design.md#depth-is-the-callers-to-bound) has why.
+
 ## Status
 
 Version 0.7.0. The API is not yet frozen and the version number should be taken at face value. What changes between releases is in [CHANGELOG.md](CHANGELOG.md).

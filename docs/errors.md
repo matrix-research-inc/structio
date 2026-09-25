@@ -144,7 +144,7 @@ Long lines are trimmed around the caret so the output stays readable. The input 
 | `ExpectedTrue` `ExpectedFalse` `ExpectedNull` | A literal started but did not finish. |
 | `UnexpectedCharacter` | A byte appeared where no value could begin. |
 | `TrailingContent` | The document ended, and then there was more. |
-| `ExceededMaxDepth` | Nesting ran past the limit, which exists so a hostile document cannot exhaust the stack. |
+| `ExceededMaxDepth` | Nesting ran past the limit, which exists so a hostile document cannot exhaust the stack. Writing has no such limit; [design.md](design.md#depth-is-the-callers-to-bound) has why. |
 | `DocumentTooLarge` | A streaming reader would have had to buffer more than its configured `max_value`. |
 
 ### BEVE structure

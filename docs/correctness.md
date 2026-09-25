@@ -131,7 +131,7 @@ Miri interprets rather than executes, at hundreds of times the cost per operatio
 
 ## Continuous integration
 
-Every push runs the suite in both debug and release on Linux, macOS and Windows. Debug is not redundant: it is what checks the `debug_assert!`s guarding the numeric kernels, and release is what anyone actually runs. Alongside those, one job holds the line on lints, formatting and rustdoc, one builds against the MSRV exactly rather than against whatever is oldest still supported, and one builds the packaged tarball, since a file left out of a release cannot be put back.
+Every push runs the suite as above, in both debug and release, on Linux, macOS and Windows, and once more in debug without the feature, which is the crate a dependent gets by default. Debug is not redundant: it is what checks the `debug_assert!`s guarding the numeric kernels, and release is what anyone actually runs. Alongside those, one job holds the line on lints, formatting and rustdoc, one builds against the MSRV exactly rather than against whatever is oldest still supported, and one builds the packaged tarball, since a file left out of a release cannot be put back.
 
 **Big-endian** is covered by cross-compiling to s390x and running the suite under qemu. BEVE writes typed arrays as raw little-endian blocks and byte-swaps them elsewhere, and that second branch is unreachable on every machine anyone is likely to develop on.
 
