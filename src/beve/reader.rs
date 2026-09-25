@@ -457,6 +457,9 @@ impl<'de, O: Options> Reader<'de, O> {
         if header::ty(inner) != header::TY_TYPED_ARRAY || header::sub(inner) == header::CAT_OTHER {
             return Err(ErrorCode::InvalidHeader);
         }
+        // Refused on the header, before the count, as `typed_head` refuses an
+        // unaligned array of the same element type.
+        fixed_width(inner)?;
         let n = self.count()?;
         let pad = self.take(1)?[0] as usize;
         self.drop_bytes(pad)?;
@@ -498,7 +501,14 @@ impl<'de, O: Options> Reader<'de, O> {
                 }
                 _ => Err(ErrorCode::InvalidHeader),
             },
-            _ => Ok(Typed::Fixed(h, self.count()?)),
+            // An element type the format does not define is known from the
+            // header, so it is refused before the count is taken, as a lone
+            // number of that type is, and a borrowed `&[u8]`, which reads no
+            // count before deciding, stops in the same place.
+            _ => {
+                fixed_width(h)?;
+                Ok(Typed::Fixed(h, self.count()?))
+            }
         }
     }
 
@@ -717,13 +727,9 @@ impl<'de, O: Options> Reader<'de, O> {
         }
         let cat = header::sub(h);
         let code = header::count(h);
-        let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
-        // A 128-bit float is well formed and has no Rust type to land in. That
-        // too is known from the header, so it is refused before the payload is
-        // taken, for the reason `read_int` refuses a float there.
-        if cat == header::CAT_FLOAT && code == 4 {
-            return Err(ErrorCode::UnsupportedFeature);
-        }
+        // A 128-bit float is refused here too, on the header, for the reason
+        // `read_int` refuses a float before taking the payload.
+        let width = header::decodable_width(cat, code)?;
         Ok((cat, code, self.take(width)?))
     }
 
@@ -785,14 +791,18 @@ impl<'de, O: Options> Reader<'de, O> {
             let n = self.count()?;
             return self.take(n);
         }
-        // The aligned form states its element type in a second header, and
-        // pads the payload so a reader can point at it directly.
-        if header::count(h) != header::OTHER_ALIGNED {
-            return Err(ErrorCode::ExpectedBytes);
+        match header::count(h) {
+            // The aligned form states its element type in a second header, and
+            // pads the payload so a reader can point at it directly.
+            header::OTHER_ALIGNED => {
+                let (inner, n) = self.aligned_head()?;
+                byte_elements(inner)?;
+                self.take(n)
+            }
+            header::OTHER_BOOL | header::OTHER_STRING => Err(ErrorCode::ExpectedBytes),
+            // No form at all, as `typed_head` says of it.
+            _ => Err(ErrorCode::InvalidHeader),
         }
-        let (inner, n) = self.aligned_head()?;
-        byte_elements(inner)?;
-        self.take(n)
     }
 
     // -----------------------------------------------------------------------
@@ -813,6 +823,10 @@ impl<'de, O: Options> Reader<'de, O> {
         if header::ty(h) != header::TY_OBJECT {
             return Err(ErrorCode::ExpectedObject);
         }
+        // A key width the format does not define makes the header no object at
+        // all, which is settled before what its keys are, as `read_int`
+        // settles a number's width before its kind.
+        key_width(h)?;
         if header::sub(h) != header::CAT_FLOAT {
             // Categories 1 and 2 are integer keys, which no `object!` struct
             // has: its keys are names.
@@ -1004,6 +1018,8 @@ impl<'de, O: Options> Reader<'de, O> {
                 Ok(())
             }
             header::TY_OBJECT => {
+                // Width before kind, as `read_object` has it.
+                key_width(h)?;
                 if header::sub(h) != header::CAT_FLOAT {
                     // Integer keys, which no enum has: its variants are names.
                     return Err(ErrorCode::UnsupportedKeyType);
@@ -1063,6 +1079,8 @@ impl<'de, O: Options> Reader<'de, O> {
         if header::ty(h) != header::TY_OBJECT {
             return Err(ErrorCode::ExpectedObject);
         }
+        // Width before kind, as `read_object` has it.
+        key_width(h)?;
         if header::sub(h) != header::CAT_FLOAT {
             // Integer keys, which no enum has: its tag is a name.
             return Err(ErrorCode::UnsupportedKeyType);
@@ -2108,10 +2126,18 @@ pub(crate) fn key_width(h: u8) -> PResult<usize> {
     }
 }
 
+/// Bytes one element of the fixed-width typed array headed by `h` occupies.
+///
+/// A width the format does not define is an `InvalidHeader`, as it is for a
+/// lone number of that width.
+pub(crate) fn fixed_width(h: u8) -> PResult<usize> {
+    byte_width(header::sub(h), header::count(h)).ok_or(ErrorCode::InvalidHeader)
+}
+
 /// Bytes a fixed-width payload of `n` elements described by `h` occupies.
 pub(crate) fn payload_len(h: u8, n: usize) -> PResult<usize> {
-    let width = byte_width(header::sub(h), header::count(h)).ok_or(ErrorCode::InvalidHeader)?;
-    n.checked_mul(width).ok_or(ErrorCode::UnexpectedEnd)
+    n.checked_mul(fixed_width(h)?)
+        .ok_or(ErrorCode::UnexpectedEnd)
 }
 
 /// Bytes of payload behind a complex value's preamble, as
@@ -2128,7 +2154,11 @@ pub(crate) fn complex_payload(width: usize, pairs: Option<usize>) -> PResult<usi
 }
 
 /// Confirm a typed array holds one-byte integers.
+///
+/// An element type the format does not define is no array of anything, and is
+/// refused as every other walk refuses it rather than as the wrong kind.
 fn byte_elements(h: u8) -> PResult<()> {
+    fixed_width(h)?;
     match header::sub(h) {
         header::CAT_SIGNED | header::CAT_UNSIGNED if header::count(h) == 0 => Ok(()),
         _ => Err(ErrorCode::ExpectedBytes),

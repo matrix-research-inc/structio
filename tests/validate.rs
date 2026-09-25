@@ -13,8 +13,8 @@ use std::collections::{HashMap, VecDeque};
 
 use structio::beve::header;
 use structio::{
-    Complex, ErrorCode, SkipUnknown, Value, beve, beve_to_json, from_beve, from_beve_with, to_beve,
-    validate_beve,
+    Complex, ErrorCode, Number, SkipUnknown, Value, beve, beve_to_json, from_beve, from_beve_with,
+    to_beve, validate_beve,
 };
 
 #[derive(Default, Debug, PartialEq)]
@@ -400,7 +400,6 @@ fn an_undefined_float_width_is_not_a_value_in_any_walk() {
     // so a reader that wanted an integer has not met a float it can refuse by
     // kind: it has met a header with no extent, as every other walk has. The
     // refusal is on the header, so the offset is just past it.
-    type Walk = fn(&[u8]) -> structio::Result<()>;
     let integers: [(&str, Walk); 12] = [
         ("u8", |b| from_beve::<u8>(b).map(drop)),
         ("u16", |b| from_beve::<u16>(b).map(drop)),
@@ -417,18 +416,21 @@ fn an_undefined_float_width_is_not_a_value_in_any_walk() {
             beve::from_slice_at::<u64>(b, "").map(drop)
         }),
     ];
-    let floats: [(&str, Walk); 3] = [
+    // Every walk that decodes a float, a `Number` and a `Value` included.
+    let floats: [(&str, Walk); 7] = [
         ("f32", |b| from_beve::<f32>(b).map(drop)),
         ("f64", |b| from_beve::<f64>(b).map(drop)),
         ("Option<f64>", |b| from_beve::<Option<f64>>(b).map(drop)),
-    ];
-    let whatever_is_there: [(&str, Walk); 5] = [
+        ("Number", |b| from_beve::<Number>(b).map(drop)),
         ("Value", |b| from_beve::<Value>(b).map(drop)),
         ("pointer Value", |b| {
             beve::from_slice_at::<Value>(b, "").map(drop)
         }),
-        ("validate", validate_beve),
         ("transcode", |b| beve_to_json(b).map(drop)),
+    ];
+    // The walks that only measure a value, and so have no use for its type.
+    let measuring: [(&str, Walk); 2] = [
+        ("validate", validate_beve),
         ("skip", |b| {
             // The same bytes as an unknown member's value, stepped over. The
             // offset is taken back to the value's own, the member's key being
@@ -446,7 +448,7 @@ fn an_undefined_float_width_is_not_a_value_in_any_walk() {
     for code in 5..8 {
         let mut doc = vec![header::number(header::CAT_FLOAT, code)];
         doc.extend_from_slice(&[0; 16]);
-        for (name, walk) in integers.iter().chain(&floats).chain(&whatever_is_there) {
+        for (name, walk) in integers.iter().chain(&floats).chain(&measuring) {
             let e = walk(&doc).unwrap_err();
             assert_eq!(
                 (e.code, e.index),
@@ -465,23 +467,271 @@ fn an_undefined_float_width_is_not_a_value_in_any_walk() {
         assert_eq!(e.as_parse().unwrap().code, ErrorCode::InvalidHeader);
     }
 
-    // Code 4 is a width the format defines, a 128-bit float, which no reader
-    // here has a type for and the validator steps over. A reader still refuses
-    // it on the header, by kind for an integer and as unsupported for a float.
+    // Code 4 is a width the format defines, a 128-bit float, which nothing here
+    // has a type for. Every walk that decodes it refuses it on the header, by
+    // kind for an integer and as unsupported otherwise, so whether its payload
+    // is there makes no difference. The walks that measure it step over it,
+    // and so need the payload.
     let mut f128 = vec![header::number(header::CAT_FLOAT, 4)];
     f128.extend_from_slice(&[0; 16]);
-    validate_beve(&f128).unwrap();
-    for (name, walk) in integers {
-        let e = walk(&f128).unwrap_err();
-        assert_eq!((e.code, e.index), (ErrorCode::ExpectedInteger, 1), "{name}");
+    for doc in [&f128[..], &f128[..1]] {
+        let whole = doc.len() > 1;
+        for (name, walk) in integers {
+            let e = walk(doc).unwrap_err();
+            assert_eq!(
+                (e.code, e.index),
+                (ErrorCode::ExpectedInteger, 1),
+                "{name}, whole {whole}"
+            );
+        }
+        for (name, walk) in floats {
+            let e = walk(doc).unwrap_err();
+            assert_eq!(
+                (e.code, e.index),
+                (ErrorCode::UnsupportedFeature, 1),
+                "{name}, whole {whole}"
+            );
+        }
+        for (name, walk) in measuring {
+            match walk(doc) {
+                Ok(()) => assert!(whole, "{name}"),
+                Err(e) => assert_eq!(
+                    (e.code, e.index, whole),
+                    (ErrorCode::UnexpectedEnd, 1, false),
+                    "{name}"
+                ),
+            }
+        }
     }
-    for (name, walk) in floats {
-        let e = walk(&f128).unwrap_err();
-        assert_eq!(
-            (e.code, e.index),
-            (ErrorCode::UnsupportedFeature, 1),
-            "{name}"
-        );
+}
+
+#[test]
+fn a_128_bit_float_in_a_container_is_refused_where_its_first_element_begins() {
+    // A typed array or a complex value states its element type once, up front,
+    // and every walk that decodes the elements refuses one it cannot decode
+    // there, before the payload is taken. An empty one holds nothing to decode.
+    let f128 = header::number(header::CAT_FLOAT, 4);
+    let class = f128 & !0b111;
+    let cases: [(&str, Vec<u8>, Option<usize>); 6] = [
+        (
+            "typed array",
+            [
+                &[header::array_of(header::CAT_FLOAT, 4), 1 << 2][..],
+                &[0; 16],
+            ]
+            .concat(),
+            Some(2),
+        ),
+        (
+            "empty typed array",
+            vec![header::array_of(header::CAT_FLOAT, 4), 0],
+            None,
+        ),
+        (
+            "complex",
+            [&[header::COMPLEX, class][..], &[0; 32]].concat(),
+            Some(2),
+        ),
+        (
+            "complex run",
+            [&[header::COMPLEX, class | 1, 1 << 2][..], &[0; 32]].concat(),
+            Some(3),
+        ),
+        (
+            "empty complex run",
+            vec![header::COMPLEX, class | 1, 0],
+            None,
+        ),
+        (
+            "matrix",
+            [
+                &[
+                    header::MATRIX,
+                    0,
+                    header::array_of(header::CAT_UNSIGNED, 0),
+                    1 << 2,
+                    1,
+                ][..],
+                &[header::array_of(header::CAT_FLOAT, 4), 1 << 2],
+                &[0; 16],
+            ]
+            .concat(),
+            Some(7),
+        ),
+    ];
+    for (name, doc, refused_at) in cases {
+        validate_beve(&doc).unwrap();
+        let typed: structio::Result<()> = if doc[0] == header::COMPLEX {
+            if doc[1] == class {
+                from_beve::<Complex<f64>>(&doc).map(drop)
+            } else {
+                from_beve::<Vec<Complex<f64>>>(&doc).map(drop)
+            }
+        } else if doc[0] == header::MATRIX {
+            from_beve::<structio::Matrix<f64>>(&doc).map(drop)
+        } else {
+            from_beve::<Vec<f64>>(&doc).map(drop)
+        };
+        for (walk, r) in [
+            ("typed", typed),
+            ("Value", from_beve::<Value>(&doc).map(drop)),
+            (
+                "pointer Value",
+                beve::from_slice_at::<Value>(&doc, "").map(drop),
+            ),
+            ("transcode", beve_to_json(&doc).map(drop)),
+        ] {
+            match refused_at {
+                None => r.unwrap_or_else(|e| panic!("{walk}, {name}: {e:?}")),
+                Some(at) => {
+                    let e = r.unwrap_err();
+                    assert_eq!(
+                        (e.code, e.index),
+                        (ErrorCode::UnsupportedFeature, at),
+                        "{walk}, {name}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+type Walk = fn(&[u8]) -> structio::Result<()>;
+
+#[derive(Default, Debug)]
+enum Named {
+    #[default]
+    A,
+}
+structio::tagged_enum!(Named { A });
+
+#[derive(Default, Debug)]
+enum Tagged {
+    #[default]
+    A,
+}
+structio::tagged_enum!(Tagged as tag "kind" { A });
+
+/// The typed reads that want the kind of value `h` heads, whatever else about
+/// it they might go on to refuse.
+fn readers_of(h: u8) -> Vec<(&'static str, Walk)> {
+    match header::ty(h) {
+        header::TY_NULL_BOOL => vec![
+            ("bool", |b| from_beve::<bool>(b).map(drop)),
+            ("Option<bool>", |b| from_beve::<Option<bool>>(b).map(drop)),
+        ],
+        header::TY_NUMBER => vec![
+            ("u8", |b| from_beve::<u8>(b).map(drop)),
+            ("i32", |b| from_beve::<i32>(b).map(drop)),
+            ("u64", |b| from_beve::<u64>(b).map(drop)),
+            ("i128", |b| from_beve::<i128>(b).map(drop)),
+            ("f32", |b| from_beve::<f32>(b).map(drop)),
+            ("f64", |b| from_beve::<f64>(b).map(drop)),
+            ("Number", |b| from_beve::<Number>(b).map(drop)),
+        ],
+        header::TY_STRING => vec![
+            ("String", |b| from_beve::<String>(b).map(drop)),
+            ("&str", |b| from_beve::<&str>(b).map(drop)),
+            ("Cow<str>", |b| from_beve::<Cow<str>>(b).map(drop)),
+            ("Option<String>", |b| {
+                from_beve::<Option<String>>(b).map(drop)
+            }),
+            ("enum", |b| from_beve::<Named>(b).map(drop)),
+        ],
+        header::TY_OBJECT => vec![
+            ("struct", |b| from_beve::<Inner>(b).map(drop)),
+            ("enum", |b| from_beve::<Named>(b).map(drop)),
+            ("tagged enum", |b| from_beve::<Tagged>(b).map(drop)),
+            ("HashMap<u64, _>", |b| {
+                from_beve::<HashMap<u64, u8>>(b).map(drop)
+            }),
+            ("HashMap<i8, _>", |b| {
+                from_beve::<HashMap<i8, u8>>(b).map(drop)
+            }),
+            ("HashMap<String, _>", |b| {
+                from_beve::<HashMap<String, u8>>(b).map(drop)
+            }),
+        ],
+        header::TY_TYPED_ARRAY => vec![
+            ("Vec<u64>", |b| from_beve::<Vec<u64>>(b).map(drop)),
+            ("Vec<f64>", |b| from_beve::<Vec<f64>>(b).map(drop)),
+            ("Vec<bool>", |b| from_beve::<Vec<bool>>(b).map(drop)),
+            ("Vec<String>", |b| from_beve::<Vec<String>>(b).map(drop)),
+            ("Vec<u8>", |b| from_beve::<Vec<u8>>(b).map(drop)),
+            ("&[u8]", |b| from_beve::<&[u8]>(b).map(drop)),
+            ("Cow<[f64]>", |b| from_beve::<Cow<[f64]>>(b).map(drop)),
+        ],
+        header::TY_GENERIC_ARRAY => vec![
+            ("Vec<Value>", |b| from_beve::<Vec<Value>>(b).map(drop)),
+            ("Vec<u64>", |b| from_beve::<Vec<u64>>(b).map(drop)),
+        ],
+        // An extension's kind is its id. A delimiter is no kind at all; see
+        // `a_delimiter_is_not_a_value_anywhere_one_belongs`.
+        header::TY_EXTENSION => match header::ext_id(h) {
+            header::EXT_COMPLEX => vec![
+                ("Complex", |b| from_beve::<Complex<f64>>(b).map(drop)),
+                ("Vec<Complex>", |b| {
+                    from_beve::<Vec<Complex<f64>>>(b).map(drop)
+                }),
+            ],
+            header::EXT_MATRIX => vec![("Matrix", |b| {
+                from_beve::<structio::Matrix<f64>>(b).map(drop)
+            })],
+            _ => vec![],
+        },
+        _ => vec![],
+    }
+}
+
+#[test]
+fn a_header_the_validator_refuses_is_refused_the_same_way_by_a_reader_of_its_kind() {
+    // A reader that wanted some other kind reports the mismatch, which is
+    // `ExpectedString` and the like. One that wanted this kind has met a
+    // header of the right type that is no value at all, and must say so as
+    // every walk that takes whatever is there says so, and at the same offset.
+    // Swept over every header byte, with a payload of a zero count and with
+    // one of a single zero element, so that a refusal on the header is never
+    // mistaken for one about what follows it.
+    let everyone: [(&str, Walk); 3] = [
+        ("Value", |b| from_beve::<Value>(b).map(drop)),
+        ("pointer Value", |b| {
+            beve::from_slice_at::<Value>(b, "").map(drop)
+        }),
+        ("transcode", |b| beve_to_json(b).map(drop)),
+    ];
+    let mut compared = 0;
+    for h in 0..=255u8 {
+        for tail in [&[0u8][..], &[1 << 2, 0, 0, 0]] {
+            let doc = [&[h][..], tail].concat();
+            let Err(v) = validate_beve(&doc) else {
+                continue;
+            };
+            if !matches!(
+                v.code,
+                ErrorCode::InvalidHeader | ErrorCode::UnsupportedKeyType
+            ) {
+                continue;
+            }
+            for (name, walk) in readers_of(h).iter().chain(&everyone) {
+                let Err(e) = walk(&doc) else {
+                    panic!("{name} read {doc:02x?}");
+                };
+                assert_eq!((e.code, e.index), (v.code, v.index), "{name}, {doc:02x?}");
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 0);
+
+    // No string header is refused: nothing reads its sub and count bits, so
+    // every form of one is the same string to every walk. "A" is also the
+    // name of `Named`'s variant.
+    for h in (0..32).map(|bits| (bits << 3) | header::TY_STRING) {
+        let doc = [h, 1 << 2, b'A'];
+        validate_beve(&doc).unwrap();
+        for (name, walk) in readers_of(h).iter().chain(&everyone) {
+            walk(&doc).unwrap_or_else(|e| panic!("{name}, {h:#04x}: {e:?}"));
+        }
     }
 }
 

@@ -8,9 +8,9 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 ### Fixed
 
-- **A BEVE float header of undefined width read as an integer is `InvalidHeader` again, not `ExpectedInteger`.** Every other walk already said `InvalidHeader`; a regression in 0.7.0, where the float was refused before its width was checked.
+- **An undefined BEVE header is `InvalidHeader` in every walk, at the same offset.** A typed read that wanted that kind of value reported a mismatch instead: `ExpectedInteger` for a float of undefined width (a 0.7.0 regression), `ExpectedBool` for an undefined null or boolean, `UnsupportedKeyType` for a struct or enum given integer keys of undefined width, and `ExpectedBytes` for a `&[u8]` given an undefined typed array. A typed array of an undefined element type is now refused on its header, before its count.
 
-- **A BEVE null or boolean header of undefined form read as a `bool` is `InvalidHeader`, not `ExpectedBool`,** as every other walk reports it.
+- **A 128-bit float is refused on its header by `Value` and `beve_to_json` too,** as the typed readers refuse it, rather than past its payload. A truncated one is `UnsupportedFeature` rather than `UnexpectedEnd`.
 
 ## [0.7.0] - 2026-09-24
 

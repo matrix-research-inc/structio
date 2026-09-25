@@ -999,7 +999,7 @@ fn read_body<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Valu
         header::TY_NUMBER => {
             let cat = header::sub(h);
             let code = header::count(h);
-            let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
+            let width = header::decodable_width(cat, code)?;
             Value::Number(read_number(cat, code, r.take(width)?)?)
         }
         header::TY_STRING => Value::String(r.str_body()?.to_owned()),
@@ -1108,6 +1108,12 @@ fn typed_items<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Ve
             let cat = header::sub(elem);
             let code = header::count(elem);
             let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
+            // An element that cannot be decoded is refused before the payload
+            // is taken, where a typed read refuses the first one. An empty
+            // array has none to refuse.
+            if n > 0 {
+                header::decodable_width(cat, code)?;
+            }
             let payload = r.take(payload_len(elem, n)?)?;
             payload
                 .chunks_exact(width)
@@ -1122,6 +1128,10 @@ fn read_complex<'de, O: Options>(r: &mut BeveReader<'de, O>) -> PResult<Value> {
     let (class, width, pairs) = r.complex_head()?;
     let cat = header::sub(class);
     let code = header::count(class);
+    // As for a typed array: refused before the payload unless there is none.
+    if pairs != Some(0) {
+        header::decodable_width(cat, code)?;
+    }
     let payload = r.take(complex_payload(width, pairs)?)?;
     let pair = |z: &[u8]| -> PResult<Value> {
         Ok(Value::Array(vec![
@@ -1185,7 +1195,7 @@ impl<'de> beve::Read<'de> for Number {
         }
         let cat = header::sub(h);
         let code = header::count(h);
-        let width = byte_width(cat, code).ok_or(ErrorCode::InvalidHeader)?;
+        let width = header::decodable_width(cat, code)?;
         *self = read_number(cat, code, r.take(width)?)?;
         Ok(())
     }
