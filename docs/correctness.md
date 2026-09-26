@@ -48,9 +48,9 @@ Both formats share one table but reach it through different entry points, since 
 
 ## Round-tripping
 
-**JSON** is fuzzed over 20k generated documents containing escapes, multi-byte UTF-8, astral-plane characters, and subnormal and extreme floats. Every prefix and single-byte corruption of 2300 documents is checked to produce an error rather than a panic.
+**JSON** is fuzzed over 20k generated documents containing escapes, multi-byte UTF-8, astral-plane characters, and subnormal and extreme floats. Every prefix of 300 generated documents, and a single-byte corruption of each of 2000 more wherever it is still UTF-8, is read and checked not to panic. Either can still be a valid document, so the result itself is not asserted.
 
-**BEVE** is fuzzed over the same generated documents, with the two formats asserted to land on the same value. Every prefix and every single-byte corruption of those documents is checked to produce an error rather than a panic, as are 20k arbitrary byte strings read into four different destination types.
+**BEVE** is fuzzed over the same generated documents, with the two formats asserted to land on the same value. Every prefix of 60 generated documents is asserted to be an error from the typed reader, the validator, the transcoder and the framer. Five single-byte corruptions at every position of 40 more, and 20k arbitrary byte strings read into four different destination types, are checked only not to panic, since a corruption can still be a valid document; the transcoder and the framer are held to the validator over the same inputs, as described below.
 
 **Laying out text** is asserted against the writer rather than against fixtures: for every generated document, prettifying the compact form must give exactly what writing the value under that policy gives, under indented, inline-array and compact policies alike. Every prefix and single-byte corruption is checked to produce an error rather than a panic, and to be laid out unchanged in meaning whenever the reader still accepts it.
 
