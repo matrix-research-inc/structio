@@ -41,7 +41,9 @@ pub enum ErrorCode {
     // BEVE structure
     /// A header byte named a type, width, or extension this crate cannot read,
     /// or was the [delimiter](crate::beve::header::DELIMITER) where a value
-    /// belongs.
+    /// belongs. Also an aligned complex array whose inner array is not the
+    /// one its class allows: not aligned, of another element type, or holding
+    /// an odd number of components.
     InvalidHeader,
     /// A well-formed BEVE construct with nowhere to go: a 128-bit float, an
     /// extension beyond the four the specification defines, or, when

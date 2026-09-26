@@ -14,7 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use structio::beve::header;
 use structio::{
     Complex, ErrorCode, Number, SkipUnknown, Value, beve, beve_to_json, from_beve, from_beve_at,
-    from_beve_with, to_beve, validate_beve,
+    from_beve_with, to_beve, to_beve_aligned, validate_beve,
 };
 
 #[derive(Default, Debug, PartialEq)]
@@ -498,7 +498,19 @@ fn a_128_bit_float_in_a_container_is_refused_where_its_first_element_begins() {
     // decode.
     let f128 = header::number(header::CAT_FLOAT, 4);
     let class = f128 & !0b111;
-    let cases: [(&str, Vec<u8>, Option<usize>); 6] = [
+    // The aligned complex run's inner array, whose padding lands the payload
+    // on sixteen: it begins six bytes in and ten bytes of padding follow.
+    let aligned = |components: u8, pad: u8| {
+        vec![
+            header::COMPLEX,
+            class | header::COMPLEX_ALIGNED,
+            header::ALIGNED_ARRAY,
+            header::array_of(header::CAT_FLOAT, 4),
+            components << 2,
+            pad,
+        ]
+    };
+    let cases: [(&str, Vec<u8>, Option<usize>); 8] = [
         (
             "typed array",
             [
@@ -528,6 +540,12 @@ fn a_128_bit_float_in_a_container_is_refused_where_its_first_element_begins() {
             vec![header::COMPLEX, class | 1, 0],
             None,
         ),
+        (
+            "aligned complex run",
+            [&aligned(2, 10)[..], &[0; 10], &[0; 32]].concat(),
+            Some(16),
+        ),
+        ("empty aligned complex run", aligned(0, 0), None),
         (
             "matrix",
             [
@@ -743,21 +761,51 @@ fn drain(mut docs: beve::Documents<&[u8]>) -> structio::Result<usize> {
 
 #[test]
 fn every_walk_agrees_with_the_validator_on_every_header() {
-    // Swept over every header byte, with a payload of a zero count and with
-    // one of a single zero element, so that a refusal on the header is never
-    // mistaken for one about what follows it. Every walk that takes whatever
-    // is there accepts what the validator accepts and refuses what it refuses,
-    // with its code at its offset. A reader that wanted some other kind reports
-    // the mismatch, `ExpectedString` and the like; one that wanted this kind
-    // has met a header of the right type that is no value at all, and says so
-    // as the validator does.
-    //
-    // Three differences are by design. A walk that decodes refuses what it
-    // cannot decode as soon as it knows: a 128-bit float or the deprecated
-    // type tag on the header, and an undefined matrix layout on its byte. The
-    // validator steps over all three and may find something wrong further on.
-    // A pointer read never looks past the value it names. And a framer reports
-    // every refusal against the value's start rather than past its header.
+    // Swept over every header byte, with a payload of a zero count, with one
+    // of a single zero element, and with the body of an aligned complex array,
+    // so that a refusal on the header is never mistaken for one about what
+    // follows it. See `agrees_with_the_validator` for what is required of
+    // each.
+    let aligned_complex = [
+        &[0x62, header::ALIGNED_ARRAY, 0x64, 2 << 2, 2, 0xab, 0xcd][..],
+        &[0; 16],
+    ]
+    .concat();
+    let mut refused = 0;
+    for h in 0..=255u8 {
+        for tail in [&[0u8][..], &[1 << 2, 0, 0, 0], &aligned_complex] {
+            let doc = [&[h][..], tail].concat();
+            let verdict = agrees_with_the_validator(h, &doc, 1);
+            if h == header::COMPLEX && tail == aligned_complex {
+                assert_eq!(verdict, Ok(()), "the aligned complex array");
+            }
+            if verdict == Err(ErrorCode::InvalidHeader) {
+                refused += 1;
+            }
+        }
+    }
+    assert!(refused > 0);
+}
+
+/// Require every walk that takes whatever value `doc` holds to agree with the
+/// validator about it, `h` being its header, and report the validator's
+/// verdict.
+///
+/// Every such walk accepts what the validator accepts and refuses what it
+/// refuses, with its code at its offset. A reader that wanted some other kind
+/// reports the mismatch, `ExpectedString` and the like; one that wanted this
+/// kind has met a value of the right type that is no value at all, and says
+/// so as the validator does, provided the refusal is no further in than
+/// `preamble`: what lies past a value's preamble is a member or an element,
+/// which some reader of the kind may refuse for a reason of its own first.
+///
+/// Three differences are by design. A walk that decodes refuses what it cannot
+/// decode as soon as it knows: a 128-bit float or the deprecated type tag on
+/// the header, and an undefined matrix layout on its byte. The validator steps
+/// over all three and may find something wrong further on. A pointer read never
+/// looks past the value it names. And a framer reports every refusal against
+/// the value's start rather than past its header.
+fn agrees_with_the_validator(h: u8, doc: &[u8], preamble: usize) -> Result<(), ErrorCode> {
     let everyone: [(&str, Walk); 4] = [
         ("Value", |b| from_beve::<Value>(b).map(drop)),
         ("pointer Value", |b| {
@@ -766,48 +814,129 @@ fn every_walk_agrees_with_the_validator_on_every_header() {
         ("transcode", |b| beve_to_json(b).map(drop)),
         ("skip", skipped),
     ];
+    let verdict = validate_beve(doc);
+    let at = |r: structio::Result<()>| r.map_err(|e| (e.code, e.index));
+    for (name, walk) in &everyone {
+        match (at(verdict), at(walk(doc))) {
+            (v, e) if v == e => {}
+            (v, Err((ErrorCode::UnsupportedFeature | ErrorCode::InvalidMatrixLayout, e)))
+                if *name != "skip" && v.err().is_none_or(|(_, v)| v >= e) => {}
+            (Err((ErrorCode::TrailingContent, _)), Ok(())) if *name == "pointer Value" => {}
+            (v, e) => panic!("{name}, {doc:02x?}: validate {v:?}, walk {e:?}"),
+        }
+    }
+    let Err(v) = verdict else {
+        for (name, framed) in framed(doc) {
+            assert_eq!(framed.map_err(|e| e.code), Ok(1), "{name}, {doc:02x?}");
+        }
+        return Ok(());
+    };
+    if v.code != ErrorCode::InvalidHeader || v.index > preamble {
+        return Err(v.code);
+    }
+    for (name, walk) in readers_of(h) {
+        let e = walk(doc).expect_err(name);
+        assert_eq!((e.code, e.index), (v.code, v.index), "{name}, {doc:02x?}");
+    }
+    for (name, framed) in framed(doc) {
+        // In front of a document, a delimiter separates it from the one
+        // before, which is what `values` takes it for.
+        if h == header::DELIMITER && name == "Documents::values" {
+            continue;
+        }
+        let framed = framed.map_err(|e| (e.code, e.index));
+        assert_eq!(framed, Err((v.code, 0)), "{name}, {doc:02x?}");
+    }
+    Err(v.code)
+}
+
+#[test]
+fn every_walk_agrees_with_the_validator_on_every_complex_header() {
+    // A complex value's class byte decides its extent as a header decides any
+    // other's: whether a count or an aligned array follows it, and how wide a
+    // component is. So it is swept the same way, all 256 of it behind the
+    // extension header, each followed by what each defined form wants after
+    // it and by every way the aligned form's inner array can fail to be the
+    // one the specification allows: not aligned, not the class's own element
+    // type, or holding half a pair. The padding holds something, which a
+    // decoder is told to ignore.
     let mut refused = 0;
-    for h in 0..=255u8 {
-        for tail in [&[0u8][..], &[1 << 2, 0, 0, 0]] {
-            let doc = [&[h][..], tail].concat();
-            let verdict = validate_beve(&doc);
-            let at = |r: structio::Result<()>| r.map_err(|e| (e.code, e.index));
-            for (name, walk) in &everyone {
-                match (at(verdict), at(walk(&doc))) {
-                    (v, e) if v == e => {}
-                    (
-                        v,
-                        Err((ErrorCode::UnsupportedFeature | ErrorCode::InvalidMatrixLayout, e)),
-                    ) if *name != "skip" && v.err().is_none_or(|(_, v)| v >= e) => {}
-                    (Err((ErrorCode::TrailingContent, _)), Ok(())) if *name == "pointer Value" => {}
-                    (v, e) => panic!("{name}, {doc:02x?}: validate {v:?}, walk {e:?}"),
-                }
+    let mut aligned = 0;
+    for class in 0..=255u8 {
+        let width = header::byte_width(header::sub(class), header::count(class));
+        let pair = vec![0u8; 2 * width.unwrap_or(1)];
+        let inner = header::array_of(header::sub(class), header::count(class));
+        let preamble = |marker: u8, inner: u8, components: u8| {
+            vec![marker, inner, components << 2, 3, 0xde, 0xad, 0xbe]
+        };
+        let tails = [
+            ("zero", vec![0]),
+            ("one pair", pair.clone()),
+            ("a count and one pair", [&[1 << 2][..], &pair].concat()),
+            (
+                "aligned, one pair",
+                [&preamble(header::ALIGNED_ARRAY, inner, 2)[..], &pair].concat(),
+            ),
+            ("aligned, empty", preamble(header::ALIGNED_ARRAY, inner, 0)),
+            (
+                "aligned, half a pair",
+                [
+                    &preamble(header::ALIGNED_ARRAY, inner, 1)[..],
+                    &pair[..pair.len() / 2],
+                ]
+                .concat(),
+            ),
+            (
+                "aligned, another width",
+                [
+                    &preamble(header::ALIGNED_ARRAY, inner ^ (1 << 5), 2)[..],
+                    &pair,
+                ]
+                .concat(),
+            ),
+            (
+                "aligned, another category",
+                [
+                    &preamble(header::ALIGNED_ARRAY, inner ^ (1 << 3), 2)[..],
+                    &pair,
+                ]
+                .concat(),
+            ),
+            ("not aligned", [&[inner, 2 << 2][..], &pair].concat()),
+        ];
+        for (name, tail) in tails {
+            let doc = [&[header::COMPLEX, class][..], &tail].concat();
+            // Up to the payload, whose bytes are all zero, the whole document
+            // is the preamble every reader of a complex value walks.
+            let verdict = agrees_with_the_validator(header::COMPLEX, &doc, doc.len());
+            let form = class & 0b111;
+            let defined = width.is_some() && form <= header::COMPLEX_ALIGNED;
+            let well_formed = defined
+                && match form {
+                    header::COMPLEX_ONE => name == "one pair",
+                    header::COMPLEX_MANY => matches!(name, "zero" | "a count and one pair"),
+                    _ => matches!(name, "aligned, one pair" | "aligned, empty"),
+                };
+            assert_eq!(verdict.is_ok(), well_formed, "{class:#04x}, {name}");
+            if !defined {
+                // The class byte alone is refused, before anything after it.
+                let e = validate_beve(&doc).unwrap_err();
+                assert_eq!(
+                    (e.code, e.index),
+                    (ErrorCode::InvalidHeader, 2),
+                    "{class:#04x}, {name}"
+                );
             }
-            let Err(v) = verdict else {
-                for (name, framed) in framed(&doc) {
-                    assert_eq!(framed.map_err(|e| e.code), Ok(1), "{name}, {doc:02x?}");
-                }
-                continue;
-            };
-            if v.code != ErrorCode::InvalidHeader {
-                continue;
+            if verdict == Err(ErrorCode::InvalidHeader) {
+                refused += 1;
             }
-            refused += 1;
-            for (name, walk) in readers_of(h) {
-                let e = walk(&doc).expect_err(name);
-                assert_eq!((e.code, e.index), (v.code, v.index), "{name}, {doc:02x?}");
-            }
-            for (name, framed) in framed(&doc) {
-                // In front of a document, a delimiter separates it from the
-                // one before, which is what `values` takes it for.
-                if h == header::DELIMITER && name == "Documents::values" {
-                    continue;
-                }
-                let framed = framed.map_err(|e| (e.code, e.index));
-                assert_eq!(framed, Err((v.code, 0)), "{name}, {doc:02x?}");
+            if well_formed && form == header::COMPLEX_ALIGNED {
+                aligned += 1;
             }
         }
     }
+    // Two aligned bodies at each of the fifteen defined component types.
+    assert_eq!(aligned, 30);
     assert!(refused > 0);
 }
 
@@ -1143,7 +1272,10 @@ fn every_walk_takes_a_typed_array_leaf_to_the_same_depth() {
     // levels it passes through itself. The element path is here for all three
     // of its forms, numbers, packed booleans and strings. A complex array is
     // the control: it is the one sequence no walk charges, so the bulk copy
-    // that takes it must not charge it either.
+    // that takes it must not charge it either, and neither form of it is
+    // charged, the aligned one's inner array being part of its preamble. The
+    // aligned form is also read stored narrower than the target, which is the
+    // element path.
     let limit = beve::reader::MAX_DEPTH as usize;
     // The chain, the leaf's object and the array; a complex array costs none.
     let typed = Some(limit - 2);
@@ -1157,6 +1289,10 @@ fn every_walk_takes_a_typed_array_leaf_to_the_same_depth() {
     let bools = to_beve(&vec![true]);
     let strings = to_beve(&vec!["a".to_string()]);
     let pairs = to_beve(&vec![Complex::new(1.5f64, -1.5)]);
+    let aligned_pairs = to_beve_aligned(&vec![Complex::new(1.5f64, -1.5)]);
+    let aligned_narrow = to_beve_aligned(&vec![Complex::new(1.5f32, -1.5)]);
+    assert_eq!(aligned_pairs[1] & 0b111, header::COMPLEX_ALIGNED);
+    assert_eq!(aligned_narrow[1] & 0b111, header::COMPLEX_ALIGNED);
     let cow = Reads {
         whole: |d| from_beve::<CowF64>(d).is_ok(),
         at: |d, p| from_beve_at::<Cow<[f64]>>(d, p).is_ok(),
@@ -1182,6 +1318,10 @@ fn every_walk_takes_a_typed_array_leaf_to_the_same_depth() {
     );
     let deepest_complex = deepest("Vec<Complex<f64>>", &pairs, reads::<VecComplex>());
     assert_eq!(deepest_complex, complex);
+    let aligned = deepest("aligned", &aligned_pairs, reads::<VecComplex>());
+    assert_eq!(aligned, complex);
+    let narrow = deepest("aligned f32", &aligned_narrow, reads::<VecComplex>());
+    assert_eq!(narrow, complex);
 }
 
 /// Two ways to read a chain's leaf: the whole chain, and the leaf alone
