@@ -46,6 +46,7 @@ use crate::beve::header::{self, byte_width, decode_size};
 use crate::beve::impls::{Block, NumericBytes};
 use crate::beve::traits::{Read, ReadArray, ReadAs, ReadEnum, ReadInternallyTagged, ReadObject};
 use crate::error::{ErrorCode, PResult};
+use crate::num::atoi::parse_int_text;
 use crate::options::{Options, Standard};
 use crate::traits::{Fields, resolve_key, resolve_variant};
 
@@ -2060,11 +2061,12 @@ impl<'de, O: Options> Reader<'de, O> {
         // them, `+5` and `007` included, where an array index is held to the
         // RFC's canonical spelling. An array index has a spec to conform to
         // and an integer key does not, and neither spelling can mean anything
-        // but the number.
+        // but the number. Nor can `-0`, which names the key `0` of an
+        // unsigned-keyed object as it does of a signed one.
         let wanted = match header::sub(h) {
             header::CAT_FLOAT => Key::Str(token),
-            header::CAT_SIGNED => Key::Signed(token.parse().map_err(|_| ErrorCode::NoSuchValue)?),
-            _ => Key::Unsigned(token.parse().map_err(|_| ErrorCode::NoSuchValue)?),
+            header::CAT_SIGNED => Key::Signed(parse_int_text(token).ok_or(ErrorCode::NoSuchValue)?),
+            _ => Key::Unsigned(parse_int_text(token).ok_or(ErrorCode::NoSuchValue)?),
         };
 
         let members = self.count()?;

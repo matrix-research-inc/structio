@@ -22,6 +22,7 @@ use crate::json::traits::{
 };
 use crate::json::writer::Writer;
 use crate::map::OrderedMap;
+use crate::num::atoi::parse_int_text;
 use crate::options::Options;
 use crate::traits::Same;
 
@@ -89,7 +90,7 @@ macro_rules! impl_int_key {
         impl FromJsonKey for $t {
             #[inline]
             fn from_key(key: &str) -> PResult<Self> {
-                key.parse::<$t>().map_err(|_| ErrorCode::InvalidNumber)
+                parse_int_text(key).ok_or(ErrorCode::InvalidNumber)
             }
         }
         impl ToJsonKey for $t {

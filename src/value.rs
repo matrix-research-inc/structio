@@ -49,7 +49,7 @@
 //! [`as_i64`](Value::as_i64) and [`as_u64`](Value::as_u64) are `None` for it,
 //! [`is_i64`](Value::is_i64) is false, [`from_value`] into an integer type
 //! refuses it, and it is written to BEVE as an `f64`. So both read differently
-//! through a `Value` than straight into an integer: a signed integer reads
+//! through a `Value` than straight into an integer: every integer type reads
 //! `-0` as `0`, and an `i128` or a `u128` holds a token past 64 bits exactly.
 //! A `Value` holding `-0.0` cannot tell whether the document spelled it `-0`
 //! or `-0.0`, so it has no integer to hand back. A document that may carry
@@ -882,7 +882,7 @@ pub fn to_value<T: json::Write + ?Sized>(value: &T) -> Result<Value> {
 /// file. [`from_value_with`] takes another policy.
 ///
 /// The text is the value's own, so a number reads as the kind the value
-/// holds. A signed integer type therefore refuses a document's `-0`, which the
+/// holds. An integer type therefore refuses a document's `-0`, which the
 /// value holds as `-0.0`, though it reads that document itself as `0`. See
 /// [Numbers](self#numbers).
 pub fn from_value<T>(doc: &Value) -> Result<T>

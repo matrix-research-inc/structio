@@ -4,8 +4,15 @@
 //! arrive unrounded, and the token must be the one every other reader would
 //! have accepted, so that borrowing a number's text is not a way around the
 //! grammar.
+//!
+//! The integer conversions the crate does make are held, at the end, to
+//! answering a signed token the same way at every width.
 
-use structio::{ErrorCode, Options, from_str, json, to_string};
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::hash::Hash;
+
+use structio::{ErrorCode, Options, from_beve_at, from_str, json, to_beve, to_string};
 
 // ---------------------------------------------------------------------------
 // A scalar the crate does not describe
@@ -226,4 +233,128 @@ fn a_malformed_number_reaches_the_caller_as_an_error() {
 fn writing_a_non_number_is_a_debug_assertion() {
     let mut w = json::Writer::<structio::Standard>::new();
     w.write_number_str("1.2.3");
+}
+
+// ---------------------------------------------------------------------------
+// A sign, at every width
+// ---------------------------------------------------------------------------
+
+/// What an integer type must be for the checks below: readable as a value and
+/// as a key, from JSON and through a BEVE pointer.
+trait Integer:
+    for<'de> json::Read<'de>
+    + json::FromJsonKey
+    + structio::beve::ToBeveKey
+    + Default
+    + Copy
+    + Eq
+    + Hash
+    + Debug
+{
+}
+impl<T> Integer for T where
+    T: for<'de> json::Read<'de>
+        + json::FromJsonKey
+        + structio::beve::ToBeveKey
+        + Default
+        + Copy
+        + Eq
+        + Hash
+        + Debug
+{
+}
+
+/// Call `$check::<T>(name)` for every integer type.
+macro_rules! every_width {
+    ($check:ident: $($t:ty),*) => {$( $check::<$t>(stringify!($t)); )*};
+    ($check:ident) => {
+        every_width!($check: u8, u16, u32, u64, usize, u128, i8, i16, i32, i64, isize, i128)
+    };
+}
+
+/// Call `$check::<T>(name)` for every unsigned integer type.
+macro_rules! every_unsigned_width {
+    ($check:ident) => {
+        every_width!($check: u8, u16, u32, u64, usize, u128)
+    };
+}
+
+/// `(code, offset)` of the error reading `text` as a `T`.
+fn refusal<T: for<'de> json::Read<'de> + Default + Debug>(text: &str) -> (ErrorCode, usize) {
+    let e = from_str::<T>(text).unwrap_err();
+    (e.code, e.index)
+}
+
+/// `-0` is zero, which every integer type holds, signed or not.
+#[test]
+fn negative_zero_reads_as_zero_at_every_width() {
+    fn check<T: Integer>(name: &str) {
+        let zero = T::default();
+        assert_eq!(from_str::<T>("-0").unwrap(), zero, "{name}");
+        assert_eq!(from_str::<Option<T>>("-0").unwrap(), Some(zero), "{name}");
+        // Long enough that the word-at-a-time path is taken as well as the
+        // byte-at-a-time one at the end of the document.
+        let many = from_str::<Vec<T>>("[-0, -0, 0, -0, -0]").unwrap();
+        assert_eq!(many, [zero; 5], "{name}");
+
+        // A key, from JSON and as a BEVE pointer token, as the signed types
+        // have always read it.
+        let map = from_str::<HashMap<T, u8>>(r#"{"-0":1}"#).unwrap();
+        assert_eq!(map, HashMap::from([(zero, 1)]), "{name}");
+        let bytes = to_beve(&HashMap::from([(zero, 1u8)]));
+        assert_eq!(from_beve_at::<u8>(&bytes, "/-0").unwrap(), 1, "{name}");
+
+        // With a fraction or an exponent it is not an integer, and is refused
+        // as `0e0` is, at the byte after the zero.
+        for text in ["-0e0", "-0.0", "-0E+1"] {
+            assert_eq!(
+                refusal::<T>(text),
+                (ErrorCode::InvalidNumber, 2),
+                "{name} {text}"
+            );
+        }
+    }
+    every_width!(check);
+}
+
+/// A minus sign in front of any other number is a number the type cannot
+/// hold, and says so at the token, however wide the type and the magnitude.
+#[test]
+fn a_negative_number_is_out_of_range_at_every_unsigned_width() {
+    fn check<T: Integer>(name: &str) {
+        for text in [
+            "-1",
+            "-1.5",
+            "-18446744073709551616",
+            "-340282366920938463463374607431768211456",
+        ] {
+            assert_eq!(
+                refusal::<T>(text),
+                (ErrorCode::NumberOutOfRange, 0),
+                "{name} {text}"
+            );
+        }
+        assert_eq!(
+            refusal::<Option<T>>("-1"),
+            (ErrorCode::NumberOutOfRange, 0),
+            "{name}"
+        );
+        // A key is refused as a key the type cannot parse, as `300` is for a
+        // `u8`.
+        let e = from_str::<HashMap<T, u8>>(r#"{"-1":1}"#).unwrap_err();
+        assert_eq!(e.code, ErrorCode::InvalidNumber, "{name}");
+    }
+    every_unsigned_width!(check);
+}
+
+/// A sign in front of something that is not a number is refused for what
+/// follows the sign, the same way at every width, signed or not.
+#[test]
+fn a_malformed_signed_token_is_refused_alike_at_every_width() {
+    fn check<T: Integer>(name: &str) {
+        for text in ["-", "-x", "--1", "-01", "-00", "- 1"] {
+            assert_eq!(refusal::<T>(text), refusal::<i64>(text), "{name} {text}");
+        }
+    }
+    every_width!(check);
 }

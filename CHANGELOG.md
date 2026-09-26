@@ -12,6 +12,8 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 ### Fixed
 
+- **An unsigned integer reads `-0` as `0`,** as a signed one does, at every width and as a JSON key or BEVE pointer token. It was `NumberOutOfRange`, or `ExpectedNumber` for a `u128`. A negative number is `NumberOutOfRange` at every width, a `u128` included, and a sign in front of a malformed number, such as `-` or `--1`, is refused the same way at every width, signed or not.
+
 - **The `Value` docs say what reading `-0` as `-0.0` costs.** Behaviour is 0.7.0's, unchanged: `as_i64`, `as_u64` and `is_i64` refuse it, `from_value` into an integer type refuses it while `from_str::<i64>("-0")` is `0`, and it writes to BEVE as an `f64` rather than the integer `0`. An integer past 64 bits, stored as a float, has always behaved the same way.
 
 - **An undefined BEVE header is `InvalidHeader` in every walk, at the same offset.** A typed read that wanted that kind of value reported a mismatch instead: `ExpectedInteger` for a float of undefined width (a 0.7.0 regression), `ExpectedBool` for an undefined null or boolean, `UnsupportedKeyType` for a struct or enum given integer keys of undefined width, and `ExpectedBytes` for a `&[u8]` given an undefined typed array. A typed array of an undefined element type is now refused on its header, before its count.

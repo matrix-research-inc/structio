@@ -87,7 +87,10 @@ pub(crate) fn parse_leading_digits(word: u64, k: usize) -> u64 {
 /// Parse an unsigned decimal at `*i`, stopping at the first non-digit.
 ///
 /// Returns the value and leaves `*i` on the terminator. Rejects a leading zero
-/// followed by another digit, which JSON does not allow.
+/// followed by another digit, which JSON does not allow. A sign is not a digit
+/// and is refused as one; a caller that takes a sign looks for it itself. On
+/// an error `*i` is where it was, so such a caller can look at the byte that
+/// was refused.
 ///
 /// This is deliberately small enough to inline into a caller's loop, because
 /// the caller is usually reading an array and a call per element costs more
@@ -112,7 +115,7 @@ pub(crate) fn parse_u64(buf: &[u8], i: &mut usize) -> PResult<u64> {
             // The lowest lit lane is the first byte that is not a digit.
             let k = first_match(stop);
             if k == 0 {
-                return Err(not_a_number(first));
+                return Err(ErrorCode::ExpectedNumber);
             }
             // JSON forbids leading zeros: `0` alone is fine, `01` is not.
             if first == b'0' && k > 1 {
@@ -138,23 +141,6 @@ pub(crate) fn parse_u64(buf: &[u8], i: &mut usize) -> PResult<u64> {
     let (value, end) = parse_u64_wide(buf, idx)?;
     *i = end;
     Ok(value)
-}
-
-/// The first byte where a number was expected is not a digit.
-///
-/// Out of line so that the error text does not count against the size of
-/// [`parse_u64`], which is chosen to be inlinable.
-#[cold]
-#[inline(never)]
-fn not_a_number(first: u8) -> ErrorCode {
-    // A well formed negative number is still a number; it just cannot fit an
-    // unsigned target, and saying so is more useful than "expected a number"
-    // when the input reads `-1`.
-    if first == b'-' {
-        ErrorCode::NumberOutOfRange
-    } else {
-        ErrorCode::ExpectedNumber
-    }
 }
 
 /// Accumulate the run of ASCII digits at `idx` onto `acc`, wrapping, and
@@ -220,9 +206,8 @@ fn parse_u64_wide(buf: &[u8], start: usize) -> PResult<(u64, usize)> {
     if start >= buf.len() {
         return Err(ErrorCode::UnexpectedEnd);
     }
-    let first = buf[start];
-    if !is_digit(first) {
-        return Err(not_a_number(first));
+    if !is_digit(buf[start]) {
+        return Err(ErrorCode::ExpectedNumber);
     }
     let (value, end) = fold_digits(buf, start, 0);
     finish_wide(buf, start, end, value)
@@ -303,4 +288,117 @@ pub(crate) fn parse_i64(buf: &[u8], i: &mut usize) -> PResult<i64> {
     // which is the right answer.
     let flip = (negative as i64).wrapping_neg();
     Ok(((magnitude as i64) ^ flip).wrapping_sub(flip))
+}
+
+/// Parse an unsigned integer into `u64`, then let the caller narrow.
+///
+/// [`parse_u64`], and a minus sign in front of a zero. `-0` is zero, which
+/// every unsigned type holds and [`parse_i64`] reads, so it is not out of
+/// range; a minus sign in front of any other number is.
+///
+/// The sign is looked for only once `parse_u64` has refused the byte it sits
+/// on, so a document of unsigned integers pays nothing for it on the way
+/// through. The cursor crosses into the out-of-line half by value, for the
+/// reason [`parse_u64_wide`] gives: handed over by reference, it would live on
+/// the stack for the whole of an array loop around this.
+#[inline(always)]
+pub(crate) fn parse_unsigned_u64(buf: &[u8], i: &mut usize) -> PResult<u64> {
+    match parse_u64(buf, i) {
+        Err(_) if buf.get(*i) == Some(&b'-') => {
+            let (zero, at) = negative_unsigned(buf, *i);
+            *i = at;
+            zero.map(|()| 0)
+        }
+        parsed => parsed,
+    }
+}
+
+/// [`parse_unsigned_u64`] at 128 bits.
+pub(crate) fn parse_unsigned_u128(buf: &[u8], i: &mut usize) -> PResult<u128> {
+    match parse_u128(buf, i) {
+        Err(_) if buf.get(*i) == Some(&b'-') => {
+            let (zero, at) = negative_unsigned(buf, *i);
+            *i = at;
+            zero.map(|()| 0)
+        }
+        parsed => parsed,
+    }
+}
+
+/// The rest of a token whose minus sign is at `sign`, read for an unsigned
+/// type: accepted if it is a zero, and otherwise refused. Returns the outcome
+/// with where the cursor belongs, past the zero or on the refusal.
+///
+/// A nonzero magnitude is [`NumberOutOfRange`](ErrorCode::NumberOutOfRange) at
+/// any width, reported at the sign, where a positive number past the type's
+/// range is reported too. Only whether the magnitude is zero matters, so a
+/// `u128` target is served by the same 64-bit parse: a magnitude past a `u64`
+/// is out of range there for its sign as much as for its size. A magnitude
+/// that is not a number at all is refused as [`parse_i64`] refuses it, past
+/// the sign.
+#[cold]
+#[inline(never)]
+fn negative_unsigned(buf: &[u8], sign: usize) -> (PResult<()>, usize) {
+    let mut end = sign + 1;
+    match parse_u64(buf, &mut end) {
+        Ok(0) => (Ok(()), end),
+        Ok(_) | Err(ErrorCode::NumberOutOfRange) => (Err(ErrorCode::NumberOutOfRange), sign),
+        Err(e) => (Err(e), sign + 1),
+    }
+}
+
+/// Parse an unsigned decimal at `*i` into a `u128`, stopping at the first
+/// non-digit.
+///
+/// [`parse_u64`]'s contract at twice the width: no sign, no leading zero, and
+/// `*i` on the terminator after a number and where it was after an error.
+/// Wide integers are rare, so this is a straightforward digit loop rather than
+/// the SWAR path the 64-bit case uses.
+pub(crate) fn parse_u128(buf: &[u8], i: &mut usize) -> PResult<u128> {
+    let start = *i;
+    let Some(&first) = buf.get(start) else {
+        return Err(ErrorCode::UnexpectedEnd);
+    };
+    if !is_digit(first) {
+        return Err(ErrorCode::ExpectedNumber);
+    }
+    if first == b'0' {
+        // JSON forbids leading zeros: `0` alone is fine, `01` is not.
+        if buf.get(start + 1).is_some_and(|&c| is_digit(c)) {
+            return Err(ErrorCode::InvalidNumber);
+        }
+        *i = start + 1;
+        return Ok(0);
+    }
+    let mut idx = start;
+    let mut v: u128 = 0;
+    while let Some(&c) = buf.get(idx)
+        && is_digit(c)
+    {
+        v = v
+            .checked_mul(10)
+            .and_then(|x| x.checked_add((c - b'0') as u128))
+            .ok_or(ErrorCode::NumberOutOfRange)?;
+        idx += 1;
+    }
+    *i = idx;
+    Ok(v)
+}
+
+/// Read the text of an integer object key, or a pointer token naming one.
+///
+/// `str::parse`, which is what these have always been read with, `+5` and
+/// `007` included, except that `-0` is taken as zero by an unsigned type too.
+/// `str::parse` refuses any minus sign on an unsigned type, though zero is in
+/// range for every one of them and the signed types read `-0` as zero.
+pub(crate) fn parse_int_text<T: core::str::FromStr>(s: &str) -> Option<T> {
+    match s.parse() {
+        Ok(v) => Some(v),
+        Err(_) => match s.strip_prefix('-') {
+            Some(zeros) if !zeros.is_empty() && zeros.bytes().all(|b| b == b'0') => {
+                zeros.parse().ok()
+            }
+            _ => None,
+        },
+    }
 }

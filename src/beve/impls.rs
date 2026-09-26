@@ -25,6 +25,7 @@ use crate::beve::traits::{
 use crate::beve::writer::Writer;
 use crate::error::{ErrorCode, PResult};
 use crate::map::OrderedMap;
+use crate::num::atoi::parse_int_text;
 use crate::options::Options;
 use crate::traits::Same;
 
@@ -112,7 +113,7 @@ macro_rules! impl_int_key {
                     Key::Signed(v) => {
                         <$t>::try_from(v).map_err(|_| ErrorCode::NumberOutOfRange)
                     }
-                    Key::Str(s) => s.parse::<$t>().map_err(|_| ErrorCode::InvalidNumber),
+                    Key::Str(s) => parse_int_text(s).ok_or(ErrorCode::InvalidNumber),
                 }
             }
         }
