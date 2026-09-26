@@ -63,13 +63,13 @@ The pointer syntax is the standard one. `/` separates levels, `~1` spells a `/` 
 
 Two failures are kept apart. A well-formed pointer that names nothing the document holds is `NoSuchValue`; a pointer that is not well formed at all, such as one that does not begin with `/` or an array index spelled `01`, is `InvalidPointer`. Only the first of those is the document's fault.
 
-The bytes after the value named are never looked at, so unlike `from_beve` this does not require the document to end where the value does. If that matters, validate first.
+The bytes after the value named are never looked at, so unlike `from_beve` this does not require the document to end where the value does. If that matters, validate first. The one exception is an element of a packed-boolean array, which needs the whole array present: its padding is in the last byte, and is checked.
 
 The depth limit is the document's, not the value's. Every container the pointer passes through is counted as reading the whole document would count it, and so is everything stepped over on the way, so a value too deep for `from_beve` to reach is too deep to reach through a pointer. A hand-driven `Reader::seek` measures from where the reader stands instead, as everything on a hand-driven reader does.
 
 ## Checking a document without decoding it
 
-`validate_beve` walks a document and confirms every value's header, unspecified bits included, every length, every nested value, and every string's UTF-8, without turning any of it into a Rust type and without allocating:
+`validate_beve` walks a document and confirms every value's header, unspecified bits included, every length, every nested value, every string's UTF-8, and every packed-boolean array's padding, without turning any of it into a Rust type and without allocating:
 
 ```rust
 structio::validate_beve(&bytes)?;
@@ -207,6 +207,8 @@ The complex extension's header is the case that matters. Its number-or-array fla
 A matrix's layout byte is the other one, and it is refused later rather than earlier. Its two defined values say which index varies fastest, and reading it wrongly transposes the data without changing any extent, so `Matrix` and the transcode both refuse a third value with `InvalidMatrixLayout` while `validate_beve` has no reason to look at it.
 
 A header's unspecified bits are refused too, though no extent depends on them. The specification gives a string and a generic array nothing in the five bits above the type, and a string-keyed object nothing in the top three, and requires every unspecified bit to be zero. Read as zero, a set bit would give one value several encodings, which a document that is compared, hashed or signed byte for byte cannot have. Every walk refuses such a header as `InvalidHeader`, as it refuses an undefined width.
+
+A packed-boolean array's padding is the same rule one level down. Its last byte holds the elements left over from a multiple of eight in its low bits, and the specification requires the high bits past them to be zero. Every walk refuses a set one as `InvalidPadding`, just past that byte: reading, validating, transcoding, skipping, and a pointer into the array at any index. A stream's framer reports it at the value's first byte, as it reports everything, except for a top-level array whose elements `Documents::array` or `Feed::array` hands out as they arrive: every element before the last goes out, and the refusal is at the last byte. This crate never writes non-zero padding.
 
 ## Enums are tagged by name
 

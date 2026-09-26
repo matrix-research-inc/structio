@@ -169,6 +169,7 @@ fn corrupting_any_single_byte_is_caught_or_read_back_but_never_both_ways_round()
                         ErrorCode::UnexpectedEnd
                             | ErrorCode::TrailingContent
                             | ErrorCode::InvalidHeader
+                            | ErrorCode::InvalidPadding
                             | ErrorCode::ExceededMaxDepth
                             | ErrorCode::InvalidUtf8
                     ),
@@ -743,9 +744,10 @@ fn drain(mut docs: beve::Documents<&[u8]>) -> structio::Result<usize> {
 
 #[test]
 fn every_walk_agrees_with_the_validator_on_every_header() {
-    // Swept over every header byte, with a payload of a zero count and with
-    // one of a single zero element, so that a refusal on the header is never
-    // mistaken for one about what follows it. Every walk that takes whatever
+    // Swept over every header byte, with a payload of a zero count, with one
+    // of a single zero element, so that a refusal on the header is never
+    // mistaken for one about what follows it, and with one of a single element
+    // whose byte sets bit 1, which is padding to a packed-boolean array. Every walk that takes whatever
     // is there accepts what the validator accepts and refuses what it refuses,
     // with its code at its offset. A reader that wanted some other kind reports
     // the mismatch, `ExpectedString` and the like; one that wanted this kind
@@ -768,7 +770,7 @@ fn every_walk_agrees_with_the_validator_on_every_header() {
     ];
     let mut refused = 0;
     for h in 0..=255u8 {
-        for tail in [&[0u8][..], &[1 << 2, 0, 0, 0]] {
+        for tail in [&[0u8][..], &[1 << 2, 0, 0, 0], &[1 << 2, 1 << 1]] {
             let doc = [&[h][..], tail].concat();
             let verdict = validate_beve(&doc);
             let at = |r: structio::Result<()>| r.map_err(|e| (e.code, e.index));
@@ -909,6 +911,169 @@ fn a_header_with_an_unspecified_bit_set_is_not_a_value_in_any_walk() {
         let e = validate_beve(&[h, 0]).unwrap_err();
         assert_eq!((e.code, e.index), (ErrorCode::InvalidHeader, 1), "{h:#04x}");
     }
+}
+
+/// `[bool; N]` for each count the padding test sweeps, `N` being the index.
+/// A table rather than a const generic, `Default` for an array being
+/// implemented one length at a time.
+macro_rules! fixed_bools {
+    ($($n:literal)*) => {
+        [$(|b| from_beve::<[bool; $n]>(b).map(drop)),*]
+    };
+}
+const FIXED_BOOLS: [Walk; 18] = fixed_bools!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17);
+
+/// `doc` pushed into a `Feed` one byte at a time, in either mode: how many
+/// values came out, and the first refusal.
+fn dribbled(array: bool, doc: &[u8]) -> (usize, structio::Result<()>) {
+    let mut feed = if array {
+        beve::Feed::array()
+    } else {
+        beve::Feed::values()
+    };
+    let mut n = 0;
+    for i in 0..=doc.len() {
+        match doc.get(i) {
+            Some(b) => feed.push(std::slice::from_ref(b)),
+            None => feed.end(),
+        }
+        while let Some(item) = feed.next_value::<Any>() {
+            match item {
+                Ok(_) => n += 1,
+                Err(e) => return (n, Err(*e.as_parse().expect("a feed has no I/O"))),
+            }
+        }
+    }
+    (n, Ok(()))
+}
+
+#[test]
+fn a_packed_boolean_array_with_padding_set_is_not_a_value_in_any_walk() {
+    // The specification requires the high bits of a packed-boolean array's
+    // last byte, the ones past its last element, to be zero. Read as zero, a
+    // set one would give the same array several encodings, so every walk
+    // refuses it as `InvalidPadding`, just past the payload's last byte: as
+    // the document, as an element, through a pointer at any index, and
+    // stepped over. A framer reports it at the value's start, as it reports
+    // everything, and a top-level array streamed an element at a time hands
+    // out every element before the last and then refuses at the last byte.
+    let mut spellings = 0;
+    for (n, fixed) in FIXED_BOOLS.iter().enumerate() {
+        let bools: Vec<bool> = (0..n).map(|i| i % 3 != 1).collect();
+        let canonical = to_beve(&bools);
+        // The header, a one-byte count, and the payload.
+        let end = 2 + n.div_ceil(8);
+        assert_eq!(canonical.len(), end, "{n}");
+
+        let spelled = (n & 7 != 0)
+            .then(|| (n & 7..8).map(|bit| (Some(bit), canonical.clone())))
+            .into_iter()
+            .flatten();
+        for (bit, mut doc) in std::iter::once((None, canonical.clone())).chain(spelled) {
+            if let Some(bit) = bit {
+                doc[end - 1] |= 1 << bit;
+            }
+            let element = [&[header::GENERIC_ARRAY, 1 << 2][..], &doc].concat();
+            let mut walks: Vec<(String, structio::Result<()>, usize)> = vec![
+                ("validate".into(), validate_beve(&doc), end),
+                ("Value".into(), from_beve::<Value>(&doc).map(drop), end),
+                (
+                    "pointer Value".into(),
+                    from_beve_at::<Value>(&doc, "").map(drop),
+                    end,
+                ),
+                ("transcode".into(), beve_to_json(&doc).map(drop), end),
+                ("skip".into(), skipped(&doc), end),
+                (
+                    "Vec<bool>".into(),
+                    from_beve::<Vec<bool>>(&doc).map(drop),
+                    end,
+                ),
+                (
+                    "VecDeque<bool>".into(),
+                    from_beve::<VecDeque<bool>>(&doc).map(drop),
+                    end,
+                ),
+                (format!("[bool; {n}]"), fixed(&doc), end),
+                ("element, validate".into(), validate_beve(&element), end + 2),
+                (
+                    "element, Value".into(),
+                    from_beve::<Value>(&element).map(drop),
+                    end + 2,
+                ),
+                (
+                    "element, transcode".into(),
+                    beve_to_json(&element).map(drop),
+                    end + 2,
+                ),
+                (
+                    "element, Vec<Vec<bool>>".into(),
+                    from_beve::<Vec<Vec<bool>>>(&element).map(drop),
+                    end + 2,
+                ),
+                (
+                    "through a pointer".into(),
+                    from_beve_at::<Value>(&element, "/0").map(drop),
+                    end + 2,
+                ),
+            ];
+            for i in 0..n {
+                let at = from_beve_at::<bool>(&doc, &format!("/{i}")).map(drop);
+                walks.push((format!("pointer /{i}"), at, end));
+                let at = from_beve_at::<bool>(&element, &format!("/0/{i}")).map(drop);
+                walks.push((format!("pointer /0/{i}"), at, end + 2));
+            }
+            // Against the value's start, the element's being two bytes in.
+            let mut framers: Vec<(String, structio::Result<usize>, usize)> = framed(&doc)
+                .into_iter()
+                .map(|(name, r)| (name.into(), r, 0))
+                .chain(
+                    framed(&element)
+                        .into_iter()
+                        .map(|(name, r)| (format!("element, {name}"), r, 2)),
+                )
+                .collect();
+            let (count, r) = dribbled(false, &doc);
+            framers.push(("Feed::values, dribbled".into(), r.map(|()| count), 0));
+
+            // The array's own elements, handed out as they arrive.
+            let whole = drain(beve::Documents::array(&doc));
+            let (streamed, dribble) = dribbled(true, &doc);
+
+            let Some(bit) = bit else {
+                for (name, r, _) in walks {
+                    r.unwrap_or_else(|e| panic!("{name}, {n}: {e:?}"));
+                }
+                for (name, r, _) in framers {
+                    assert_eq!(r.map_err(|e| e.code), Ok(1), "{name}, {n}");
+                }
+                assert_eq!(from_beve::<Vec<bool>>(&doc).unwrap(), bools);
+                assert_eq!(whole.map_err(|e| e.code), Ok(n), "{n}");
+                assert_eq!((streamed, dribble.map_err(|e| e.code)), (n, Ok(())));
+                continue;
+            };
+            spellings += 1;
+            let want = |at| Err((ErrorCode::InvalidPadding, at));
+            for (name, r, at) in walks {
+                let got = r.map_err(|e| (e.code, e.index));
+                assert_eq!(got, want(at), "{name}, {n}, bit {bit}");
+            }
+            for (name, r, at) in framers {
+                let got = r.map(drop).map_err(|e| (e.code, e.index));
+                assert_eq!(got, want(at), "{name}, {n}, bit {bit}");
+            }
+            let whole = whole.map(drop).map_err(|e| (e.code, e.index));
+            assert_eq!(whole, want(end - 1), "Documents::array, {n}, bit {bit}");
+            let dribble = dribble.map_err(|e| (e.code, e.index));
+            assert_eq!(
+                (streamed, dribble),
+                (n - 1, want(end - 1)),
+                "Feed::array, {n}, bit {bit}"
+            );
+        }
+    }
+    // Seven widths of padding in each of 1..8, 9..16 and 17.
+    assert_eq!(spellings, 28 + 28 + 7);
 }
 
 #[test]
