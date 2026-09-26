@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/structio.svg)](https://crates.io/crates/structio)
 [![docs.rs](https://img.shields.io/docsrs/structio)](https://docs.rs/structio)
-[![CI](https://github.com/stephenberry/structio/actions/workflows/ci.yml/badge.svg)](https://github.com/stephenberry/structio/actions/workflows/ci.yml)
+[![CI](https://github.com/matrix-research-inc/structio/actions/workflows/ci.yml/badge.svg)](https://github.com/matrix-research-inc/structio/actions/workflows/ci.yml)
 
 **High-performance JSON and [BEVE](https://github.com/stephenberry/beve) for Rust structs.** No dependencies, no proc-macros required, no intermediate representation.
 

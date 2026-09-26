@@ -104,7 +104,7 @@
 //! A variant carrying nothing reads back from either form, but one carrying a
 //! value has only the object form, and the two macros' pages say what each
 //! error means.
-//! [docs/enums.md](https://github.com/stephenberry/structio/blob/main/docs/enums.md)
+//! [docs/enums.md](https://github.com/matrix-research-inc/structio/blob/main/docs/enums.md)
 //! is the long form.
 //!
 //! The crate root re-exports the JSON entry points unqualified, because JSON
@@ -382,7 +382,7 @@ pub use value::{Number, Object, Value, from_value, from_value_with, to_value};
 /// | a variant | `rename = "name"` | `"name" => Variant` |
 /// | a variant | `alias = "name"` | <code>Variant &#124; "name"</code> |
 ///
-/// [docs/derive.md](https://github.com/stephenberry/structio/blob/main/docs/derive.md)
+/// [docs/derive.md](https://github.com/matrix-research-inc/structio/blob/main/docs/derive.md)
 /// has each attribute in full, what the derive refuses and why, and the
 /// attributes later stages add.
 #[cfg(feature = "derive")]

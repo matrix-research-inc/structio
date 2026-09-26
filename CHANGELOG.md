@@ -187,15 +187,15 @@ First release.
 - **Errors locate themselves.** `Error` carries a byte offset, `Error::display_with(input)` renders one with a line, column, and caret, and a `MissingKey` names the absent key.
 - `Parser::read_number_str` and `Writer::write_number_str`: a number's text, borrowed and written verbatim, for a fixed-point, decimal, bignum, or rational type. JSON only.
 
-[Unreleased]: https://github.com/stephenberry/structio/compare/v0.7.0...HEAD
-[0.7.0]: https://github.com/stephenberry/structio/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/stephenberry/structio/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/stephenberry/structio/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/stephenberry/structio/compare/v0.3.2...v0.4.0
-[0.3.2]: https://github.com/stephenberry/structio/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/stephenberry/structio/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/stephenberry/structio/compare/v0.2.2...v0.3.0
-[0.2.2]: https://github.com/stephenberry/structio/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/stephenberry/structio/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/stephenberry/structio/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/stephenberry/structio/releases/tag/v0.1.0
+[Unreleased]: https://github.com/matrix-research-inc/structio/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/matrix-research-inc/structio/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/matrix-research-inc/structio/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/matrix-research-inc/structio/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/matrix-research-inc/structio/compare/v0.3.2...v0.4.0
+[0.3.2]: https://github.com/matrix-research-inc/structio/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/matrix-research-inc/structio/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/matrix-research-inc/structio/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/matrix-research-inc/structio/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/matrix-research-inc/structio/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/matrix-research-inc/structio/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/matrix-research-inc/structio/releases/tag/v0.1.0

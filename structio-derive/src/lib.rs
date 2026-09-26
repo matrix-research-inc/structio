@@ -9,7 +9,7 @@
 //! the macros' own, so a derived type and a declared type behave identically.
 //!
 //! The attributes and what each expands to are documented at
-//! [`docs/derive.md`](https://github.com/stephenberry/structio/blob/main/docs/derive.md).
+//! [`docs/derive.md`](https://github.com/matrix-research-inc/structio/blob/main/docs/derive.md).
 //!
 //! This crate has no dependencies. It walks `proc_macro::TokenStream` itself,
 //! which is a few hundred lines for the shapes it has to recognize and keeps

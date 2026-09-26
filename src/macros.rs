@@ -2368,7 +2368,7 @@ macro_rules! __beve_write_array_body {
 ///
 /// # Further reading
 ///
-/// [docs/enums.md](https://github.com/stephenberry/structio/blob/main/docs/enums.md) is the long form: every error an enum can
+/// [docs/enums.md](https://github.com/matrix-research-inc/structio/blob/main/docs/enums.md) is the long form: every error an enum can
 /// produce and what distinguishes it from the others, how the policies meet a
 /// tag, generics and borrowed payloads, the string array a run of unit
 /// variants becomes in BEVE, and how validation, pointers and transcoding walk
@@ -2620,7 +2620,7 @@ macro_rules! __unit_enum {
 ///
 /// # Further reading
 ///
-/// [docs/enums.md](https://github.com/stephenberry/structio/blob/main/docs/enums.md) is the long form: every error an enum can
+/// [docs/enums.md](https://github.com/matrix-research-inc/structio/blob/main/docs/enums.md) is the long form: every error an enum can
 /// produce and what distinguishes it from the others, how the policies meet a
 /// tag, generics and borrowed payloads, the string array a run of unit
 /// variants becomes in BEVE, and how validation, pointers and transcoding walk
