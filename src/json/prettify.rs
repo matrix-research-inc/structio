@@ -33,7 +33,7 @@ use crate::options::{Options, Pretty};
 ///
 /// Values are copied, not re-encoded. A number keeps the spelling the input
 /// gave it and a string keeps its escapes, so `1.50` stays `1.50` and
-/// `"A"` stays `"A"`. The output is the input's data laid out again,
+/// `"\u0041"` stays `"\u0041"`. The output is the input's data laid out again,
 /// not a round trip through this crate's number and string formatters.
 ///
 /// Structure is checked as the walk goes, because it has to be known to be laid
