@@ -439,9 +439,20 @@ fn a_float_refused_as_an_integer_leaves_the_offset_on_it() {
     ] {
         assert_eq!((e.code, e.index), (ErrorCode::ExpectedInteger, 1));
     }
-    assert_eq!(from_beve::<bool>(&float).unwrap_err().index, 1);
-    assert_eq!(from_beve::<String>(&float).unwrap_err().index, 1);
-    assert_eq!(from_beve::<()>(&float).unwrap_err().index, 1);
+    let at = |e: structio::Error| (e.code, e.index);
+    let past = |code| (code, 1);
+    assert_eq!(
+        at(from_beve::<bool>(&float).unwrap_err()),
+        past(ErrorCode::ExpectedBool)
+    );
+    assert_eq!(
+        at(from_beve::<String>(&float).unwrap_err()),
+        past(ErrorCode::ExpectedString)
+    );
+    assert_eq!(
+        at(from_beve::<()>(&float).unwrap_err()),
+        past(ErrorCode::ExpectedNull)
+    );
 
     // The cursor itself, which a caller trying another reading starts from.
     let mut r = beve::Reader::new(&float);

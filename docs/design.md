@@ -356,7 +356,7 @@ A header and the sizes behind it can straddle a boundary too, and that one is so
 
 `Mode::Array` covers typed arrays as well as generic ones, which needs one thing the batch path already had. A typed array's elements carry no headers, so a span cut out of one is not a value any `Read` impl could take. The splitter reports the header the array implied alongside the span and the reader is built with it installed, which is the same mechanism `read_seq` uses inside a typed array. Without it, streaming a file that is one enormous `Vec<f64>` would be impossible, which is the case BEVE most needs it for.
 
-The depth limit is charged exactly as `skip_value` charges it, typed arrays included. The reader gets a second opinion -- it walks the span it is handed and applies the limit again from zero -- so a splitter that framed something too deep would still produce an error, just not its own, and the test that pins this has to look at how far the stream advanced rather than at whether an error appeared.
+The depth limit is charged exactly as `skip_value` charges it, typed arrays included, and in `Mode::Array` the outer array is charged too, so an element is limited to the depth it sits at in the document. The reader gets a second opinion -- it walks the span it is handed and applies the limit again from zero -- so a splitter that framed something too deep would still produce an error, just not its own, and the test that pins this has to look at how far the stream advanced rather than at whether an error appeared.
 
 ### Draining is free because it rides a check that was already there
 

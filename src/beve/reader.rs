@@ -805,6 +805,7 @@ impl<'de, O: Options> Reader<'de, O> {
         if header::ty(h) != header::TY_STRING {
             return Err(ErrorCode::ExpectedString);
         }
+        bare_header(h)?;
         self.str_body()
     }
 
@@ -1067,6 +1068,7 @@ impl<'de, O: Options> Reader<'de, O> {
         let h = self.head()?;
         match header::ty(h) {
             header::TY_STRING => {
+                bare_header(h)?;
                 let name = self.str_body()?.as_bytes();
                 // The hash only proposes a variant; `read_name` confirms the
                 // name itself and may still decline.
@@ -1218,6 +1220,7 @@ impl<'de, O: Options> Reader<'de, O> {
             self.pos = first;
             return Err(ErrorCode::ExpectedTag);
         }
+        bare_header(vh)?;
         let name = self.str_body()?.as_bytes();
 
         // From here the generated arm owns the object's remaining members,
@@ -1443,6 +1446,12 @@ impl<'de, O: Options> Reader<'de, O> {
         if !installed && h == header::COMPLEX {
             return self.complex_run(start);
         }
+        // A generic array's header is settled before the level is charged, as
+        // every other walk settles it before stepping in, so at the limit the
+        // refusal is the header's everywhere.
+        if header::ty(h) == header::TY_GENERIC_ARRAY {
+            bare_header(h)?;
+        }
         self.nested(|r| r.drive(h, start))
     }
 
@@ -1460,6 +1469,9 @@ impl<'de, O: Options> Reader<'de, O> {
         let (class, width, pairs) = self.complex_head()?;
         // The lone form is one value, not a sequence of one.
         let n = pairs.ok_or(ErrorCode::ExpectedArray)?;
+        if n > 0 {
+            decodable_elements(class)?;
+        }
         self.have(complex_payload(width, Some(n))?)?;
         let mut element = start(n);
         self.run(n, header::complex_element(class), &mut element)
@@ -1516,6 +1528,9 @@ impl<'de, O: Options> Reader<'de, O> {
                 self.run(n, header::STRING, &mut element)
             }
             Typed::Fixed(h, n) => {
+                if n > 0 {
+                    decodable_elements(h)?;
+                }
                 self.have(payload_len(h, n)?)?;
                 let mut element = start(n);
                 self.run(n, header::element_of(h), &mut element)
@@ -1834,7 +1849,10 @@ impl<'de, O: Options> Reader<'de, O> {
                     byte_width(header::sub(h), header::count(h)).ok_or(ErrorCode::InvalidHeader)?;
                 self.drop_bytes(w)
             }
-            header::TY_STRING => self.skip_str::<UTF8>(),
+            header::TY_STRING => {
+                bare_header(h)?;
+                self.skip_str::<UTF8>()
+            }
             header::TY_OBJECT => {
                 let cat = header::sub(h);
                 let width = key_width(h)?;
@@ -1852,6 +1870,7 @@ impl<'de, O: Options> Reader<'de, O> {
                 })
             }
             header::TY_GENERIC_ARRAY => {
+                bare_header(h)?;
                 let n = self.count()?;
                 self.nested(|r| {
                     for _ in 0..n {
@@ -2018,8 +2037,11 @@ impl<'de, O: Options> Reader<'de, O> {
         match header::ty(h) {
             header::TY_OBJECT => self.descend_object(h, token),
             header::TY_GENERIC_ARRAY => {
-                // Decoded before the count is read, so a malformed token is
-                // reported as one even where the document runs out first.
+                // The header first, as `descend_object` settles its key kind
+                // first. The token is decoded before the count is read, so a
+                // malformed token is reported as one even where the document
+                // runs out first.
+                bare_header(h)?;
                 let i = index(token)?;
                 let n = self.count()?;
                 // Before the siblings are stepped over, so that each is
@@ -2225,14 +2247,37 @@ fn index(token: &str) -> PResult<usize> {
 /// if they ever disagreed about which key kinds exist or how wide one is, a
 /// skipped object would leave the cursor somewhere a read object would not, and
 /// the *next* member would be parsed from the wrong offset.
+///
+/// A header that names no key kind is an `InvalidHeader`, as it is to every
+/// walk: integer keys of a width the format does not define, the fourth key
+/// type, which it does not define at all, and string keys with the byte-count
+/// field set. A string key carries its own length, so the specification leaves
+/// that field unspecified, and it has to be zero for the reason
+/// [`bare_header`] gives.
 pub(crate) fn key_width(h: u8) -> PResult<usize> {
     let cat = header::sub(h);
     match cat {
-        header::CAT_FLOAT => Ok(0),
+        header::CAT_FLOAT if header::count(h) == 0 => Ok(0),
         header::CAT_SIGNED | header::CAT_UNSIGNED => {
             byte_width(cat, header::count(h)).ok_or(ErrorCode::InvalidHeader)
         }
-        _ => Err(ErrorCode::UnsupportedKeyType),
+        _ => Err(ErrorCode::InvalidHeader),
+    }
+}
+
+/// Confirm a string or generic-array header is its type and nothing else.
+///
+/// Neither kind is given a `sub` or a `count`, and the specification requires
+/// every bit it leaves unspecified to be zero, so a header with one set is no
+/// value at all rather than another spelling of one. Accepting it would give
+/// one value several encodings, which a document that is compared, hashed or
+/// signed byte for byte cannot have. Every walk asks this on the header,
+/// before the size, as [`key_width`] asks it of a string-keyed object.
+pub(crate) fn bare_header(h: u8) -> PResult<()> {
+    if header::sub(h) == 0 && header::count(h) == 0 {
+        Ok(())
+    } else {
+        Err(ErrorCode::InvalidHeader)
     }
 }
 
@@ -2242,6 +2287,20 @@ pub(crate) fn key_width(h: u8) -> PResult<usize> {
 /// lone number of that width.
 pub(crate) fn fixed_width(h: u8) -> PResult<usize> {
     byte_width(header::sub(h), header::count(h)).ok_or(ErrorCode::InvalidHeader)
+}
+
+/// Confirm a block's elements are of a type something can decode, before its
+/// payload is looked for.
+///
+/// `h` is a typed array's header or a complex value's class header, either of
+/// which states the element type once for the whole block. A 128-bit float is
+/// [`UnsupportedFeature`](ErrorCode::UnsupportedFeature) to the first element
+/// read, so a driver that confirmed the payload first would call a truncated
+/// block `UnexpectedEnd` where `Value` and the transcode, which ask
+/// [`header::decodable_width`] of the header, call it `UnsupportedFeature`.
+/// Asked only where there is an element to refuse: an empty block reads.
+fn decodable_elements(h: u8) -> PResult<()> {
+    header::decodable_width(header::sub(h), header::count(h)).map(drop)
 }
 
 /// Bytes a fixed-width payload of `n` elements described by `h` occupies.
