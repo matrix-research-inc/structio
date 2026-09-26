@@ -77,9 +77,9 @@ pub trait Read<'de>: Sized {
     /// Implementations must consume from `r` only when they return `true`,
     /// and must not turn one of its errors into `Ok(false)`. The caller puts
     /// the cursor back, so an implementation that reads and then declines is
-    /// corrected rather than believed; what it does not put back is the
-    /// depth and any installed element header, which the walks that set them
-    /// restore on every exit, errors included.
+    /// corrected rather than believed, and an installed element header is put
+    /// back with it; what it does not put back is the depth, which the walks
+    /// that enter a level restore on every exit, errors included.
     ///
     /// [`Reader::read_block`]: crate::beve::Reader::read_block
     fn read_bulk<O: Options>(

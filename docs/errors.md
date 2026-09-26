@@ -180,8 +180,8 @@ Long lines are trimmed around the caret so the output stays readable. The input 
 
 | Code | Meaning |
 |---|---|
-| `NumberOutOfRange` | The number was valid but does not fit the destination type. |
-| `InvalidNumber` | The number was not well formed. |
+| `NumberOutOfRange` | The number was valid but does not fit the destination type. Read from JSON into an integer, the offset is where its digits end. |
+| `InvalidNumber` | The number was not well formed. An integer type refuses a fraction or an exponent as this, however far out of range the digits are. |
 | `InvalidEscape` `InvalidSurrogate` | A JSON string escape was malformed, or a surrogate pair was unpaired. |
 | `InvalidUtf8` | The input was not valid UTF-8. |
 | `ControlCharacterInString` | An unescaped control character appeared inside a JSON string. |
