@@ -333,7 +333,7 @@ impl<'de, O: Options> Parser<'de, O> {
     /// Returns `true` to keep looping and `false` once the container is closed,
     /// leaving the cursor past whichever byte it consumed. Every object, array,
     /// map, and skip loop ends the same way, and so does each container the
-    /// [prettifier](crate::prettify) lays out, so they all end here, and all
+    /// [prettifier](mod@crate::json::prettify) lays out, so they all end here, and all
     /// report the same error when the document holds neither byte.
     #[inline(always)]
     pub(crate) fn comma_or_close(&mut self, close: u8) -> PResult<bool> {
@@ -1515,7 +1515,7 @@ impl<'de, O: Options> Parser<'de, O> {
     /// grammar. Nothing here reads its value, and the two callers both have
     /// somewhere better for a malformed one to be caught: a skipped value is
     /// discarded, and a copied one is republished for whoever reads it next to
-    /// reject. See [`prettify`](crate::prettify). An escape is stepped over
+    /// reject. See [`json::prettify`](mod@crate::json::prettify). An escape is stepped over
     /// too, as [`skip_value`](Self::skip_value) steps over one.
     #[inline]
     pub(crate) fn skip_scalar(&mut self) -> PResult<()> {

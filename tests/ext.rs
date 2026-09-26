@@ -670,6 +670,67 @@ fn anything_that_is_not_a_matrix_is_refused() {
 }
 
 #[test]
+fn a_value_of_another_kind_is_refused_where_every_mismatch_is() {
+    type Members<T> = std::collections::BTreeMap<String, T>;
+    fn at<T: std::fmt::Debug>(read: Result<T, structio::Error>) -> (ErrorCode, usize) {
+        let e = read.unwrap_err();
+        (e.code, e.index)
+    }
+
+    // Both look at the header to choose between two forms, and take it before
+    // refusing it, as a reader of any other kind does, a string's among them:
+    // the offset is just past the header. A typed array's element has no header
+    // in the input, the one the array implies being installed, so taking it
+    // moves nothing and the offset is where the element begins.
+    let number = to_beve(&1.5f64);
+    let listed = wrap(1, &number);
+    let member = object(&[("m", number.clone())]);
+    let element = to_beve(&vec![1.5f64]);
+    for (name, [matrix, complex, string], past) in [
+        (
+            "alone",
+            [
+                at(from_beve::<Matrix<f64>>(&number)),
+                at(from_beve::<Complex<f64>>(&number)),
+                at(from_beve::<String>(&number)),
+            ],
+            1,
+        ),
+        (
+            "in an array",
+            [
+                at(from_beve::<Vec<Matrix<f64>>>(&listed)),
+                at(from_beve::<Vec<Complex<f64>>>(&listed)),
+                at(from_beve::<Vec<String>>(&listed)),
+            ],
+            3,
+        ),
+        (
+            "in an object",
+            [
+                at(from_beve::<Members<Matrix<f64>>>(&member)),
+                at(from_beve::<Members<Complex<f64>>>(&member)),
+                at(from_beve::<Members<String>>(&member)),
+            ],
+            5,
+        ),
+        (
+            "in a typed array",
+            [
+                at(from_beve::<Vec<Matrix<f64>>>(&element)),
+                at(from_beve::<Vec<Complex<f64>>>(&element)),
+                at(from_beve::<Vec<String>>(&element)),
+            ],
+            2,
+        ),
+    ] {
+        assert_eq!(matrix, (ErrorCode::ExpectedMatrix, past), "{name}");
+        assert_eq!(complex, (ErrorCode::ExpectedComplex, past), "{name}");
+        assert_eq!(string, (ErrorCode::ExpectedString, past), "{name}");
+    }
+}
+
+#[test]
 fn a_matrix_member_that_is_not_wanted_is_stepped_over() {
     let m = Matrix::new(
         MatrixLayout::ColumnMajor,

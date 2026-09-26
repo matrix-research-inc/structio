@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
 description = "The optional #[derive(Structio)] for structio. Enable structio's `derive` feature rather than depending on this crate directly."
-repository = "https://github.com/stephenberry/structio"
+repository = "https://github.com/matrix-research-inc/structio"
 keywords = ["json", "beve", "serialization", "derive"]
 categories = ["encoding"]
 

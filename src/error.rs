@@ -258,7 +258,7 @@ impl std::error::Error for ErrorCode {}
 /// a span names the wrong byte of the document the span came out of. That seam
 /// is deliberate, and [`docs/errors.md`] has why.
 ///
-/// [`docs/errors.md`]: https://github.com/stephenberry/structio/blob/main/docs/errors.md
+/// [`docs/errors.md`]: https://github.com/matrix-research-inc/structio/blob/main/docs/errors.md
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Error {
     /// What went wrong.

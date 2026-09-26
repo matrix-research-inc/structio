@@ -453,7 +453,13 @@ where
                 }
             }
         }
-        Some(_) => Err(ErrorCode::ExpectedMatrix),
+        // Taken before it is refused, so the cursor stops just past it as
+        // every other type mismatch leaves it. An installed header is taken
+        // without moving the cursor, which then stays on the element.
+        Some(_) => {
+            r.head()?;
+            Err(ErrorCode::ExpectedMatrix)
+        }
         None => Err(ErrorCode::UnexpectedEnd),
     }
 }

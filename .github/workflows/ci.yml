@@ -60,7 +60,7 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --features derive -- -D warnings
-      - run: cargo doc --no-deps --workspace --features derive
+      - run: cargo doc --no-deps --workspace --features derive && cargo doc --no-deps --workspace --features derive --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
 
