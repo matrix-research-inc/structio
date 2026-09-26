@@ -14,7 +14,9 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 ### Fixed
 
-- **An unsigned integer reads `-0` as `0`,** as a signed one does, at every width and as a JSON key or BEVE pointer token. It was `NumberOutOfRange`, or `ExpectedNumber` for a `u128`. A negative number is `NumberOutOfRange` at every width, a `u128` included, and a sign in front of a malformed number, such as `-` or `--1`, is refused the same way at every width, signed or not.
+- **An unsigned integer reads `-0` as `0`,** as a signed one does, at every width, as a value and as an integer key: a JSON key, a BEVE string key, or a BEVE pointer token naming a key. It is still no array index, which RFC 6901 spells without a sign. It was `NumberOutOfRange`, or `ExpectedNumber` for a `u128`. A negative number is `NumberOutOfRange` at every width, a `u128` included, and a sign in front of a malformed number, such as `-` or `--1`, is refused the same way at every width, signed or not.
+
+- **A fraction or an exponent makes an integer `InvalidNumber` at every width, however large.** `-1.5` into an unsigned type, and a number too large for the parse, such as `18446744073709551616.5` into a `u64`, were `NumberOutOfRange`. `NumberOutOfRange` is now reported where the digits end, as it was for a value past a narrow type's range: `-1` into a `u8` at offset 2 rather than 0, and a number past a `u64` at its end rather than its start.
 
 - **The `Value` docs say what reading `-0` as `-0.0` costs.** Behaviour is 0.7.0's, unchanged: `as_i64`, `as_u64` and `is_i64` refuse it, `from_value` into an integer type refuses it while `from_str::<i64>("-0")` is `0`, and it writes to BEVE as an `f64` rather than the integer `0`. An integer past 64 bits, stored as a float, has always behaved the same way.
 

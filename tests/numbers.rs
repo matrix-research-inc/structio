@@ -6,13 +6,14 @@
 //! grammar.
 //!
 //! The integer conversions the crate does make are held, at the end, to
-//! answering a signed token the same way at every width.
+//! answering a token the same way at every width.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::str::FromStr;
 
-use structio::{ErrorCode, Options, from_beve_at, from_str, json, to_beve, to_string};
+use structio::{ErrorCode, Options, from_beve, from_beve_at, from_str, json, to_beve, to_string};
 
 // ---------------------------------------------------------------------------
 // A scalar the crate does not describe
@@ -236,15 +237,18 @@ fn writing_a_non_number_is_a_debug_assertion() {
 }
 
 // ---------------------------------------------------------------------------
-// A sign, at every width
+// A sign, a tail and a range, at every width
 // ---------------------------------------------------------------------------
 
 /// What an integer type must be for the checks below: readable as a value and
-/// as a key, from JSON and through a BEVE pointer.
+/// as a key, from JSON and BEVE and through a BEVE pointer, and parsed by the
+/// standard library for comparison.
 trait Integer:
     for<'de> json::Read<'de>
     + json::FromJsonKey
+    + structio::beve::FromBeveKey
     + structio::beve::ToBeveKey
+    + FromStr<Err: Debug>
     + Default
     + Copy
     + Eq
@@ -255,7 +259,9 @@ trait Integer:
 impl<T> Integer for T where
     T: for<'de> json::Read<'de>
         + json::FromJsonKey
+        + structio::beve::FromBeveKey
         + structio::beve::ToBeveKey
+        + FromStr<Err: Debug>
         + Default
         + Copy
         + Eq
@@ -297,9 +303,12 @@ fn negative_zero_reads_as_zero_at_every_width() {
         let many = from_str::<Vec<T>>("[-0, -0, 0, -0, -0]").unwrap();
         assert_eq!(many, [zero; 5], "{name}");
 
-        // A key, from JSON and as a BEVE pointer token, as the signed types
-        // have always read it.
+        // A key, from JSON, as a BEVE string key and as a BEVE pointer token
+        // naming an integer key, as the signed types have always read it.
         let map = from_str::<HashMap<T, u8>>(r#"{"-0":1}"#).unwrap();
+        assert_eq!(map, HashMap::from([(zero, 1)]), "{name}");
+        let bytes = to_beve(&HashMap::from([("-0".to_owned(), 1u8)]));
+        let map = from_beve::<HashMap<T, u8>>(&bytes).unwrap();
         assert_eq!(map, HashMap::from([(zero, 1)]), "{name}");
         let bytes = to_beve(&HashMap::from([(zero, 1u8)]));
         assert_eq!(from_beve_at::<u8>(&bytes, "/-0").unwrap(), 1, "{name}");
@@ -317,26 +326,36 @@ fn negative_zero_reads_as_zero_at_every_width() {
     every_width!(check);
 }
 
+/// An array index is not a key: RFC 6901 spells it without a sign, so `-0`
+/// is no index, though it names the key `0` of an integer-keyed map.
+#[test]
+fn negative_zero_is_not_an_array_index() {
+    let bytes = to_beve(&vec![1u8, 2]);
+    assert_eq!(from_beve_at::<u8>(&bytes, "/0").unwrap(), 1);
+    let e = from_beve_at::<u8>(&bytes, "/-0").unwrap_err();
+    assert_eq!((e.code, e.index), (ErrorCode::InvalidPointer, 1));
+}
+
 /// A minus sign in front of any other number is a number the type cannot
-/// hold, and says so at the token, however wide the type and the magnitude.
+/// hold, however wide the type and the magnitude, and says so where the digits
+/// end, as a signed type does of a number past its range.
 #[test]
 fn a_negative_number_is_out_of_range_at_every_unsigned_width() {
     fn check<T: Integer>(name: &str) {
         for text in [
             "-1",
-            "-1.5",
             "-18446744073709551616",
             "-340282366920938463463374607431768211456",
         ] {
             assert_eq!(
                 refusal::<T>(text),
-                (ErrorCode::NumberOutOfRange, 0),
+                (ErrorCode::NumberOutOfRange, text.len()),
                 "{name} {text}"
             );
         }
         assert_eq!(
             refusal::<Option<T>>("-1"),
-            (ErrorCode::NumberOutOfRange, 0),
+            (ErrorCode::NumberOutOfRange, 2),
             "{name}"
         );
         // A key is refused as a key the type cannot parse, as `300` is for a
@@ -345,6 +364,94 @@ fn a_negative_number_is_out_of_range_at_every_unsigned_width() {
         assert_eq!(e.code, ErrorCode::InvalidNumber, "{name}");
     }
     every_unsigned_width!(check);
+}
+
+/// A fraction or an exponent makes a token no integer, whatever its sign and
+/// however far past the type's range its digits reach. It is refused as
+/// malformed rather than out of range, at the first byte of the tail, the same
+/// way at every width.
+#[test]
+fn a_float_tail_is_invalid_at_every_width_and_magnitude() {
+    fn check<T: Integer>(name: &str) {
+        for text in [
+            "1.5",
+            "1e3",
+            "1.",
+            "1e",
+            "-1.",
+            "-1e",
+            "-1.5",
+            "-1E+3",
+            "256.5",
+            "-129e3",
+            // Past a `u64`, and past an `i64` negated.
+            "18446744073709551616.5",
+            "-9223372036854775809e3",
+            // The `u128` maximum, and past an `i128` with either sign.
+            "340282366920938463463374607431768211455e3",
+            "170141183460469231731687303715884105728.5",
+            "170141183460469231731687303715884105728e3",
+            "-170141183460469231731687303715884105729.5",
+            "-170141183460469231731687303715884105729e3",
+            // Past a `u128`, with either sign.
+            "340282366920938463463374607431768211456.5",
+            "-340282366920938463463374607431768211456e3",
+        ] {
+            let tail = text.find(['.', 'e', 'E']).unwrap();
+            assert_eq!(
+                refusal::<T>(text),
+                (ErrorCode::InvalidNumber, tail),
+                "{name} {text}"
+            );
+        }
+    }
+    every_width!(check);
+}
+
+/// A well formed integer the type cannot hold is out of range, and says so
+/// where its digits end, whether it is past the type's bound or past what the
+/// parse can accumulate.
+#[test]
+fn a_well_formed_integer_past_the_range_is_out_of_range_at_its_end() {
+    fn check<T: Integer>(name: &str) {
+        for text in [
+            "255",
+            "256",
+            "-128",
+            "-129",
+            "65536",
+            "-32769",
+            "4294967296",
+            "-2147483649",
+            "18446744073709551615",
+            "18446744073709551616",
+            "-9223372036854775808",
+            "-9223372036854775809",
+            "99999999999999999999",
+            "340282366920938463463374607431768211455",
+            "340282366920938463463374607431768211456",
+            "-170141183460469231731687303715884105728",
+            "-170141183460469231731687303715884105729",
+        ] {
+            match text.parse::<T>() {
+                Ok(v) => assert_eq!(from_str::<T>(text).unwrap(), v, "{name} {text}"),
+                Err(_) => assert_eq!(
+                    refusal::<T>(text),
+                    (ErrorCode::NumberOutOfRange, text.len()),
+                    "{name} {text}"
+                ),
+            }
+        }
+        // The cursor is past the digits by then, so a minus sign after them
+        // is not taken for the sign of a `-0`.
+        let text = "340282366920938463463374607431768211456-0";
+        assert_eq!(
+            refusal::<T>(text),
+            (ErrorCode::NumberOutOfRange, 39),
+            "{name} {text}"
+        );
+    }
+    every_width!(check);
 }
 
 /// A sign in front of something that is not a number is refused for what

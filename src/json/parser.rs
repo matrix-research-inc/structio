@@ -19,7 +19,7 @@ use crate::error::{ErrorCode, PResult};
 use crate::json::traits::{Read, ReadArray, ReadEnum, ReadInternallyTagged, ReadObject};
 use crate::num::atof::{parse_float, scan_number};
 use crate::num::atoi::{
-    parse_i64, parse_u128, parse_unsigned_u64, parse_unsigned_u128, reject_float_tail,
+    out_of_range, parse_i64, parse_u128, parse_unsigned_u64, parse_unsigned_u128, reject_float_tail,
 };
 use crate::options::{Options, Standard};
 use crate::swar::{escape_mask, find_byte, first_match, load_u64, needs_escape};
@@ -1099,12 +1099,12 @@ impl<'de, O: Options> Parser<'de, O> {
             // `i128::MIN` has no positive counterpart, so compare before
             // negating.
             if magnitude > (i128::MAX as u128) + 1 {
-                return Err(ErrorCode::NumberOutOfRange);
+                return Err(out_of_range(self.bytes, self.idx));
             }
             (magnitude as i128).wrapping_neg()
         } else {
             if magnitude > i128::MAX as u128 {
-                return Err(ErrorCode::NumberOutOfRange);
+                return Err(out_of_range(self.bytes, self.idx));
             }
             magnitude as i128
         };
