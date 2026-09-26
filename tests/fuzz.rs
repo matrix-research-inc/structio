@@ -1085,8 +1085,9 @@ fn corrupting_any_beve_byte_never_panics() {
             for delta in [1u8, 0x0F, 0x55, 0x80, 0xFF] {
                 let mut bad = bytes.clone();
                 bad[i] = bad[i].wrapping_add(delta);
-                // Some corruptions are still valid documents; the only
-                // requirement is that none of them panic or hang.
+                // Some corruptions are still valid documents, so the reads
+                // are only required not to panic or hang. The two helpers
+                // hold the transcoder and the framer to the validator.
                 let _ = structio::from_beve::<Node>(&bad);
                 let _ = structio::validate_beve(&bad);
                 let _ = structio::from_beve_at::<f64>(&bad, "/numbers/1");
