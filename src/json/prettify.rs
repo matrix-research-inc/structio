@@ -36,6 +36,11 @@ use crate::options::{Options, Pretty};
 /// `"\u0041"` stays `"\u0041"`. The output is the input's data laid out again,
 /// not a round trip through this crate's number and string formatters.
 ///
+/// ```
+/// let out = structio::prettify(r#"[1.50,"\u0041"]"#).unwrap();
+/// assert_eq!(out, "[\n  1.50,\n  \"\\u0041\"\n]");
+/// ```
+///
 /// Structure is checked as the walk goes, because it has to be known to be laid
 /// out at all: which container a value is in decides whether it gets a line or
 /// a space, and how deep it is decides the indent. The input must be one
