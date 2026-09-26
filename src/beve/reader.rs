@@ -556,7 +556,34 @@ impl<'de, O: Options> Reader<'de, O> {
     /// begin with this same decision and differ only in what they then do with
     /// the payload. Deciding it once is what keeps them from drifting apart
     /// about where a value ends.
+    ///
+    /// A packed-boolean payload is also confirmed present and the padding in
+    /// its last byte checked, here rather than in each walk so that they all
+    /// refuse the same arrays and no per-element loop pays for it. Non-zero
+    /// padding is [`InvalidPadding`](ErrorCode::InvalidPadding), just past
+    /// that byte.
     pub(crate) fn typed_head(&mut self, h: u8) -> PResult<Typed> {
+        let form = self.typed_preamble(h)?;
+        if let Typed::Bools(n) = form {
+            let bytes = n.div_ceil(8);
+            self.have(bytes)?;
+            if let Some(last) = bytes.checked_sub(1)
+                && let Err(e) = bool_padding(n, self.data[self.pos + last])
+            {
+                self.pos += bytes;
+                return Err(e);
+            }
+        }
+        Ok(form)
+    }
+
+    /// [`typed_head`](Self::typed_head) without the packed-boolean payload.
+    ///
+    /// For the stream framer's array mode alone, which hands a top-level
+    /// array's elements out as their bytes arrive rather than holding the
+    /// whole payload, and so checks the padding with [`bool_padding`] when the
+    /// last element's byte comes due.
+    pub(crate) fn typed_preamble(&mut self, h: u8) -> PResult<Typed> {
         match header::sub(h) {
             header::CAT_OTHER => match header::count(h) {
                 header::OTHER_BOOL => Ok(Typed::Bools(self.count()?)),
@@ -1513,9 +1540,9 @@ impl<'de, O: Options> Reader<'de, O> {
         match self.typed_head(h)? {
             Typed::Bools(n) => {
                 // Bits are read out of the payload in place; the cursor stays
-                // put until the whole run is done.
+                // put until the whole run is done. `typed_head` has confirmed
+                // the payload is there.
                 let bytes = n.div_ceil(8);
-                self.have(bytes)?;
                 let mut element = start(n);
                 let base = self.pos;
                 for i in 0..n {
@@ -1971,7 +1998,9 @@ impl<'de, O: Options> Reader<'de, O> {
     /// field costs a walk over the headers in front of it rather than a parse
     /// of the values in front of it. A subtree that is not on the path is
     /// stepped over whole, and one that is a typed array is not stepped over
-    /// at all: an element of it is found by multiplying.
+    /// at all: an element of it is found by multiplying. A packed-boolean array
+    /// has to be present whole all the same, its padding being in its last
+    /// byte and checked.
     ///
     /// Such an element carries no header of its own, so the seek installs the
     /// one the array implies, as reading the array does. The next read takes
@@ -2143,7 +2172,8 @@ impl<'de, O: Options> Reader<'de, O> {
         }
         match form {
             Typed::Bools(_) => {
-                self.have((i >> 3) + 1)?;
+                // `typed_head` has confirmed the whole payload is there, its
+                // last byte holding the padding it checked.
                 let byte = self.data[self.pos + (i >> 3)];
                 // The cursor stays on the payload: a packed boolean is its
                 // header and nothing else, so there is nothing after it to
@@ -2315,6 +2345,22 @@ pub(crate) fn fixed_width(h: u8) -> PResult<usize> {
 /// Asked only where there is an element to refuse: an empty block reads.
 fn decodable_elements(h: u8) -> PResult<()> {
     header::decodable_width(header::sub(h), header::count(h)).map(drop)
+}
+
+/// Refuse the last byte of an `n`-element packed-boolean array if it sets a
+/// bit past the last element.
+///
+/// The specification requires those high bits to be zero. Read as anything
+/// else, each one set would give the same array another encoding, which a
+/// document compared, hashed or signed byte for byte cannot have. A count
+/// that fills its last byte has no padding to check.
+#[inline]
+pub(crate) fn bool_padding(n: usize, last: u8) -> PResult<()> {
+    let used = n & 7;
+    if used != 0 && last >> used != 0 {
+        return Err(ErrorCode::InvalidPadding);
+    }
+    Ok(())
 }
 
 /// Bytes a fixed-width payload of `n` elements described by `h` occupies.

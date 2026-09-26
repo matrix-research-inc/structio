@@ -14,6 +14,12 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **A BEVE header with an unspecified bit set is `InvalidHeader`.** The specification requires those bits to be zero, but every walk, `validate_beve` included, read a string or generic array with any of its top five bits set, or a string-keyed object with any of its top three, as the plain header, so one value had many encodings. They are now refused on the header, as an undefined width is. An object of the undefined fourth key type is `InvalidHeader` too, rather than `UnsupportedKeyType`. **Breaking** for documents that set those bits, which this crate never writes.
 
+- **A packed-boolean array with non-zero padding is `InvalidPadding`.** The specification requires the bits past the last element in the final byte to be zero, but every walk ignored them, so one array had up to 128 encodings. Every walk now refuses a set one, just past the array's last byte, or at the value's first byte from a stream's framer. A pointer into a packed-boolean array now needs the whole array present. **Breaking** for documents with non-zero padding, which this crate never writes.
+
+### Added
+
+- **`ErrorCode::InvalidPadding`,** for the refusal above.
+
 ### Fixed
 
 - **An unsigned integer reads `-0` as `0`,** as a signed one does, at every width, as a value and as an integer key: a JSON key, a BEVE string key, or a BEVE pointer token naming a key. It is still no array index, which RFC 6901 spells without a sign. It was `NumberOutOfRange`, or `ExpectedNumber` for a `u128`. A negative number is `NumberOutOfRange` at every width, a `u128` included, and a sign in front of a malformed number, such as `-` or `--1`, is refused the same way at every width, signed or not.
