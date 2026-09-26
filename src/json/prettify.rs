@@ -1,43 +1,14 @@
 //! Laying out JSON text that is already JSON.
 //!
-//! Everywhere else in this crate the layout of a document is decided while the
-//! document is being produced, by the [write policy](crate::Options) the
-//! writer was given. That only helps when the bytes came out of a `Write`
-//! impl. A log line, a response body, a file on disk: those arrive as text, and
-//! laying them out means reading the text back.
+//! What a caller can rely on is documented on [`prettify`], which the other
+//! entry points here refer back to. Why the walk goes through the value path's
+//! writer rather than carrying layout rules of its own, and why a number is
+//! stepped over by its alphabet rather than held to the grammar, is in
+//! [docs/design.md](https://github.com/matrix-research-inc/structio/blob/main/docs/design.md#prettifying-is-the-writer-not-a-second-layout).
 //!
-//! [`prettify`] does that in one pass, and does it through the same writer the
-//! value path uses. The walk below opens and closes containers with `open` and
-//! `close`, breaks a member's line with `line`, spaces its colon with `colon`,
-//! and separates elements with `item`, which is the whole whitespace
-//! vocabulary [`to_string_with`](crate::to_string_with) has. Prettified text is
-//! therefore byte-identical to what writing the same data under the same policy
-//! would have produced, and stays that way when a setting is added, because
-//! there is no second copy of the rules to keep in step.
-//!
-//! [`prettify_value_into`] is that same walk aimed at a writer that is already
-//! part-way through a document, for the [`Write`](crate::json::Write) impl
-//! holding JSON text where the document expects a value. It is the one entry
-//! point here that does not start at depth zero.
-//!
-//! Values themselves are copied, not re-encoded. A number keeps the spelling
-//! the input gave it and a string keeps its escapes, so `1.50` stays `1.50` and
-//! `A` stays `A`. The output is the input's data laid out again, not
-//! a round trip through this crate's number and string formatters.
-//!
-//! Structure is checked as the walk goes, because it has to be known to be laid
-//! out at all: which container a value is in decides whether it gets a line or
-//! a space, and how deep it is decides the indent. A document whose shape does
-//! not hold up is an [`Error`] naming the byte that stopped it, rather than
-//! output that is quietly wrong.
-//!
-//! Tokens are not checked past what stepping over them requires. A number is
-//! taken by its alphabet, so `01` and `1.2.3` lay out unchanged rather than
-//! being refused. Holding them to the grammar instead cost every well-formed
-//! number in every document, to move a rejection one step earlier than the
-//! reader that will make it anyway. This is not a validator, and
-//! [`from_str`](crate::from_str) is the thing to reach for when the question is
-//! whether a document is good.
+//! Every entry point is [`prettify_value_into`] underneath. It is the one that
+//! lays out into a writer already part-way through a document; the others hand
+//! it a fresh writer, at depth zero, and return what it wrote.
 
 use crate::error::{Error, ErrorCode, PResult, Result};
 use crate::json::parser::Parser;
@@ -54,8 +25,28 @@ use crate::options::{Options, Pretty};
 /// assert_eq!(out, "{\n  \"a\": [\n    1,\n    2\n  ],\n  \"b\": {}\n}");
 /// ```
 ///
-/// The input must be a complete JSON document whose structure holds up.
-/// Anything else is an error against the byte that stopped the walk:
+/// This is for a document that arrived as text, such as a log line, a response
+/// body or a file on disk, rather than out of a [`Write`](crate::json::Write)
+/// impl. Its whitespace goes through the same writer such an impl writes
+/// through, so the output is byte-identical to what writing the same data under
+/// the same policy would have produced.
+///
+/// Values are copied, not re-encoded. A number keeps the spelling the input
+/// gave it and a string keeps its escapes, so `1.50` stays `1.50` and
+/// `"\u0041"` stays `"\u0041"`. The output is the input's data laid out again,
+/// not a round trip through this crate's number and string formatters.
+///
+/// ```
+/// let out = structio::prettify(r#"[1.50,"\u0041"]"#).unwrap();
+/// assert_eq!(out, "[\n  1.50,\n  \"\\u0041\"\n]");
+/// ```
+///
+/// Structure is checked as the walk goes, because it has to be known to be laid
+/// out at all: which container a value is in decides whether it gets a line or
+/// a space, and how deep it is decides the indent. The input must be one
+/// complete JSON document whose structure holds up. Anything else is an
+/// [`Error`] naming the byte that stopped the walk, rather than output that is
+/// quietly wrong:
 ///
 /// ```
 /// use structio::ErrorCode;
@@ -64,6 +55,17 @@ use crate::options::{Options, Pretty};
 /// assert_eq!(e.code, ErrorCode::UnexpectedCharacter);
 /// assert_eq!(e.index, 5);
 /// ```
+///
+/// Tokens are not checked past what stepping over them requires. A number is
+/// taken by its alphabet, so `01` and `1.2.3` lay out unchanged rather than
+/// being refused:
+///
+/// ```
+/// assert_eq!(structio::prettify("[01,1.2.3]").unwrap(), "[\n  01,\n  1.2.3\n]");
+/// ```
+///
+/// This is not a validator, and [`from_str`](crate::from_str) is the thing to
+/// reach for when the question is whether a document is good.
 #[inline]
 pub fn prettify(input: &str) -> Result<String> {
     prettify_with::<Pretty>(input)
@@ -94,7 +96,7 @@ pub fn prettify(input: &str) -> Result<String> {
 /// assert_eq!(out, r#"{"a":[1,2]}"#);
 /// ```
 ///
-/// [`minify`](crate::minify()) reaches the same bytes on any document that is
+/// [`minify`](crate::minify) reaches the same bytes on any document that is
 /// really JSON, and much faster, because compacting needs none of the structure
 /// this walks. Reach for that unless you want the walk's checking too.
 ///

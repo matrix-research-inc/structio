@@ -90,7 +90,7 @@ pub(crate) const fn needs_escape(c: u8) -> bool {
 ///
 /// The one place a scan for a single byte lives. Splitting newline-delimited
 /// JSON asks it for a newline, since a document boundary there is a newline and
-/// nothing else, and the [minifier](crate::minify()) asks it for a quote, since
+/// nothing else, and the [minifier](crate::minify) asks it for a quote, since
 /// a string ends at one and nothing else says where.
 #[inline]
 pub(crate) fn find_byte(data: &[u8], from: usize, b: u8) -> Option<usize> {

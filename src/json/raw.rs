@@ -49,11 +49,10 @@ use core::fmt;
 use std::borrow::Cow;
 
 use crate::error::{Error, PResult, Result};
-use crate::json::minify::minify_into_with;
 use crate::json::parser::Parser;
-use crate::json::prettify::prettify_value_into;
 use crate::json::traits::{Read, Write};
 use crate::json::writer::Writer;
+use crate::json::{minify_into_with, prettify_value_into};
 use crate::options::Options;
 use crate::swar::find_byte;
 
@@ -119,7 +118,7 @@ impl<'de> Raw<'de> {
     /// one value rather than that it is a value this crate would have
     /// produced, and the number grammar is the one place the two differ. A
     /// number is stepped over by its alphabet rather than held to the grammar,
-    /// exactly as [`prettify`](crate::prettify()) steps over one, so `01` is
+    /// exactly as [`prettify`](crate::prettify) steps over one, so `01` is
     /// accepted and stored as it was written. Holding it to the grammar would
     /// cost every well-formed number in every forwarded body to move a
     /// rejection ahead of the reader that will make it anyway, and that reader
@@ -297,7 +296,7 @@ impl fmt::Display for Raw<'_> {
     /// [`new_unchecked`](Self::new_unchecked) takes a span nobody walked, and
     /// laying that one out fails. `Display` has nowhere to report a failure
     /// and would have to swallow it, so laying a span out stays
-    /// [`prettify`](crate::prettify()), which is asked for by name and returns
+    /// [`prettify`](crate::prettify), which is asked for by name and returns
     /// a [`Result`].
     ///
     /// ```
@@ -407,7 +406,7 @@ impl<'de> Read<'de> for Raw<'de> {
 ///
 /// Under [`PRETTY`](crate::Options::PRETTY) they are laid out again at the
 /// writer's current depth, through the same walk
-/// [`prettify`](crate::prettify()) uses. A forwarded value is usually the one
+/// [`prettify`](crate::prettify) uses. A forwarded value is usually the one
 /// part of a document that did not come from a writer here, and emitting it
 /// verbatim would wedge an unindented blob between indented neighbours, which
 /// is what Glaze does and is jarring exactly where a human is reading. Reusing

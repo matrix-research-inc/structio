@@ -333,7 +333,7 @@ impl<'de, O: Options> Parser<'de, O> {
     /// Returns `true` to keep looping and `false` once the container is closed,
     /// leaving the cursor past whichever byte it consumed. Every object, array,
     /// map, and skip loop ends the same way, and so does each container the
-    /// [prettifier](mod@crate::json::prettify) lays out, so they all end here, and all
+    /// [prettifier](crate::prettify) lays out, so they all end here, and all
     /// report the same error when the document holds neither byte.
     #[inline(always)]
     pub(crate) fn comma_or_close(&mut self, close: u8) -> PResult<bool> {
@@ -1515,8 +1515,10 @@ impl<'de, O: Options> Parser<'de, O> {
     /// grammar. Nothing here reads its value, and the two callers both have
     /// somewhere better for a malformed one to be caught: a skipped value is
     /// discarded, and a copied one is republished for whoever reads it next to
-    /// reject. See [`json::prettify`](mod@crate::json::prettify). An escape is stepped over
-    /// too, as [`skip_value`](Self::skip_value) steps over one.
+    /// reject. See
+    /// [docs/design.md](https://github.com/matrix-research-inc/structio/blob/main/docs/design.md#prettifying-is-the-writer-not-a-second-layout)
+    /// for the measurement behind that. An escape is stepped over too, as
+    /// [`skip_value`](Self::skip_value) steps over one.
     #[inline]
     pub(crate) fn skip_scalar(&mut self) -> PResult<()> {
         self.walk_scalar::<false>()
@@ -1591,7 +1593,7 @@ const WHITESPACE: [bool; 256] = {
 /// The four bytes JSON calls whitespace.
 ///
 /// The one definition of it in the crate. The reader and the
-/// [minifier](crate::minify()) share a walk over runs of it, in
+/// [minifier](crate::minify) share a walk over runs of it, in
 /// [`skip_ws_at`]; the stream splitter has its own, because its input grows
 /// under it and a run can end in the middle of nothing. What none of them may
 /// do is disagree about what whitespace is.
@@ -1606,7 +1608,7 @@ pub(crate) const fn is_ws(c: u8) -> bool {
 /// tokens run together": `1` beside `2` is `12`, and `true` beside `false` is
 /// one long word, while punctuation and a quote delimit themselves. The stream
 /// splitter uses it to find where a bare top-level value ends, and the
-/// [minifier](crate::minify()) to know which whitespace it must not remove.
+/// [minifier](crate::minify) to know which whitespace it must not remove.
 ///
 /// Deliberately generous. Neither caller is deciding whether a token is spelled
 /// properly, only where it stops; the real parser makes that judgement when the
@@ -1619,7 +1621,7 @@ pub(crate) const fn scalar_byte(c: u8) -> bool {
 /// First byte at or after `at` that is not whitespace.
 ///
 /// The body of [`Parser::skip_ws`], reachable without a parser so that the
-/// [minifier](crate::minify()), which walks its input by index rather than by
+/// [minifier](crate::minify), which walks its input by index rather than by
 /// cursor, draws the line between whitespace and a token exactly where the
 /// reader draws it.
 #[inline(always)]

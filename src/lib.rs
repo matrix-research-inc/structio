@@ -225,7 +225,7 @@
 //! ```
 //!
 //! Text that is already JSON takes the same policy from the other side.
-//! [`prettify()`] lays out a document that did not come from a `Write` impl, and
+//! [`prettify`] lays out a document that did not come from a `Write` impl, and
 //! emits its whitespace through the same writer, so the result is what writing
 //! the same data would have produced:
 //!
@@ -239,7 +239,7 @@
 //! );
 //! ```
 //!
-//! [`minify()`] goes the other way, and has no layout to agree with: it copies
+//! [`minify`] goes the other way, and has no layout to agree with: it copies
 //! the document through and drops the whitespace between its tokens. That needs
 //! nothing but the strings located, so it neither reads a value nor checks a
 //! bracket, which is what makes it the fastest thing here.
