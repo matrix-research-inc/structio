@@ -1,34 +1,9 @@
 //! Taking the whitespace back out of JSON text.
 //!
-//! The other direction from [`prettify`](crate::prettify()), and a much smaller
-//! job. Laying a document out means knowing its shape, because which container
-//! a value sits in decides whether it gets a line or a space. Taking the layout
-//! away means knowing only where the strings are: whitespace inside one is the
-//! document's, and whitespace outside one is the formatter's.
-//!
-//! So that is all [`minify`] looks for. It copies runs of bytes through
-//! untouched, stopping at a quote to step over a whole string and at whitespace
-//! to drop it. Nothing counts brackets, nothing tracks depth, and no token is
-//! read: `{"a":01,,,}` comes out `{"a":01,,,}`, because a minifier that refused
-//! it would be a validator, and [`from_str`](crate::from_str) is already that.
-//! Even a string is measured rather than checked, so a raw control character
-//! inside one is copied through like any other byte.
-//!
-//! Nothing, then, is refused for being wrong. Three things are refused for
-//! being unanswerable. A string that never closes, because there is no telling
-//! where it ends. A slash that begins no comment, where comments are
-//! whitespace, because dropping what follows assumes a comment and keeping it
-//! assumes content. And whitespace holding two bare tokens apart, because that
-//! whitespace is not the formatter's: removing it would turn `[1 2]` into
-//! `[12]`, a different document, and a well-formed one, from input that was
-//! neither. Every other input either comes out meaning what it meant or comes
-//! out as broken as it went in.
-//!
-//! [`prettify_with::<Standard>`](crate::json::prettify_with) minifies too, and
-//! agrees with this byte for byte on any document that is actually JSON. It
-//! walks the structure to get there, so it costs more and it rejects more.
-//! Reach for it when the answer matters as much as the output; reach for
-//! [`minify`] when there is text to shrink.
+//! What a caller can rely on is documented on [`minify`], which the other entry
+//! points here refer back to. Why this shares none of the prettifier's walk,
+//! where its one strictness test comes from, and what makes the scan fast is in
+//! [docs/design.md](https://github.com/matrix-research-inc/structio/blob/main/docs/design.md#minifying-is-not-the-writer-at-all).
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::json::parser::{scalar_byte, skip_ws_at};
@@ -49,10 +24,30 @@ use crate::swar::{eq_mask, find_byte, first_match, load_u64, lt_mask};
 /// assert_eq!(structio::minify(r#"[ "a b" ]"#).unwrap(), r#"["a b"]"#);
 /// ```
 ///
-/// Neither the structure nor the tokens are checked, so a document that is not
-/// JSON usually comes back shorter rather than refused. The exception is
-/// whitespace that is holding two tokens apart, which cannot be removed without
-/// rewriting the document into a different one:
+/// Laying a document out means knowing its shape, but taking the layout away
+/// means knowing only where the strings are: whitespace inside one is the
+/// document's, and whitespace outside one is the formatter's. So that is all
+/// this looks for. Nothing counts brackets, nothing tracks depth, and no token
+/// is read, so a document that is not JSON usually comes back shorter rather
+/// than refused. Even a string is measured rather than checked, so a raw
+/// control character inside one is copied through like any other byte.
+///
+/// ```
+/// assert_eq!(structio::minify(r#"{"a" : 01, , ,}"#).unwrap(), r#"{"a":01,,,}"#);
+/// ```
+///
+/// A minifier that refused that would be a validator, and
+/// [`from_str`](crate::from_str) is already that.
+///
+/// Nothing, then, is refused for being wrong. Three things are refused for
+/// being unanswerable, each as an [`Error`] naming the byte it stopped at. A
+/// string that never closes, because there is no telling where it ends. A slash
+/// that begins no comment, where [`minify_with`] is reading comments as
+/// whitespace, because dropping what follows assumes a comment and keeping it
+/// assumes content. And whitespace holding two bare tokens apart, because that
+/// whitespace is not the formatter's: removing it would turn `[1 2]` into
+/// `[12]`, a different document, and a well-formed one, from input that was
+/// neither.
 ///
 /// ```
 /// use structio::ErrorCode;
@@ -61,6 +56,15 @@ use crate::swar::{eq_mask, find_byte, first_match, load_u64, lt_mask};
 /// assert_eq!(e.code, ErrorCode::UnexpectedCharacter);
 /// assert_eq!(e.index, 3);
 /// ```
+///
+/// Every other input either comes out meaning what it meant or comes out as
+/// broken as it went in.
+///
+/// [`prettify_with::<Standard>`](crate::json::prettify_with) minifies too, and
+/// agrees with this byte for byte on any document that is actually JSON. It
+/// walks the structure to get there, so it costs more and it rejects more.
+/// Reach for it when the answer matters as much as the output; reach for this
+/// when there is text to shrink.
 #[inline]
 pub fn minify(input: &str) -> Result<String> {
     minify_with::<Standard>(input)

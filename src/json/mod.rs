@@ -8,9 +8,9 @@
 //! [`beve`](crate::beve).
 
 pub mod impls;
-pub mod minify;
+mod minify;
 pub mod parser;
-pub mod prettify;
+mod prettify;
 pub mod raw;
 pub mod stream;
 mod traits;

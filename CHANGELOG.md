@@ -10,6 +10,8 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **A pointer read is charged the containers it passes through.** `from_beve_at` and `Reader::seek` counted no level for the path, and stepped over siblings as if from the top, so the depth limit applied from the value named rather than to the document. `from_beve_at` now counts every container on the way, and a document every other walk refuses as too deep is refused here too. A hand-driven `seek` measures siblings on the path the same way but leaves the reader's depth as it found it. **Breaking** for a document past the limit that was readable through a pointer.
 
+- **`json::prettify` and `json::minify` are only the functions.** Each name was also a public module holding nothing but the functions already re-exported beside it, so rustdoc listed it twice and a doc link to it was ambiguous. The modules are private now, and the docs they carried are on the functions. **Breaking** for a path through the module, such as `json::prettify::prettify` or `structio::minify::minify_with`: drop the module.
+
 ### Fixed
 
 - **An unsigned integer reads `-0` as `0`,** as a signed one does, at every width and as a JSON key or BEVE pointer token. It was `NumberOutOfRange`, or `ExpectedNumber` for a `u128`. A negative number is `NumberOutOfRange` at every width, a `u128` included, and a sign in front of a malformed number, such as `-` or `--1`, is refused the same way at every width, signed or not.
