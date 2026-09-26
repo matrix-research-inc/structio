@@ -48,7 +48,7 @@ Both formats share one table but reach it through different entry points, since 
 
 ## Round-tripping
 
-**JSON** is fuzzed over 20k generated documents containing escapes, multi-byte UTF-8, astral-plane characters, and subnormal and extreme floats. Every prefix and single-byte corruption of 2300 documents is checked to produce an error rather than a panic.
+**JSON** is fuzzed over 20k generated documents containing escapes, multi-byte UTF-8, astral-plane characters, and subnormal and extreme floats. Every prefix of 300 generated documents, and a single-byte corruption of each of 2000 more wherever it is still UTF-8, is read and checked not to panic. Either can still be a valid document, so the result itself is not asserted.
 
 **BEVE** is fuzzed over the same generated documents, with the two formats asserted to land on the same value. Every prefix and every single-byte corruption of those documents is checked to produce an error rather than a panic, as are 20k arbitrary byte strings read into four different destination types.
 

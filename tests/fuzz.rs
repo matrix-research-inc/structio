@@ -318,8 +318,8 @@ fn reading_into_a_reused_value_matches_a_fresh_one() {
 
 #[test]
 fn truncating_any_document_never_panics() {
-    // Every prefix of a valid document must produce an error, not a panic and
-    // not a wrong success.
+    // Every prefix of a valid document must be read without a panic. A prefix
+    // can itself be a valid document, so what it reads as is not checked.
     let mut r = Rng(0xFEED_FACE_CAFE_BEEF);
     for _ in 0..rounds(300) {
         let json = to_string(&gen_node(&mut r));
@@ -355,6 +355,8 @@ fn corrupting_any_byte_never_panics() {
         } else {
             bytes[pos] = (r.below(128)) as u8;
         }
+        // As with a prefix, a corruption can leave a valid document, so the
+        // only requirement is that reading it does not panic.
         if let Ok(s) = std::str::from_utf8(&bytes) {
             let _ = from_str::<Node>(s);
         }
