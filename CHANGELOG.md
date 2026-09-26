@@ -6,6 +6,10 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 ## [Unreleased]
 
+### Added
+
+- **BEVE aligned complex arrays (complex sub-type 2).** Every walk reads them, and the aligned writers (`to_beve_aligned`, `append_beve_aligned`, `Writer::aligned`) now write a run of complex numbers wider than a byte per component in this form, so `Cow<'de, [Complex<f64>]>` and `beve_slice_ref` can borrow it. A decoder without sub-type 2, such as an earlier release of this crate, cannot read that output. Sub-types 3 through 7 are still `InvalidHeader`, as is an aligned run whose inner array is not aligned, is of another element type, or holds an odd number of components.
+
 ### Changed
 
 - **A pointer read is charged the containers it passes through.** `from_beve_at` and `Reader::seek` counted no level for the path, and stepped over siblings as if from the top, so the depth limit applied from the value named rather than to the document. `from_beve_at` now counts every container on the way, and a document every other walk refuses as too deep is refused here too. A hand-driven `seek` measures siblings on the path the same way but leaves the reader's depth as it found it. **Breaking** for a document past the limit that was readable through a pointer.
