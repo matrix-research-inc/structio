@@ -4,20 +4,22 @@
 //! `rewind` is the documented way to abandon a read, and it restores the
 //! cursor. The readers keep state beside the cursor, though: the nesting count
 //! that enforces `MAX_DEPTH`, the stack of late-tag runs an internally tagged
-//! object reads after its payload, and, in BEVE, the header a typed array
-//! installs for the element being read. None of those can be wound back by an
-//! offset, so a failure has to put them back itself. When it did not, the
-//! count went up a level per failure and the same document turned from
-//! `UnknownVariant` into `ExceededMaxDepth` on the 257th attempt, a run left on
-//! the stack was taken by the next object at its depth, which then read another
-//! object's members as its own, and a header left installed was taken by the
-//! next read as its own, which then read a number one byte early.
+//! object reads after its payload, and, in BEVE, the header installed for an
+//! element of a typed array. The first two cannot be wound back by an offset,
+//! so a failure has to put them back itself. The header belongs to its
+//! element, so `rewind` puts it back there and takes it away anywhere else.
+//! When they were left behind, the count went up a level per failure and the
+//! same document turned from `UnknownVariant` into `ExceededMaxDepth` on the
+//! 257th attempt, a run left on the stack was taken by the next object at its
+//! depth, which then read another object's members as its own, and a header
+//! left installed was taken by the next read as its own, which then read a
+//! number from the wrong bytes.
 //!
 //! So each case here fails the same way several times over the limit's worth
 //! of attempts, in each format that has the reader: the object, enum,
 //! sequence, map, `Value`, skipping and internally tagged readers, and the
 //! ones behind `Matrix`, `Complex`, `Cow<[T]>`, JSON's `Raw` and BEVE's
-//! whole-block reads, byte slices and validation.
+//! whole-block reads, byte slices, validation and pointer seeks.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -25,7 +27,8 @@ use std::collections::HashMap;
 use structio::beve::header;
 use structio::json::Raw;
 use structio::{
-    Complex, ErrorCode, Matrix, MatrixLayout, Options, Value, beve, from_beve, json, to_beve,
+    Complex, ErrorCode, Matrix, MatrixLayout, Options, Value, beve, from_beve, from_beve_at, json,
+    to_beve,
 };
 
 /// More attempts than the nesting limit, so a count that leaked even one level
@@ -476,6 +479,145 @@ fn a_reader_speculating_on_an_element_winds_back_onto_its_header() {
     assert_eq!(read, expected);
 }
 
+/// Reads a whole value and then refuses it: a read that failed with nothing
+/// of the value left to take.
+#[derive(Debug, Default)]
+struct ReadThenRefused;
+
+impl<'de> beve::Read<'de> for ReadThenRefused {
+    fn read<O: Options>(&mut self, r: &mut beve::Reader<'de, O>) -> Result<(), ErrorCode> {
+        r.read(&mut Value::Null)?;
+        Err(ErrorCode::ExpectedNull)
+    }
+}
+
+#[test]
+fn a_seek_onto_an_element_leaves_no_header_behind() {
+    // A seek onto an element of a typed array installs the header the element
+    // would have carried, and leaves it for the read that follows. Winding
+    // back from the element to anywhere else has to take it away: a number
+    // was read without an error from the bytes at the start of the document,
+    // a `Value` and a sequence took the element's header for the array's, and
+    // a second seek found a scalar where the array was.
+    let numbers = to_beve(&vec![1.5f64, 2.5, -3.0]);
+    sought_elements::<f64>(&numbers, &["/0", "/1", "/2"]);
+    let booleans = to_beve(&vec![true, false, true]);
+    sought_elements::<bool>(&booleans, &["/0", "/1", "/2"]);
+    let strings = to_beve(&vec!["a".to_string(), "bc".to_string()]);
+    sought_elements::<String>(&strings, &["/0", "/1"]);
+    // A complex array is an extension, whose insides no pointer reaches.
+    let complex = to_beve(&vec![Complex::new(1.5f64, -1.5)]);
+    let mut r = beve::Reader::new(&complex);
+    assert_eq!(r.seek("/0"), Err(ErrorCode::NoSuchValue));
+    // One level down, where the array is not the whole document.
+    let nested = to_beve(&vec![vec![1u8, 2, 3]]);
+    sought_elements::<u8>(&nested, &["/0/0", "/0/1", "/0/2"]);
+}
+
+/// What reading a `T` at the cursor gives, and how far it moved the cursor.
+fn outcome<T>(r: &mut beve::Reader<'_>) -> (Result<T, ErrorCode>, usize)
+where
+    T: Default + for<'de> beve::Read<'de>,
+{
+    let from = r.position();
+    let mut value = T::default();
+    let result = r.read(&mut value).map(|()| value);
+    (result, r.position() - from)
+}
+
+/// Seek each of `pointers`, elements of typed arrays in `doc`, and wind back
+/// after reading the element, after failing to in each way a read can, or
+/// with nothing read. Back onto the element, it has to read again; anywhere
+/// before it, the reader has to read exactly what one that never sought reads
+/// over the same bytes.
+fn sought_elements<T>(doc: &[u8], pointers: &[&str])
+where
+    T: Default + PartialEq + std::fmt::Debug + for<'de> beve::Read<'de>,
+{
+    type Leave = Box<dyn Fn(&mut beve::Reader<'_>)>;
+    let leaves: [(&str, Leave); 5] = [
+        ("nothing read", Box::new(|_| {})),
+        ("read", Box::new(|r| assert!(outcome::<T>(r).0.is_ok()))),
+        (
+            "refused, header left",
+            Box::new(|r| assert!(outcome::<OnlyNull>(r).0.is_err())),
+        ),
+        (
+            "refused, header taken",
+            Box::new(|r| assert!(outcome::<Matrix<f64>>(r).0.is_err())),
+        ),
+        (
+            "refused, element taken",
+            Box::new(|r| assert!(outcome::<ReadThenRefused>(r).0.is_err())),
+        ),
+    ];
+    for &pointer in pointers {
+        let element = from_beve_at::<T>(doc, pointer).unwrap();
+        let sought = || {
+            let mut r = beve::Reader::new(doc);
+            r.seek(pointer).unwrap();
+            r
+        };
+        let at = sought().position();
+
+        // Forward is no rewind, and leaves the header where it was.
+        let mut r = sought();
+        r.rewind(doc.len());
+        assert_eq!(r.position(), at);
+        assert_eq!(outcome::<T>(&mut r).0.as_ref(), Ok(&element), "{pointer}");
+
+        // A second seek, from the start, finds the array rather than the
+        // element's header.
+        for &other in pointers {
+            let mut r = sought();
+            r.rewind(0);
+            r.seek(other).unwrap();
+            let expected = from_beve_at::<T>(doc, other).unwrap();
+            assert_eq!(
+                outcome::<T>(&mut r).0,
+                Ok(expected),
+                "{pointer}, then {other}"
+            );
+        }
+
+        for (how, leave) in &leaves {
+            let wound = |to: usize| {
+                let mut r = sought();
+                leave(&mut r);
+                r.rewind(to);
+                assert_eq!(r.position(), to);
+                r
+            };
+            let context = |to: usize| format!("{pointer}, {how}, wound back to {to}");
+
+            let read = outcome::<T>(&mut wound(at)).0;
+            assert_eq!(read.as_ref(), Ok(&element), "{}", context(at));
+
+            for to in 0..at {
+                let fresh = || beve::Reader::new(&doc[to..]);
+                assert_eq!(
+                    outcome::<Value>(&mut wound(to)),
+                    outcome::<Value>(&mut fresh()),
+                    "{}",
+                    context(to)
+                );
+                assert_eq!(
+                    outcome::<f64>(&mut wound(to)),
+                    outcome::<f64>(&mut fresh()),
+                    "{}",
+                    context(to)
+                );
+                assert_eq!(
+                    outcome::<Vec<T>>(&mut wound(to)),
+                    outcome::<Vec<T>>(&mut fresh()),
+                    "{}",
+                    context(to)
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn the_limit_stays_where_it_was() {
     // A container one past the limit is refused, and the refusal must not
@@ -528,20 +670,39 @@ fn the_limit_stays_where_it_was() {
 fn a_seek_leaves_the_limit_where_it_was() {
     // A seek counts the containers on its path while it walks them, so the
     // siblings it steps over are measured from where they sit, and then puts
-    // the depth back, on success as on failure. The object the pointer names
-    // sits at the limit exactly, so a single level kept by any attempt would
-    // have the next one refused as too deep.
-    let outer = beve::MAX_DEPTH as usize - 1;
-    let doc = beve_of(&format!(
-        r#"{}{{"a":"x"}}{}"#,
-        "[".repeat(outer),
-        "]".repeat(outer)
-    ));
-    let path = "/0".repeat(outer);
+    // the depth back, on success as on failure. The sibling the path steps
+    // over last and the object the pointer names both sit at the limit
+    // exactly, so a single level kept by any attempt would have the next one
+    // refused as too deep.
+    let outer = beve::MAX_DEPTH as usize - 2;
+    // Built as bytes, since the deeper of the two is past the limit of the
+    // JSON reader that would otherwise build it.
+    let arrays = |n: usize, len: u8| [header::GENERIC_ARRAY, len << 2].repeat(n);
+    let doc = |sibling: usize| {
+        [
+            arrays(outer, 1),
+            arrays(1, 2),
+            arrays(sibling, 1),
+            vec![header::NULL],
+            beve_of(r#"{"a":"x"}"#),
+        ]
+        .concat()
+    };
+    let path = format!("{}/1", "/0".repeat(outer));
     let named = format!("{path}/a");
     let missing = format!("{path}/b");
     let number = |r: &mut beve::Reader<'_>| beve::Read::read(&mut 0u32, r);
 
+    // One level deeper, the sibling is past the limit where it sits, though
+    // not from the top of the document, where a seek that counted nothing
+    // measured it from.
+    assert_eq!(
+        beve_retried(&doc(2), |r| r.seek(&named)),
+        ErrorCode::ExceededMaxDepth
+    );
+
+    let doc = doc(1);
+    beve::validate(&doc).unwrap();
     // The seek fails, at the very end of the path.
     assert_eq!(
         beve_retried(&doc, |r| r.seek(&missing)),

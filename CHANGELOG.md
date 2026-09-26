@@ -22,7 +22,7 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **A 128-bit float is refused on its header by `Value` and `beve_to_json` too,** as the typed readers refuse it, rather than past its payload. A truncated one is `UnsupportedFeature` rather than `UnexpectedEnd`.
 
-- **A failed BEVE element read no longer leaves its header behind.** An element of a typed array refused without taking its header, as `Matrix` refuses one, left that header installed, so after a `rewind` the next read took it as its own: a retry failed differently, and a number could read one byte early without an error. `rewind` onto an element also puts its header back, so a reader can try one type and then another on an element.
+- **A BEVE element's header no longer outlives the element.** An element of a typed array refused without taking its header, as `Matrix` refuses one, left that header installed, and so did `Reader::seek` onto an element with nothing failing, so after a `rewind` the next read took it as its own: a retry failed differently, a second seek found no array, and a number could read from the wrong bytes without an error. `rewind` now puts an element's header back when it lands on the element, so a reader can try one type and then another on it, and takes it away anywhere else.
 
 - **`Matrix`, `Complex` and `()` report a BEVE value of the wrong kind just past its header,** as every other reader does, rather than on the header. `()` also refuses an undefined null or boolean header as `InvalidHeader`, as every other walk does.
 
