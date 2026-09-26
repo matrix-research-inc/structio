@@ -585,3 +585,45 @@ fn a_hand_driven_seek_measures_from_where_the_reader_stands() {
     r.seek(&half).unwrap();
     r.skip_value().unwrap();
 }
+
+#[test]
+fn a_hand_driven_seek_measures_siblings_from_where_they_sit() {
+    // Halfway down, an object holds a sibling the pointer steps over and then
+    // the value it names. Measured from where it sits, the sibling is within
+    // the limit or one past it; measured from the top of the reader, as a seek
+    // that counted no level for its path measured it, it is well within it
+    // either way. The value named is as deep as the limit on its own, so it
+    // reads only if the seek left the reader's depth as it found it.
+    let key = |name: &[u8]| [&[(name.len() as u8) << 2][..], name].concat();
+    let limit = beve::MAX_DEPTH as usize;
+    let path = limit / 2;
+    let arrays = |n: usize| [header::GENERIC_ARRAY, 1 << 2].repeat(n);
+    let doc = |sibling: usize| {
+        let mut doc = Vec::new();
+        for _ in 0..path {
+            doc.extend_from_slice(&[header::OBJECT, 1 << 2]);
+            doc.extend_from_slice(&key(b"next"));
+        }
+        doc.extend_from_slice(&[header::OBJECT, 2 << 2]);
+        doc.extend_from_slice(&key(b"skip"));
+        doc.extend_from_slice(&arrays(sibling));
+        doc.push(header::NULL);
+        doc.extend_from_slice(&key(b"keep"));
+        doc.extend_from_slice(&arrays(limit));
+        doc.push(header::NULL);
+        doc
+    };
+    let pointer = format!("{}/keep", "/next".repeat(path));
+
+    // `path + 1 + sibling` containers deep where the sibling ends.
+    let over = doc(limit - path);
+    let mut r = beve::Reader::new(&over);
+    assert_eq!(r.seek(&pointer), Err(ErrorCode::ExceededMaxDepth));
+
+    let at = doc(limit - path - 1);
+    let mut r = beve::Reader::new(&at);
+    r.seek(&pointer).unwrap();
+    let mut value = structio::Value::Null;
+    r.read(&mut value).unwrap();
+    r.finish().unwrap();
+}

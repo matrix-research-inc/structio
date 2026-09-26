@@ -132,12 +132,13 @@ pub struct Reader<'de, O: Options = Standard> {
     /// [`set_error_key`](Reader::set_error_key).
     error_key: Option<&'static str>,
     /// The header the next value must be read with, when it carries none of
-    /// its own. See the module docs.
+    /// its own. `Some` only while the cursor stands on the value it was
+    /// installed for. See the module docs.
     implied: Option<u8>,
     /// Where the value `implied` was last installed for begins, and that
     /// header, kept after the value's read has taken it so that
-    /// [`rewind`](Reader::rewind) back onto the value can put it back. See
-    /// [`implying`](Reader::implying).
+    /// [`rewind`](Reader::rewind) back onto the value can put it back, and
+    /// dropped by a rewind anywhere else. See [`implying`](Reader::implying).
     installed: Option<(usize, u8)>,
     /// Members of internally tagged objects that came before their tag, to
     /// be read once the ones after it are: a stack, since an object whose tag
@@ -291,30 +292,33 @@ impl<'de, O: Options> Reader<'de, O> {
     /// Any key [`set_error_key`](Self::set_error_key) left is dropped, for
     /// the reason [`json::Parser::rewind`](crate::json::Parser::rewind) gives.
     ///
-    /// Winding back onto an element of a typed array puts back the header the
-    /// array installed for it. The element's bytes do not hold that header, so
-    /// an attempt that took it and failed would otherwise leave the next one to
-    /// read the element's first byte as its header: a reader that speculates on
-    /// an element, trying a number and then a string, is as free to wind back
-    /// and retry as one that speculates on a whole value.
+    /// Besides the cursor, the one piece of state wound back is the header of
+    /// an element of a typed array, which a [`seek`](Self::seek) onto the
+    /// element or a read of the array installs because the element's bytes
+    /// hold none. A header is installed only while the cursor stands on its
+    /// element, so winding back onto that element puts it back and winding
+    /// anywhere else takes it away; a forward `to` leaves it as it leaves the
+    /// cursor. The first is what lets a reader that speculates on an element,
+    /// trying a number and then a string, wind back and retry as freely as one
+    /// that speculates on a whole value: the try that took the header would
+    /// otherwise leave the next one reading the element's first byte as its
+    /// header. The second is what lets a reader that sought onto an element
+    /// wind back to read something else, which would otherwise take the
+    /// element's header as its own.
     ///
     /// Nothing else needs winding back, for the reason `json::Parser::rewind`
-    /// gives, and an installed header is taken back the same way: a failed
-    /// read leaves none behind for whatever is read next.
+    /// gives.
     #[inline]
     pub fn rewind(&mut self, to: usize) {
-        // Clamping is also what keeps `pos <= data.len()`, which every bounds
-        // test in here is written against.
-        self.pos = to.min(self.pos);
         self.error_key = None;
-        // Asked for by name, rather than landed on by clamping, so a forward
-        // `to` stays the no-op it is documented to be.
-        if let Some((at, h)) = self.installed
-            && to == at
-            && self.pos == at
-        {
-            self.implied = Some(h);
+        // Returning here is also what keeps `pos <= data.len()`, which every
+        // bounds test in here is written against.
+        if to > self.pos {
+            return;
         }
+        self.pos = to;
+        self.installed = self.installed.filter(|&(at, _)| at == to);
+        self.implied = self.installed.map(|(_, h)| h);
     }
 
     /// Confirm the document ended where the value did.
@@ -446,11 +450,14 @@ impl<'de, O: Options> Reader<'de, O> {
     /// and it outlives a failed read the same way. A read that refuses a
     /// header it only looked at, as a hand-written impl that refuses whatever
     /// [`try_null`](Self::try_null) declines does, leaves it installed, and
-    /// whatever is read next, after a [`rewind`](Self::rewind) or not, takes it
-    /// as its own header and reads the bytes after it as a value of that type.
-    /// So every walk that installs one goes through here, as every container
-    /// walk goes through [`nested`](Self::nested), rather than clearing it
-    /// after a loop that a `?` can leave early.
+    /// whatever its caller reads next without a [`rewind`](Self::rewind) takes
+    /// it as its own header and reads the bytes after it as a value of that
+    /// type. So every walk that installs one for a read of its own goes through
+    /// here, as every container walk goes through [`nested`](Self::nested),
+    /// rather than clearing it after a loop that a `?` can leave early. The
+    /// one install that outlasts its call is [`seek`](Self::seek)'s, which
+    /// hands the element to its caller: the caller's read takes the header,
+    /// and a rewind anywhere but onto the element takes it away.
     ///
     /// Where the value begins is recorded beside the header, for as long as
     /// the read lasts, which is what lets `rewind` put the header back when a
@@ -1628,11 +1635,12 @@ impl<'de, O: Options> Reader<'de, O> {
     /// corrected instead of believed. It goes back through
     /// [`rewind`](Self::rewind), which drops any error key the declined
     /// attempt left, for the same reason: a hook that swallowed a failed read
-    /// of a generated type is holding a key it did not set. What is not put
-    /// back is the depth and any installed element header, which no correct
-    /// implementation moves: the walks that set either restore it on every
+    /// of a generated type is holding a key it did not set. As everywhere, it
+    /// also leaves an element's header installed on that element and nowhere
+    /// else. What is not put back is the depth, which no correct
+    /// implementation moves: the walks that enter a level leave it on every
     /// exit, errors included, so even a `read_bulk` that swallowed an error
-    /// returns here with both as they were.
+    /// returns here with it as it was.
     ///
     /// [`Self::write_slice_with`]: crate::beve::Writer::write_slice_with
     pub fn try_bulk_with<A: ReadAs<'de, T>, T>(&mut self, out: &mut Vec<T>) -> PResult<bool> {
@@ -1945,6 +1953,12 @@ impl<'de, O: Options> Reader<'de, O> {
     /// of the values in front of it. A subtree that is not on the path is
     /// stepped over whole, and one that is a typed array is not stepped over
     /// at all: an element of it is found by multiplying.
+    ///
+    /// Such an element carries no header of its own, so the seek installs the
+    /// one the array implies, as reading the array does. The next read takes
+    /// it, and a [`rewind`](Self::rewind) anywhere but onto the element takes
+    /// it away, so winding back to read something else reads it as a reader
+    /// that never sought would.
     ///
     /// A hand-driven reader measures depth from where it stands, so a seek
     /// leaves the reader's depth as it found it and the value it lands on is
