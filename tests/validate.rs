@@ -619,6 +619,7 @@ fn readers_of(h: u8) -> Vec<(&'static str, Walk)> {
         header::TY_NULL_BOOL => vec![
             ("bool", |b| from_beve::<bool>(b).map(drop)),
             ("Option<bool>", |b| from_beve::<Option<bool>>(b).map(drop)),
+            ("()", |b| from_beve::<()>(b).map(drop)),
         ],
         header::TY_NUMBER => vec![
             ("u8", |b| from_beve::<u8>(b).map(drop)),
