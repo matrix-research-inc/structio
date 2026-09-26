@@ -12,6 +12,8 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **`json::prettify` and `json::minify` are only the functions.** Each name was also a public module holding nothing but the functions already re-exported beside it, so rustdoc listed it twice and a doc link to it was ambiguous. The modules are private now, and the docs they carried are on the functions. **Breaking** for a path through the module, such as `json::prettify::prettify` or `structio::minify::minify_with`: drop the module.
 
+- **A BEVE header with an unspecified bit set is `InvalidHeader`.** The specification requires those bits to be zero, but every walk, `validate_beve` included, read a string or generic array with any of its top five bits set, or a string-keyed object with any of its top three, as the plain header, so one value had many encodings. They are now refused on the header, as an undefined width is. An object of the undefined fourth key type is `InvalidHeader` too, rather than `UnsupportedKeyType`. **Breaking** for documents that set those bits, which this crate never writes.
+
 ### Fixed
 
 - **An unsigned integer reads `-0` as `0`,** as a signed one does, at every width, as a value and as an integer key: a JSON key, a BEVE string key, or a BEVE pointer token naming a key. It is still no array index, which RFC 6901 spells without a sign. It was `NumberOutOfRange`, or `ExpectedNumber` for a `u128`. A negative number is `NumberOutOfRange` at every width, a `u128` included, and a sign in front of a malformed number, such as `-` or `--1`, is refused the same way at every width, signed or not.
@@ -20,9 +22,13 @@ Before 1.0 the API is not frozen: a minor bump may break it, and what broke is l
 
 - **The `Value` docs say what reading `-0` as `-0.0` costs.** Behaviour is 0.7.0's, unchanged: `as_i64`, `as_u64` and `is_i64` refuse it, `from_value` into an integer type refuses it while `from_str::<i64>("-0")` is `0`, and it writes to BEVE as an `f64` rather than the integer `0`. An integer past 64 bits, stored as a float, has always behaved the same way.
 
-- **An undefined BEVE header is `InvalidHeader` in every walk, at the same offset.** A typed read that wanted that kind of value reported a mismatch instead: `ExpectedInteger` for a float of undefined width (a 0.7.0 regression), `ExpectedBool` for an undefined null or boolean, `UnsupportedKeyType` for a struct or enum given integer keys of undefined width, and `ExpectedBytes` for a `&[u8]` given an undefined typed array. A typed array of an undefined element type is now refused on its header, before its count.
+- **An undefined BEVE header is `InvalidHeader` in every walk, just past the header,** or at the value's first byte from a stream's framer, which reports every refusal there. A typed read that wanted that kind of value reported a mismatch instead: `ExpectedInteger` for a float of undefined width (a 0.7.0 regression), `ExpectedBool` for an undefined null or boolean, `UnsupportedKeyType` for a struct or enum given integer keys of undefined width, and `ExpectedBytes` for a `&[u8]` given an undefined typed array. A typed array of an undefined element type is now refused on its header, before its count.
 
-- **A 128-bit float is refused on its header by `Value` and `beve_to_json` too,** as the typed readers refuse it, rather than past its payload. A truncated one is `UnsupportedFeature` rather than `UnexpectedEnd`.
+- **A 128-bit float is refused on its header by every walk that decodes it,** rather than past its payload: `Value` and `beve_to_json` as the typed readers refuse it, and a typed read of a typed or complex array of them before it looks for the payload. A truncated one is `UnsupportedFeature` rather than `UnexpectedEnd`.
+
+- **At the depth limit, a typed array is refused for its depth in every walk.** The stream framer checked the element type before charging the level, so an undefined one was `InvalidHeader` there and `ExceededMaxDepth` everywhere else.
+
+- **`Documents::array` and `Feed::array` charge the outer array a level.** Its elements were framed as if at the top, so a document one level past the limit streamed, and at the limit the two modes refused the same bytes differently.
 
 - **A BEVE element's header no longer outlives the element.** An element of a typed array refused without taking its header, as `Matrix` refuses one, left that header installed, and so did `Reader::seek` onto an element with nothing failing, so after a `rewind` the next read took it as its own: a retry failed differently, a second seek found no array, and a number could read from the wrong bytes without an error. `rewind` now puts an element's header back when it lands on the element, so a reader can try one type and then another on it, and takes it away anywhere else.
 

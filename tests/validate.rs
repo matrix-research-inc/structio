@@ -429,22 +429,7 @@ fn an_undefined_float_width_is_not_a_value_in_any_walk() {
         ("transcode", |b| beve_to_json(b).map(drop)),
     ];
     // The walks that only measure a value, and so have no use for its type.
-    let measuring: [(&str, Walk); 2] = [
-        ("validate", validate_beve),
-        ("skip", |b| {
-            // The same bytes as an unknown member's value, stepped over. The
-            // offset is taken back to the value's own, the member's key being
-            // the four bytes in front of it.
-            let mut doc = vec![header::OBJECT, 1 << 2, 1 << 2, b'z'];
-            doc.extend_from_slice(b);
-            from_beve_with::<SkipUnknown, Inner>(&doc)
-                .map(drop)
-                .map_err(|e| structio::Error {
-                    index: e.index - 4,
-                    ..e
-                })
-        }),
-    ];
+    let measuring: [(&str, Walk); 2] = [("validate", validate_beve), ("skip", skipped)];
     for code in 5..8 {
         let mut doc = vec![header::number(header::CAT_FLOAT, code)];
         doc.extend_from_slice(&[0; 16]);
@@ -509,7 +494,8 @@ fn an_undefined_float_width_is_not_a_value_in_any_walk() {
 fn a_128_bit_float_in_a_container_is_refused_where_its_first_element_begins() {
     // A typed array or a complex value states its element type once, up front,
     // and every walk that decodes the elements refuses one it cannot decode
-    // there, before the payload is taken. An empty one holds nothing to decode.
+    // there, before the payload is looked for. An empty one holds nothing to
+    // decode.
     let f128 = header::number(header::CAT_FLOAT, 4);
     let class = f128 & !0b111;
     let cases: [(&str, Vec<u8>, Option<usize>); 6] = [
@@ -559,8 +545,24 @@ fn a_128_bit_float_in_a_container_is_refused_where_its_first_element_begins() {
             Some(7),
         ),
     ];
-    for (name, doc, refused_at) in cases {
-        validate_beve(&doc).unwrap();
+    // Each refused one is tried whole and with its payload cut short. The
+    // refusal is on the header, so the missing payload makes no difference to
+    // a walk that decodes, where a validator, which steps over the payload and
+    // accepts it whole, runs out at the same place.
+    let short: Vec<_> = cases
+        .iter()
+        .filter_map(|&(name, ref doc, at)| at.map(|at| (name, doc[..at + 8].to_vec(), Some(at))))
+        .collect();
+    let whole = cases.into_iter().map(|case| (case, true));
+    for ((name, doc, refused_at), whole) in whole.chain(short.into_iter().map(|case| (case, false)))
+    {
+        let validated = validate_beve(&doc).map_err(|e| (e.code, e.index));
+        match refused_at {
+            Some(at) if !whole => {
+                assert_eq!(validated, Err((ErrorCode::UnexpectedEnd, at)), "{name}")
+            }
+            _ => assert_eq!(validated, Ok(()), "{name}"),
+        }
         let typed: structio::Result<()> = if doc[0] == header::COMPLEX {
             if doc[1] == class {
                 from_beve::<Complex<f64>>(&doc).map(drop)
@@ -588,7 +590,7 @@ fn a_128_bit_float_in_a_container_is_refused_where_its_first_element_begins() {
                     assert_eq!(
                         (e.code, e.index),
                         (ErrorCode::UnsupportedFeature, at),
-                        "{walk}, {name}"
+                        "{walk}, {name}, whole {whole}"
                     );
                 }
             }
@@ -684,55 +686,228 @@ fn readers_of(h: u8) -> Vec<(&'static str, Walk)> {
     }
 }
 
+/// The same bytes as an unknown member's value, stepped over, with the offset
+/// taken back to the value's own, the member's key being the four bytes in
+/// front of it.
+fn skipped(value: &[u8]) -> structio::Result<()> {
+    let doc = [&[header::OBJECT, 1 << 2, 1 << 2, b'z'][..], value].concat();
+    from_beve_with::<SkipUnknown, Inner>(&doc)
+        .map(drop)
+        .map_err(|e| structio::Error {
+            index: e.index - 4,
+            ..e
+        })
+}
+
+/// Steps over whatever value is there, so that what a framer makes of a value
+/// is not mixed up with what some particular type makes of it.
+#[derive(Default)]
+struct Any;
+
+impl<'de> beve::Read<'de> for Any {
+    fn read<O: structio::Options>(
+        &mut self,
+        r: &mut beve::Reader<'de, O>,
+    ) -> Result<(), ErrorCode> {
+        r.skip_value()
+    }
+}
+
+/// What the two framers make of `doc`: `Documents::values` over it, and
+/// `Documents::array` over it as the one element of a generic array, with the
+/// latter's offsets taken back to the document's own. `Ok` is how many values
+/// came out, and `Err` the first refusal.
+fn framed(doc: &[u8]) -> [(&'static str, structio::Result<usize>); 2] {
+    let element = [&[header::GENERIC_ARRAY, 1 << 2][..], doc].concat();
+    let array = drain(beve::Documents::array(&element)).map_err(|e| structio::Error {
+        index: e.index - 2,
+        ..e
+    });
+    [
+        ("Documents::values", drain(beve::Documents::values(doc))),
+        ("Documents::array", array),
+    ]
+}
+
+/// How many values `docs` hands out, or the first refusal.
+fn drain(mut docs: beve::Documents<&[u8]>) -> structio::Result<usize> {
+    let mut n = 0;
+    while let Some(item) = docs.next_value::<Any>() {
+        if let Err(e) = item {
+            return Err(*e.as_parse().expect("a slice has no I/O to fail"));
+        }
+        n += 1;
+    }
+    Ok(n)
+}
+
 #[test]
-fn a_header_the_validator_refuses_is_refused_the_same_way_by_a_reader_of_its_kind() {
-    // A reader that wanted some other kind reports the mismatch, which is
-    // `ExpectedString` and the like. One that wanted this kind has met a
-    // header of the right type that is no value at all, and must say so as
-    // every walk that takes whatever is there says so, and at the same offset.
+fn every_walk_agrees_with_the_validator_on_every_header() {
     // Swept over every header byte, with a payload of a zero count and with
     // one of a single zero element, so that a refusal on the header is never
-    // mistaken for one about what follows it.
-    let everyone: [(&str, Walk); 3] = [
+    // mistaken for one about what follows it. Every walk that takes whatever
+    // is there accepts what the validator accepts and refuses what it refuses,
+    // with its code at its offset. A reader that wanted some other kind reports
+    // the mismatch, `ExpectedString` and the like; one that wanted this kind
+    // has met a header of the right type that is no value at all, and says so
+    // as the validator does.
+    //
+    // Three differences are by design. A walk that decodes refuses what it
+    // cannot decode as soon as it knows: a 128-bit float or the deprecated
+    // type tag on the header, and an undefined matrix layout on its byte. The
+    // validator steps over all three and may find something wrong further on.
+    // A pointer read never looks past the value it names. And a framer reports
+    // every refusal against the value's start rather than past its header.
+    let everyone: [(&str, Walk); 4] = [
         ("Value", |b| from_beve::<Value>(b).map(drop)),
         ("pointer Value", |b| {
             beve::from_slice_at::<Value>(b, "").map(drop)
         }),
         ("transcode", |b| beve_to_json(b).map(drop)),
+        ("skip", skipped),
     ];
-    let mut compared = 0;
+    let mut refused = 0;
     for h in 0..=255u8 {
         for tail in [&[0u8][..], &[1 << 2, 0, 0, 0]] {
             let doc = [&[h][..], tail].concat();
-            let Err(v) = validate_beve(&doc) else {
+            let verdict = validate_beve(&doc);
+            let at = |r: structio::Result<()>| r.map_err(|e| (e.code, e.index));
+            for (name, walk) in &everyone {
+                match (at(verdict), at(walk(&doc))) {
+                    (v, e) if v == e => {}
+                    (
+                        v,
+                        Err((ErrorCode::UnsupportedFeature | ErrorCode::InvalidMatrixLayout, e)),
+                    ) if *name != "skip" && v.err().is_none_or(|(_, v)| v >= e) => {}
+                    (Err((ErrorCode::TrailingContent, _)), Ok(())) if *name == "pointer Value" => {}
+                    (v, e) => panic!("{name}, {doc:02x?}: validate {v:?}, walk {e:?}"),
+                }
+            }
+            let Err(v) = verdict else {
+                for (name, framed) in framed(&doc) {
+                    assert_eq!(framed.map_err(|e| e.code), Ok(1), "{name}, {doc:02x?}");
+                }
                 continue;
             };
-            if !matches!(
-                v.code,
-                ErrorCode::InvalidHeader | ErrorCode::UnsupportedKeyType
-            ) {
+            if v.code != ErrorCode::InvalidHeader {
                 continue;
             }
-            for (name, walk) in readers_of(h).iter().chain(&everyone) {
-                let Err(e) = walk(&doc) else {
-                    panic!("{name} read {doc:02x?}");
-                };
+            refused += 1;
+            for (name, walk) in readers_of(h) {
+                let e = walk(&doc).expect_err(name);
                 assert_eq!((e.code, e.index), (v.code, v.index), "{name}, {doc:02x?}");
-                compared += 1;
+            }
+            for (name, framed) in framed(&doc) {
+                // In front of a document, a delimiter separates it from the
+                // one before, which is what `values` takes it for.
+                if h == header::DELIMITER && name == "Documents::values" {
+                    continue;
+                }
+                let framed = framed.map_err(|e| (e.code, e.index));
+                assert_eq!(framed, Err((v.code, 0)), "{name}, {doc:02x?}");
             }
         }
     }
-    assert!(compared > 0);
+    assert!(refused > 0);
+}
 
-    // No string header is refused: nothing reads its sub and count bits, so
-    // every form of one is the same string to every walk. "A" is also the
-    // name of `Named`'s variant.
-    for h in (0..32).map(|bits| (bits << 3) | header::TY_STRING) {
-        let doc = [h, 1 << 2, b'A'];
-        validate_beve(&doc).unwrap();
-        for (name, walk) in readers_of(h).iter().chain(&everyone) {
-            walk(&doc).unwrap_or_else(|e| panic!("{name}, {h:#04x}: {e:?}"));
+#[test]
+fn a_header_with_an_unspecified_bit_set_is_not_a_value_in_any_walk() {
+    // The specification gives a string and a generic array no `sub` and no
+    // `count`, and a string-keyed object no `count`, and requires every bit it
+    // leaves unspecified to be zero. Read as zero, each set bit would be one
+    // more spelling of the same value, which a document that is compared,
+    // hashed or signed byte for byte cannot have. So each of the 69 is refused
+    // on its header, in every walk, wherever it stands: as the document, as an
+    // element, as the tag an internally tagged enum dispatches on, and as a
+    // container a pointer passes through. "A" is `Tagged`'s one variant.
+    let strings = (0..32).map(|bits| {
+        let h = (bits << 3) | header::TY_STRING;
+        (h, vec![h, 1 << 2, b'A'], None)
+    });
+    let arrays = (0..32).map(|bits| {
+        let h = (bits << 3) | header::TY_GENERIC_ARRAY;
+        (h, vec![h, 1 << 2, header::NULL], Some("/0"))
+    });
+    let objects = (0..8).map(|count| {
+        let h = (count << 5) | header::OBJECT;
+        (h, vec![h, 1 << 2, 1 << 2, b'A', header::NULL], Some("/A"))
+    });
+
+    let mut spellings = 0;
+    for (h, doc, pointer) in strings.chain(arrays).chain(objects) {
+        let canonical = h == header::ty(h);
+        let element = [&[header::GENERIC_ARRAY, 1 << 2][..], &doc].concat();
+        // Each with the offset just past the header, wherever it stands.
+        let mut walks: Vec<(&str, structio::Result<()>, usize)> = vec![
+            ("validate", validate_beve(&doc), 1),
+            ("Value", from_beve::<Value>(&doc).map(drop), 1),
+            (
+                "pointer Value",
+                from_beve_at::<Value>(&doc, "").map(drop),
+                1,
+            ),
+            ("transcode", beve_to_json(&doc).map(drop), 1),
+            ("skip", skipped(&doc), 1),
+            ("element, validate", validate_beve(&element), 3),
+            ("element, Value", from_beve::<Value>(&element).map(drop), 3),
+            ("element, transcode", beve_to_json(&element).map(drop), 3),
+        ];
+        if let Some(pointer) = pointer {
+            let through = from_beve_at::<Value>(&doc, pointer).map(drop);
+            walks.push(("through a pointer", through, 1));
         }
+        if header::ty(h) == header::TY_STRING {
+            let tag = [&[header::OBJECT, 1 << 2, 4 << 2][..], b"kind", &doc].concat();
+            walks.push(("internal tag", from_beve::<Tagged>(&tag).map(drop), 8));
+        }
+        // Against the value's start, the element's being two bytes in.
+        let mut framers: Vec<_> = framed(&doc)
+            .into_iter()
+            .map(|(name, r)| (name, r, 0))
+            .chain(framed(&element).into_iter().map(|(name, r)| (name, r, 2)))
+            .collect();
+        // An array is also one `Documents::array` can take the elements of.
+        if header::ty(h) == header::TY_GENERIC_ARRAY {
+            let outer = drain(beve::Documents::array(&doc));
+            framers.push(("Documents::array, outer", outer, 0));
+        }
+
+        if canonical {
+            for (name, r, _) in walks {
+                r.unwrap_or_else(|e| panic!("{name}, {h:#04x}: {e:?}"));
+            }
+            for (name, r, _) in framers {
+                assert_eq!(r.map_err(|e| e.code), Ok(1), "{name}, {h:#04x}");
+            }
+            continue;
+        }
+        spellings += 1;
+        // And every reader of the kind, asked only here because not all of
+        // them can read what the canonical documents hold.
+        walks.extend(
+            readers_of(h)
+                .into_iter()
+                .map(|(name, walk)| (name, walk(&doc), 1)),
+        );
+        for (name, r, at) in walks {
+            let e = r.expect_err(name);
+            let want = (ErrorCode::InvalidHeader, at);
+            assert_eq!((e.code, e.index), want, "{name}, {h:#04x}");
+        }
+        for (name, r, at) in framers {
+            let e = r.expect_err(name);
+            let want = (ErrorCode::InvalidHeader, at);
+            assert_eq!((e.code, e.index), want, "{name}, {h:#04x}");
+        }
+    }
+    assert_eq!(spellings, 69);
+
+    // The fourth key type is not defined at any width, so an object of it is
+    // no value at all rather than one whose keys some reader does not take.
+    for h in (0..8).map(|count| header::header(header::TY_OBJECT, 3, count)) {
+        let e = validate_beve(&[h, 0]).unwrap_err();
+        assert_eq!((e.code, e.index), (ErrorCode::InvalidHeader, 1), "{h:#04x}");
     }
 }
 
@@ -758,6 +933,104 @@ fn nesting_past_the_limit_is_rejected() {
         validate_beve(&deep).unwrap_err().code,
         ErrorCode::ExceededMaxDepth
     );
+}
+
+#[test]
+fn at_the_nesting_limit_every_walk_refuses_for_the_same_reason() {
+    // `MAX_DEPTH` containers around a container that is one level too deep
+    // and has an undefined header too, so every walk has to give the same one
+    // of those two reasons. A typed array is charged its level before its
+    // element type is looked at, as reading a sequence charges it, so for one
+    // of an undefined element width the answer is the depth. A generic array's
+    // header is settled before its level, as an object's key kind is, so for
+    // one with an unspecified bit set the answer is the header. Either is
+    // reported just past the header, or at the value's start by a framer.
+    struct Nest(u32);
+    impl<'de> beve::Read<'de> for Nest {
+        fn read<O: structio::Options>(
+            &mut self,
+            r: &mut beve::Reader<'de, O>,
+        ) -> Result<(), ErrorCode> {
+            if self.0 == 0 {
+                return beve::Read::read(&mut Vec::<f64>::new(), r);
+            }
+            let inner = self.0 - 1;
+            r.read_seq(|r, _| Nest(inner).read(r)).map(drop)
+        }
+    }
+
+    let limit = beve::reader::MAX_DEPTH;
+    let chain = [header::GENERIC_ARRAY, 1 << 2].repeat(limit as usize);
+    let at = chain.len();
+    for (innermost, code) in [
+        (
+            header::array_of(header::CAT_FLOAT, 5),
+            ErrorCode::ExceededMaxDepth,
+        ),
+        (header::GENERIC_ARRAY | 1 << 3, ErrorCode::InvalidHeader),
+    ] {
+        let doc = [&chain[..], &[innermost, 0]].concat();
+        for (name, r) in [
+            ("from_beve", from_beve::<Value>(&doc).map(drop)),
+            ("typed", beve::read_into(&mut Nest(limit), &doc)),
+            ("validate_beve", validate_beve(&doc)),
+            ("beve_to_json", beve_to_json(&doc).map(drop)),
+            ("from_beve_at", from_beve_at::<Value>(&doc, "").map(drop)),
+        ] {
+            let r = r.map_err(|e| (e.code, e.index));
+            assert_eq!(r, Err((code, at + 1)), "{name}, {innermost:#04x}");
+        }
+        for (name, r) in [
+            ("Documents::values", drain(beve::Documents::values(&doc))),
+            ("Documents::array", drain(beve::Documents::array(&doc))),
+        ] {
+            let r = r.map_err(|e| (e.code, e.index));
+            assert_eq!(r, Err((code, at)), "{name}, {innermost:#04x}");
+        }
+    }
+}
+
+#[test]
+fn both_framers_measure_an_element_at_the_depth_it_sits_at() {
+    // `Documents::array` hands out the elements of the outermost array, which
+    // is a container like any other, so an element sits a level down in the
+    // document. Framed from zero, an element could be one level deeper than
+    // every other walk allows, and the two framers disagreed about the same
+    // bytes. One past the limit is refused by both, at the start of the
+    // container that crossed it, and one at the limit is framed by both.
+    let limit = beve::reader::MAX_DEPTH as usize;
+    let arrays = |n: usize| [header::GENERIC_ARRAY, 1 << 2].repeat(n);
+    let undefined = [header::array_of(header::CAT_FLOAT, 5), 0];
+    let empty = [header::GENERIC_ARRAY, 0];
+    for (name, doc, refused) in [
+        (
+            "past the limit, then an undefined typed array",
+            [arrays(limit + 1), undefined.to_vec()].concat(),
+            Some(2 * limit),
+        ),
+        (
+            "past the limit with an empty array",
+            [arrays(limit), empty.to_vec()].concat(),
+            Some(2 * limit),
+        ),
+        (
+            "at the limit",
+            [arrays(limit - 1), empty.to_vec()].concat(),
+            None,
+        ),
+    ] {
+        assert_eq!(validate_beve(&doc).is_ok(), refused.is_none(), "{name}");
+        for (mode, r) in [
+            ("values", drain(beve::Documents::values(&doc))),
+            ("array", drain(beve::Documents::array(&doc))),
+        ] {
+            let want = match refused {
+                Some(at) => Err((ErrorCode::ExceededMaxDepth, at)),
+                None => Ok(1),
+            };
+            assert_eq!(r.map_err(|e| (e.code, e.index)), want, "{mode}, {name}");
+        }
+    }
 }
 
 #[test]

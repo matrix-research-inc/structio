@@ -98,7 +98,8 @@ use core::str::FromStr;
 
 use crate::beve::header::{self, byte_width};
 use crate::beve::reader::{
-    Typed, bf16_to_f32, complex_payload, f16_to_f32, key_width, le_u128, payload_len, sign_extend,
+    Typed, bare_header, bf16_to_f32, complex_payload, f16_to_f32, key_width, le_u128, payload_len,
+    sign_extend,
 };
 use crate::beve::{self, Reader as BeveReader, Writer as BeveWriter, cautious};
 use crate::error::{ErrorCode, PResult, Result};
@@ -1025,10 +1026,14 @@ fn read_body<'de, O: Options>(r: &mut BeveReader<'de, O>, h: u8) -> PResult<Valu
             let width = header::decodable_width(cat, code)?;
             Value::Number(read_number(cat, code, r.take(width)?)?)
         }
-        header::TY_STRING => Value::String(r.str_body()?.to_owned()),
+        header::TY_STRING => {
+            bare_header(h)?;
+            Value::String(r.str_body()?.to_owned())
+        }
         header::TY_OBJECT => read_object(r, h)?,
         header::TY_TYPED_ARRAY => read_typed_array(r, h)?,
         header::TY_GENERIC_ARRAY => {
+            bare_header(h)?;
             let n = r.count()?;
             r.nested(|r| {
                 // Each element is at least a header byte, so the input bounds

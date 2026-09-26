@@ -65,8 +65,8 @@ use std::io;
 
 use crate::beve::header::{self, byte_width};
 use crate::beve::reader::{
-    Reader, Typed, bf16_to_f32, complex_payload, f16_to_f32, key_width, le_u128, payload_len,
-    sign_extend,
+    Reader, Typed, bare_header, bf16_to_f32, complex_payload, f16_to_f32, key_width, le_u128,
+    payload_len, sign_extend,
 };
 use crate::error::{Error, ErrorCode, PResult, Result, StreamError, StreamResult};
 use crate::ext::MatrixLayout;
@@ -231,10 +231,16 @@ fn body<O: Options>(r: &mut Reader<'_>, w: &mut Writer<'_, O>, h: u8) -> PResult
         }
         // `str_body` is what validates the UTF-8. It has to: the JSON writer's
         // buffer is handed out as a `String` without revalidation.
-        header::TY_STRING => w.write_str(r.str_body()?),
+        header::TY_STRING => {
+            bare_header(h)?;
+            w.write_str(r.str_body()?);
+        }
         header::TY_OBJECT => object(r, w, h)?,
         header::TY_TYPED_ARRAY => typed_array(r, w, h)?,
-        header::TY_GENERIC_ARRAY => generic_array(r, w)?,
+        header::TY_GENERIC_ARRAY => {
+            bare_header(h)?;
+            generic_array(r, w)?;
+        }
         header::TY_EXTENSION => extension(r, w, h)?,
         _ => return Err(ErrorCode::InvalidHeader),
     }

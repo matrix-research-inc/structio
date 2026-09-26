@@ -33,7 +33,9 @@
 //! the same code that reads and skips one, rather than by a second opinion.
 
 use crate::beve::header::{self, byte_width, decode_size};
-use crate::beve::reader::{MAX_DEPTH, Reader, Typed, complex_payload, key_width, payload_len};
+use crate::beve::reader::{
+    MAX_DEPTH, Reader, Typed, bare_header, complex_payload, key_width, payload_len,
+};
 use crate::error::{ErrorCode, PResult};
 use crate::stream::{Framer, Split};
 
@@ -115,17 +117,23 @@ struct Scanner {
     /// Raw bytes of the current payload still to step over.
     pending: usize,
     stack: Vec<Frame>,
+    /// Containers open around the value being walked, which it is charged for
+    /// as if they were its own: the top-level array in [`Mode::Array`], so an
+    /// element is limited to the depth it sits at in the document, and none in
+    /// [`Mode::Values`].
+    outer: usize,
     /// The root value has been started. Without this an empty stack would read
     /// as "finished" before anything had begun.
     started: bool,
 }
 
 impl Scanner {
-    fn new() -> Self {
+    fn new(outer: usize) -> Self {
         Scanner {
             pos: 0,
             pending: 0,
             stack: Vec::new(),
+            outer,
             started: false,
         }
     }
@@ -223,7 +231,8 @@ impl Scanner {
                     self.taken();
                 }
                 Duty::Value => {
-                    let (used, skip, frame) = match head(buf, self.pos, self.stack.len()) {
+                    let depth = self.outer + self.stack.len();
+                    let (used, skip, frame) = match head(buf, self.pos, depth) {
                         Ok(step) => step,
                         // Every short read inside a preamble surfaces as this,
                         // and so does an extent too large to be an extent. The
@@ -278,7 +287,10 @@ fn head(buf: &[u8], at: usize, depth: usize) -> PResult<(usize, usize, Option<Fr
             let w = byte_width(header::sub(h), header::count(h)).ok_or(ErrorCode::InvalidHeader)?;
             (w, None)
         }
-        header::TY_STRING => (r.count()?, None),
+        header::TY_STRING => {
+            bare_header(h)?;
+            (r.count()?, None)
+        }
         header::TY_OBJECT => {
             let width = key_width(h)?;
             let left = r.count()?;
@@ -295,13 +307,16 @@ fn head(buf: &[u8], at: usize, depth: usize) -> PResult<(usize, usize, Option<Fr
             )
         }
         header::TY_GENERIC_ARRAY => {
+            bare_header(h)?;
             let left = r.count()?;
             enter(depth)?;
             (0, Some(Frame::Values { left }))
         }
+        // The level before the element type, as `Reader::skip_value` charges
+        // it, so that at the limit the refusal is the depth in every walk.
         header::TY_TYPED_ARRAY => {
-            let form = r.typed_head(h)?;
             enter(depth)?;
+            let form = r.typed_head(h)?;
             match form {
                 Typed::Bools(n) => (n.div_ceil(8), None),
                 Typed::Strings(n) => (0, Some(Frame::Strings { left: n })),
@@ -401,7 +416,10 @@ impl Splitter {
     pub(crate) fn new(mode: Mode) -> Self {
         Splitter {
             mode,
-            scan: Scanner::new(),
+            scan: Scanner::new(match mode {
+                Mode::Array => 1,
+                Mode::Values => 0,
+            }),
             state: match mode {
                 Mode::Array => State::BeforeArray,
                 Mode::Values => State::Between,
@@ -438,7 +456,10 @@ impl Splitter {
         let outcome = (|| {
             let h = r.head()?;
             match header::ty(h) {
-                header::TY_GENERIC_ARRAY => Ok((r.count()?, Elem::Generic)),
+                header::TY_GENERIC_ARRAY => {
+                    bare_header(h)?;
+                    Ok((r.count()?, Elem::Generic))
+                }
                 header::TY_TYPED_ARRAY => Ok(match r.typed_head(h)? {
                     Typed::Bools(n) => (n, Elem::Bools { bit: 0 }),
                     Typed::Strings(n) => (n, Elem::Strings),

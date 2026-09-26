@@ -69,7 +69,7 @@ The depth limit is the document's, not the value's. Every container the pointer 
 
 ## Checking a document without decoding it
 
-`validate_beve` walks a document and confirms every header, every length, every nested value, and every string's UTF-8, without turning any of it into a Rust type and without allocating:
+`validate_beve` walks a document and confirms every value's header, unspecified bits included, every length, every nested value, and every string's UTF-8, without turning any of it into a Rust type and without allocating:
 
 ```rust
 structio::validate_beve(&bytes)?;
@@ -205,6 +205,8 @@ Getting a value's extent wrong in a binary format does not fail loudly. It moves
 The complex extension's header is the case that matters. Its number-or-array flag is three bits wide, so that the class and byte count line up with an ordinary number header, but only two values are defined, and they differ by whether a size precedes the payload. Values 2 through 7 are an `InvalidHeader`.
 
 A matrix's layout byte is the other one, and it is refused later rather than earlier. Its two defined values say which index varies fastest, and reading it wrongly transposes the data without changing any extent, so `Matrix` and the transcode both refuse a third value with `InvalidMatrixLayout` while `validate_beve` has no reason to look at it.
+
+A header's unspecified bits are refused too, though no extent depends on them. The specification gives a string and a generic array nothing in the five bits above the type, and a string-keyed object nothing in the top three, and requires every unspecified bit to be zero. Read as zero, a set bit would give one value several encodings, which a document that is compared, hashed or signed byte for byte cannot have. Every walk refuses such a header as `InvalidHeader`, as it refuses an undefined width.
 
 ## Enums are tagged by name
 
