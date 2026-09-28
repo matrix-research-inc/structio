@@ -4,7 +4,7 @@ Notable changes to structio. The format follows [Keep a Changelog](https://keepa
 
 Before 1.0 the API is not frozen: a minor bump may break it, and what broke is listed here.
 
-## [Unreleased]
+## [0.8.0] - 2026-09-28
 
 ### Changed
 
@@ -211,7 +211,8 @@ First release.
 - **Errors locate themselves.** `Error` carries a byte offset, `Error::display_with(input)` renders one with a line, column, and caret, and a `MissingKey` names the absent key.
 - `Parser::read_number_str` and `Writer::write_number_str`: a number's text, borrowed and written verbatim, for a fixed-point, decimal, bignum, or rational type. JSON only.
 
-[Unreleased]: https://github.com/matrix-research-inc/structio/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/matrix-research-inc/structio/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/matrix-research-inc/structio/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/matrix-research-inc/structio/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/matrix-research-inc/structio/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/matrix-research-inc/structio/compare/v0.4.0...v0.5.0
